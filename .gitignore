@@ -1,5 +1,7 @@
 node_modules/
+.pnpm-store/
 .wrangler/
+.xdg-config/
 dist/
 .dev.vars
 .env

@@ -1,8 +1,0 @@
-name = "cryptolab-ai"
-main = "src/index.ts"
-compatibility_date = "2026-07-11"
-
-[vars]
-APP_MODE = "paper"
-STARTING_BALANCE_USD = "20"
-BENCHMARK_ASSET = "BTC"
