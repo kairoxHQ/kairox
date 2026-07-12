@@ -9,16 +9,17 @@ Recommended public structure:
 
 This keeps room for a product/marketing site at the apex domain while the existing Worker serves the app.
 
-## Current Resources To Preserve
+## Current Resources
 
-- Worker: `cryptolab-ai`
-- D1 database: `cryptolab-ai-db`
+- Production Worker: `kairox`
+- Production D1 database: `kairox-production-db`
 - D1 binding: `DB`
 - Public app URL: `https://app.kairoxhq.com`
-- Fallback Worker URL: `https://cryptolab-ai.aprilfamilycookbook.workers.dev`
+- Production Worker fallback URL: `https://kairox.kairoxtradingbot.workers.dev`
+- Legacy rollback Worker URL: `https://cryptolab-ai.aprilfamilycookbook.workers.dev`
 - Canonical GitHub repository: `kairoxHQ/kairox`
-- Cron schedule: `*/30 * * * *`
-- Existing secrets, including `PAPER_RUN_SECRET`
+- Intended cron schedule after legacy scheduler shutdown: `*/30 * * * *`
+- Required secret name for protected endpoints: `PAPER_RUN_SECRET`
 - Existing paper-trading history in D1
 
 Do not recreate the Worker or D1 database during domain migration.
@@ -36,7 +37,25 @@ The custom domain is source-controlled in `wrangler.jsonc`:
 ]
 ```
 
-Deploying this configuration attaches `app.kairoxhq.com` to the existing `cryptolab-ai` Worker. Do not create another Worker.
+Deploying this configuration attaches `app.kairoxhq.com` to the existing `kairox` Worker. Do not create another Worker.
+
+The root domain `kairoxhq.com` is intentionally reserved for a future marketing site.
+
+## Scheduler Cutover Gate
+
+Only one production scheduler may be active at a time.
+
+The legacy Worker `cryptolab-ai` in the April Family Cookbook Cloudflare account was observed still writing scheduled runs after the D1 restore. The dedicated Kairox account cannot disable that legacy scheduler with its current Wrangler credentials. Keep the new `kairox` cron trigger omitted from `wrangler.jsonc` until the legacy `cryptolab-ai` cron trigger is disabled in the old account.
+
+After the old scheduler is disabled and verified, add:
+
+```jsonc
+"triggers": {
+  "crons": ["*/30 * * * *"]
+}
+```
+
+Then run a dry-run deploy, deploy `kairox`, and verify exactly one new scheduled run writes to `kairox-production-db`.
 
 ## Verification Commands
 
@@ -44,10 +63,10 @@ Deploying this configuration attaches `app.kairoxhq.com` to the existing `crypto
 cd "C:\Users\timbo\OneDrive\Documents\Trading Bot"
 npx.cmd wrangler whoami
 npx.cmd wrangler deploy --dry-run
-npx.cmd wrangler deployments status --name cryptolab-ai
+npx.cmd wrangler deployments status --name kairox
 ```
 
-Confirm you are in the Cloudflare account that owns `cryptolab-ai` and the `KairoxHQ.com` zone.
+Confirm you are in the dedicated Kairox Cloudflare account that owns `kairox` and the `KairoxHQ.com` zone.
 
 Optionally add `www.kairoxhq.com` later for a marketing site or redirect. Do not point the apex `kairoxhq.com` at the Worker unless you decide the app should be the whole public site.
 
@@ -76,3 +95,4 @@ curl.exe -X POST "$workerUrl/paper/run" -H "x-cryptolab-paper-secret: $paperRunS
 - Do not rotate secrets unless intentionally planned.
 - Do not remove the workers.dev URL.
 - Do not enable live trading.
+- Do not enable the new production scheduler until the old production scheduler is disabled.

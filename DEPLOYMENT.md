@@ -2,13 +2,16 @@
 
 Run these commands outside Codex in Windows PowerShell. Use `.cmd` commands to avoid PowerShell execution-policy issues with `.ps1` shims.
 
-Do not use any April Family Cookbook, BingeKeeper, or unrelated Cloudflare resource. Kairox currently keeps these internal resource names:
+Do not use any April Family Cookbook, BingeKeeper, or unrelated Cloudflare resource. Kairox production now uses these dedicated Cloudflare resources:
 
-- Worker/project: `cryptolab-ai`
-- D1 database: `cryptolab-ai-db`
+- Worker/project: `kairox`
+- D1 database: `kairox-production-db`
 - D1 binding: `DB`
-- Current D1 database ID: `09480454-a133-4f0d-b5fe-c45c59dc0ef8`
+- Current D1 database ID: `2e2d17c7-80ec-4ea4-b792-10377085dd87`
 - Canonical GitHub repository: `kairoxHQ/kairox`
+- Canonical app URL: `https://app.kairoxhq.com`
+- Worker fallback URL: `https://kairox.kairoxtradingbot.workers.dev`
+- Legacy rollback Worker URL: `https://cryptolab-ai.aprilfamilycookbook.workers.dev`
 
 ## 1. Open The Project
 
@@ -40,16 +43,16 @@ npx.cmd wrangler whoami
 npx.cmd wrangler d1 list
 ```
 
-Look for a dedicated database named `cryptolab-ai-db`.
+Look for a dedicated database named `kairox-production-db`.
 
 Do not use databases from `april-family-cookbook`, `Bingekeeper`, or any unrelated project.
 
 ## 4. Create The D1 Database If Needed
 
-Only run this if `cryptolab-ai-db` does not already exist:
+Only run this if `kairox-production-db` does not already exist:
 
 ```powershell
-npx.cmd wrangler d1 create cryptolab-ai-db
+npx.cmd wrangler d1 create kairox-production-db
 ```
 
 Copy the returned `database_id`.
@@ -62,12 +65,12 @@ If `wrangler.jsonc` still contains the placeholder database ID, replace every pl
 00000000-0000-0000-0000-000000000000
 ```
 
-with the actual `database_id` for `cryptolab-ai-db`.
+with the actual `database_id` for `kairox-production-db`.
 
 The current configured ID is:
 
 ```text
-09480454-a133-4f0d-b5fe-c45c59dc0ef8
+2e2d17c7-80ec-4ea4-b792-10377085dd87
 ```
 
 Confirm the binding remains exactly:
@@ -79,7 +82,7 @@ Confirm the binding remains exactly:
 ## 6. Apply The Remote Migration
 
 ```powershell
-npx.cmd wrangler d1 migrations apply cryptolab-ai-db --remote
+npx.cmd wrangler d1 migrations apply kairox-production-db --remote
 ```
 
 ## 7. Deploy The Worker
@@ -96,10 +99,10 @@ Deploy the configured Worker:
 npx.cmd wrangler deploy
 ```
 
-If you want to deploy the preview environment instead:
+For a dry-run build without deploying:
 
 ```powershell
-npx.cmd wrangler deploy --env preview
+npx.cmd wrangler deploy --dry-run --outdir dist
 ```
 
 Copy the deployed Worker URL printed by Wrangler.
@@ -117,6 +120,13 @@ The fallback Worker URL should also remain available:
 ```powershell
 $fallbackWorkerUrl = "https://cryptolab-ai.aprilfamilycookbook.workers.dev"
 curl.exe "$fallbackWorkerUrl/health"
+```
+
+The current production Worker fallback URL should remain available:
+
+```powershell
+$workerFallbackUrl = "https://kairox.kairoxtradingbot.workers.dev"
+curl.exe "$workerFallbackUrl/health"
 ```
 
 Verify `/health`:
@@ -225,3 +235,24 @@ Expected safety checks:
 - `/paper/run` rejects missing or incorrect `x-cryptolab-paper-secret`.
 - `/dashboard` does not expose `PAPER_RUN_SECRET`.
 - `/settings` reports whether automation is active or paused.
+
+## Scheduler Cutover
+
+Do not enable the `kairox` production cron trigger until the legacy `cryptolab-ai` cron trigger is disabled in the April Family Cookbook Cloudflare account.
+
+After the legacy scheduler is disabled and verified, add this to `wrangler.jsonc`:
+
+```jsonc
+"triggers": {
+  "crons": ["*/30 * * * *"]
+}
+```
+
+Then run:
+
+```powershell
+npx.cmd wrangler deploy --dry-run --outdir dist
+npx.cmd wrangler deploy
+```
+
+Verify that only `kairox` has an active production scheduler and that the new scheduled run writes to `kairox-production-db`.

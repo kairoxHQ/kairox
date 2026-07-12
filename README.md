@@ -11,7 +11,7 @@ Canonical repository: `kairoxHQ/kairox`
 - One local user: Tim.
 - Simulated starting portfolio: `$20`.
 - Benchmarks: Bitcoin buy-and-hold and cash.
-- Scheduled automated paper runs through Cloudflare cron triggers.
+- Scheduled automated paper runs through Cloudflare cron triggers. During the Cloudflare account cutover, the new `kairox` production scheduler remains disabled until the old `cryptolab-ai` scheduler is disabled in the legacy account.
 - Mobile-friendly dashboard at `/dashboard`.
 - Paper trading only.
 - No brokerage credentials, live orders, leverage, options execution, futures execution, or paid AI API calls.
@@ -44,9 +44,11 @@ Recommendations default to `DO_NOTHING` unless validated market data and risk ch
 
 ## Sprint 3 Automation
 
-Cloudflare scheduled events run the strategy every 30 minutes:
+Cloudflare scheduled events are designed to run the strategy every 30 minutes:
 
 - `*/30 * * * *`
+
+Only one production scheduler may be active at a time. The new Kairox account must not enable the `kairox` cron trigger until the old `cryptolab-ai` cron trigger is disabled in the legacy April Family Cookbook Cloudflare account.
 
 SPY and future stock/ETF assets are blocked from simulated execution outside regular US market hours. BTC-USD may be evaluated outside stock-market hours. Overlapping scheduled runs and duplicate cron deliveries are blocked with D1 run keys.
 
@@ -60,7 +62,7 @@ https://app.kairoxhq.com/dashboard
 
 The dashboard shows portfolio value, cash, positions, gain/loss, price return, dividend return, trade count, scheduled runs, automation status, recommendations, rejected opportunities, benchmarks, summaries, and settings. It does not expose `PAPER_RUN_SECRET`.
 
-The fallback Worker URL remains `https://cryptolab-ai.aprilfamilycookbook.workers.dev`. Internal Cloudflare names remain `cryptolab-ai` and `cryptolab-ai-db` until a separate infrastructure rename is planned. See `DOMAIN_MIGRATION.md`.
+The fallback legacy Worker URL remains `https://cryptolab-ai.aprilfamilycookbook.workers.dev`. Current production Cloudflare resources in the dedicated Kairox account are Worker `kairox` and D1 database `kairox-production-db`. See `DOMAIN_MIGRATION.md`.
 
 ## Dividends
 
@@ -90,25 +92,26 @@ The Worker expects a dedicated D1 database bound as `DB`.
 
 ```bash
 wrangler d1 list
-wrangler d1 create cryptolab-ai-db
+wrangler d1 create kairox-production-db
 ```
 
 Update `wrangler.jsonc` with the returned `database_id`, then apply:
 
 ```bash
-wrangler d1 migrations apply cryptolab-ai-db --remote
+wrangler d1 migrations apply kairox-production-db --remote
 ```
 
 Do not bind any April Family Cookbook or BingeKeeper database to this project.
 
-The preview environment intentionally uses the same dedicated paper-trading D1 database until a separate production environment exists.
+The production D1 binding is currently `DB -> kairox-production-db`.
 
-## Preview Deploy
+## Deploy
 
-Deploy only the preview environment for this milestone:
+Validate and deploy the configured Worker:
 
 ```bash
-wrangler deploy --env preview
+wrangler deploy --dry-run --outdir dist
+wrangler deploy
 ```
 
 Production and live trading remain disabled by default.
