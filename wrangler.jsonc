@@ -3,9 +3,16 @@
   "name": "cryptolab-ai",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-11",
+  "workers_dev": true,
   "observability": {
     "enabled": true
   },
+  "routes": [
+    {
+      "pattern": "app.kairoxhq.com",
+      "custom_domain": true
+    }
+  ],
   "triggers": {
     "crons": ["*/30 * * * *"]
   },

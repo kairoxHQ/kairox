@@ -55,12 +55,12 @@ SPY and future stock/ETF assets are blocked from simulated execution outside reg
 Open the current deployed app:
 
 ```text
-https://cryptolab-ai.aprilfamilycookbook.workers.dev/dashboard
+https://app.kairoxhq.com/dashboard
 ```
 
 The dashboard shows portfolio value, cash, positions, gain/loss, price return, dividend return, trade count, scheduled runs, automation status, recommendations, rejected opportunities, benchmarks, summaries, and settings. It does not expose `PAPER_RUN_SECRET`.
 
-The intended future app domain is `app.kairoxhq.com`. Internal Cloudflare names remain `cryptolab-ai` and `cryptolab-ai-db` until a separate infrastructure rename is planned. See `DOMAIN_MIGRATION.md`.
+The fallback Worker URL remains `https://cryptolab-ai.aprilfamilycookbook.workers.dev`. Internal Cloudflare names remain `cryptolab-ai` and `cryptolab-ai-db` until a separate infrastructure rename is planned. See `DOMAIN_MIGRATION.md`.
 
 ## Dividends
 

@@ -7,14 +7,15 @@ Recommended public structure:
 - `kairoxhq.com` for a future marketing homepage.
 - `app.kairoxhq.com` for the paper-trading dashboard and application.
 
-This keeps room for a product/marketing site at the apex domain while the existing Worker continues serving the app.
+This keeps room for a product/marketing site at the apex domain while the existing Worker serves the app.
 
 ## Current Resources To Preserve
 
 - Worker: `cryptolab-ai`
 - D1 database: `cryptolab-ai-db`
 - D1 binding: `DB`
-- Current Worker URL: `https://cryptolab-ai.aprilfamilycookbook.workers.dev`
+- Public app URL: `https://app.kairoxhq.com`
+- Fallback Worker URL: `https://cryptolab-ai.aprilfamilycookbook.workers.dev`
 - Canonical GitHub repository: `kairoxHQ/kairox`
 - Cron schedule: `*/30 * * * *`
 - Existing secrets, including `PAPER_RUN_SECRET`
@@ -22,39 +23,31 @@ This keeps room for a product/marketing site at the apex domain while the existi
 
 Do not recreate the Worker or D1 database during domain migration.
 
-## Manual Cloudflare Steps
+## Worker Route
 
-Run these outside Codex in Windows PowerShell after `KairoxHQ.com` is available in the intended Cloudflare account.
+The custom domain is source-controlled in `wrangler.jsonc`:
+
+```jsonc
+"routes": [
+  {
+    "pattern": "app.kairoxhq.com",
+    "custom_domain": true
+  }
+]
+```
+
+Deploying this configuration attaches `app.kairoxhq.com` to the existing `cryptolab-ai` Worker. Do not create another Worker.
+
+## Verification Commands
 
 ```powershell
 cd "C:\Users\timbo\OneDrive\Documents\Trading Bot"
 npx.cmd wrangler whoami
+npx.cmd wrangler deploy --dry-run
+npx.cmd wrangler deployments status --name cryptolab-ai
 ```
 
 Confirm you are in the Cloudflare account that owns `cryptolab-ai` and the `KairoxHQ.com` zone.
-
-Verify the existing Worker still deploys:
-
-```powershell
-npx.cmd wrangler deploy --dry-run
-```
-
-Attach a custom domain for the app:
-
-```powershell
-npx.cmd wrangler triggers deploy
-```
-
-Then in the Cloudflare dashboard:
-
-1. Open Workers & Pages.
-2. Select Worker `cryptolab-ai`.
-3. Open Settings.
-4. Open Triggers.
-5. Add a Custom Domain.
-6. Enter `app.kairoxhq.com`.
-7. Confirm the route maps to the existing `cryptolab-ai` Worker.
-8. Verify TLS is active.
 
 Optionally add `www.kairoxhq.com` later for a marketing site or redirect. Do not point the apex `kairoxhq.com` at the Worker unless you decide the app should be the whole public site.
 
@@ -81,5 +74,5 @@ curl.exe -X POST "$workerUrl/paper/run" -H "x-cryptolab-paper-secret: $paperRunS
 - Do not create a new D1 database.
 - Do not reset migrations.
 - Do not rotate secrets unless intentionally planned.
-- Do not remove the workers.dev URL until the custom domain has been verified.
+- Do not remove the workers.dev URL.
 - Do not enable live trading.

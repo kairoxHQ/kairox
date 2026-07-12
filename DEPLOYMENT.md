@@ -109,7 +109,14 @@ Copy the deployed Worker URL printed by Wrangler.
 Set a local variable to the deployed Worker URL. Replace the value below with your actual URL:
 
 ```powershell
-$workerUrl = "https://cryptolab-ai.aprilfamilycookbook.workers.dev"
+$workerUrl = "https://app.kairoxhq.com"
+```
+
+The fallback Worker URL should also remain available:
+
+```powershell
+$fallbackWorkerUrl = "https://cryptolab-ai.aprilfamilycookbook.workers.dev"
+curl.exe "$fallbackWorkerUrl/health"
 ```
 
 Verify `/health`:
