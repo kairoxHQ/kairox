@@ -1,20 +1,11 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "cryptolab-ai",
+  "name": "kairox",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-11",
   "workers_dev": true,
   "observability": {
     "enabled": true
-  },
-  "routes": [
-    {
-      "pattern": "app.kairoxhq.com",
-      "custom_domain": true
-    }
-  ],
-  "triggers": {
-    "crons": ["*/30 * * * *"]
   },
   "vars": {
     "APP_MODE": "paper",
@@ -25,31 +16,9 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "cryptolab-ai-db",
-      "database_id": "09480454-a133-4f0d-b5fe-c45c59dc0ef8",
+      "database_name": "kairox-production-db",
+      "database_id": "2e2d17c7-80ec-4ea4-b792-10377085dd87",
       "migrations_dir": "migrations"
     }
-  ],
-  "env": {
-    "preview": {
-      "name": "cryptolab-ai-preview",
-      "triggers": {
-        "crons": ["*/30 * * * *"]
-      },
-      "vars": {
-        "APP_MODE": "paper",
-        "LIVE_TRADING_ENABLED": "false",
-        "STARTING_BALANCE_USD": "20",
-        "BENCHMARK_ASSET": "BTC"
-      },
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "cryptolab-ai-db",
-          "database_id": "09480454-a133-4f0d-b5fe-c45c59dc0ef8",
-          "migrations_dir": "migrations"
-        }
-      ]
-    }
-  }
+  ]
 }

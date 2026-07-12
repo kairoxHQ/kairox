@@ -10,7 +10,7 @@ Kairox is paper-first. Keep all implementation choices aligned with safe, broker
 - Do not call paid AI APIs.
 - Do not commit secrets, `.dev.vars`, or account tokens.
 - Do not reuse April Family Cookbook or BingeKeeper Cloudflare resources.
-- Use only the dedicated `cryptolab-ai-db` Cloudflare D1 database bound as `DB`.
+- During migration, preserve the old `cryptolab-ai-db` database and use the dedicated Kairox databases (`kairox-production-db` and `kairox-dev-db`) bound as `DB` in the dedicated Kairox Cloudflare account.
 
 ## Engineering Rules
 
