@@ -1,0 +1,2 @@
+# kairox
+Trading Bot
