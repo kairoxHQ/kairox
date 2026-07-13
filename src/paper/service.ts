@@ -1,5 +1,6 @@
 import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
 import { canExecuteAt } from "../market/hours.ts";
+import { listEnabledWatchlistAssets, type AssetRegistryRecord } from "../market/assets.ts";
 import {
   getCachedMarketData,
   getLastKnownGoodMarketData,
@@ -15,7 +16,6 @@ import type { Env, MarketDataset } from "../shared/types.ts";
 import { generateSummaries } from "../summaries/service.ts";
 import { userMessageForMarketData } from "../shared/messages.ts";
 
-const SYMBOLS = ["BTC-USD", "SPY"] as const;
 const SPREAD_RATE = 0.0025;
 const FEE_RATE = 0.001;
 
@@ -64,11 +64,13 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   }
 
   const provider = new YahooFinanceMarketDataProvider();
+  const assets = await listEnabledWatchlistAssets(env.DB);
   const summaries: RunSymbolSummary[] = [];
   let openedNewPositionThisRun = false;
 
-  for (const symbol of SYMBOLS) {
-    const marketData = await getMarketData(env.DB, provider, symbol, now);
+  for (const asset of assets) {
+    const symbol = asset.symbol;
+    const marketData = await getMarketData(env.DB, provider, asset, now);
     await recordMarketSnapshot(env.DB, marketData);
     await upsertMarketDataStatus(env.DB, marketStatusFromDataset(marketData, new Date().toISOString()));
 
@@ -88,7 +90,10 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     }
 
     if (isExecutionAction) {
-      const marketHours = canExecuteAt(marketData.assetClass, now);
+      if (!asset.tradable) {
+        executionGateReasons.push(`${asset.symbol} is tracked in the asset registry but is not enabled for paper execution.`);
+      }
+      const marketHours = canExecuteAt(marketData.assetClass, now, asset.marketHoursMode);
       if (!marketHours.allowed && marketHours.reason) {
         executionGateReasons.push(marketHours.reason);
       }
@@ -163,8 +168,10 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 }
 
 export async function getMarket(db: D1Database): Promise<unknown> {
+  const assets = await listEnabledWatchlistAssets(db);
   return {
-    symbols: SYMBOLS,
+    symbols: assets.map((asset) => asset.symbol),
+    assets,
     statuses: await getMarketDataStatuses(db),
     latest: await listRows(
       db.prepare(
@@ -262,15 +269,16 @@ async function getPosition(db: D1Database, symbol: string): Promise<PositionRow 
 async function getMarketData(
   db: D1Database,
   provider: YahooFinanceMarketDataProvider,
-  symbol: string,
+  asset: AssetRegistryRecord,
   now: Date
 ): Promise<MarketDataset> {
+  const symbol = asset.symbol;
   const cached = await getCachedMarketData(db, symbol, now);
   if (cached) {
     return cached;
   }
 
-  const live = await provider.getMarketData(symbol);
+  const live = await provider.getMarketDataForAsset(asset);
   if (live.validated) {
     return live;
   }

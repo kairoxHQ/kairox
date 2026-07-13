@@ -12,6 +12,7 @@ Canonical repository: `kairoxHQ/kairox`
 - Simulated starting portfolio: `$20`.
 - Benchmarks: Bitcoin buy-and-hold and cash.
 - Scheduled automated paper runs through Cloudflare cron triggers on the production `kairox` Worker.
+- Database-driven asset registry and watchlists for stocks, ETFs, mutual funds, crypto, REITs, bond funds, and money-market or cash-equivalent funds.
 - Mobile-friendly dashboard at `/dashboard`.
 - Paper trading only.
 - No brokerage credentials, live orders, leverage, options execution, futures execution, or paid AI API calls.
@@ -51,6 +52,12 @@ Cloudflare scheduled events run the strategy every 30 minutes:
 Only one production scheduler may be active at a time. The legacy `cryptolab-ai` scheduler must remain disabled now that the dedicated `kairox` production scheduler is active.
 
 SPY and future stock/ETF assets are blocked from simulated execution outside regular US market hours. BTC-USD may be evaluated outside stock-market hours. Overlapping scheduled runs and duplicate cron deliveries are blocked with D1 run keys.
+
+## Asset Universe
+
+Kairox evaluates enabled assets from D1 watchlists rather than a hardcoded symbol list. The initial `Tim Core Paper Universe` watchlist enables BTC-USD and SPY. The registry can represent stocks, ETFs, mutual funds, cryptocurrencies, REITs, bond funds, and money-market or cash-equivalent funds with provider symbols, tradability, fractional support, dividend capability, precision, and market-hours metadata.
+
+Options, futures, forex, leverage, short selling, and live brokerage execution remain out of scope.
 
 ## Dashboard
 

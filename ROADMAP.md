@@ -25,6 +25,13 @@
 - Add dividend-aware total-return accounting without making yield the primary objective.
 - Add morning and end-of-day summaries stored in D1.
 
+## Milestone 5A: Universal Asset Foundation
+
+- Add a D1-backed asset registry for stocks, ETFs, mutual funds, crypto, REITs, bond funds, and money-market or cash-equivalent funds.
+- Add portfolio watchlists and watchlist assets for database-driven symbol selection.
+- Keep BTC-USD and SPY enabled as seed records instead of hardcoded trading-loop constants.
+- Keep options, futures, forex, leverage, short selling, and live execution out of scope.
+
 ## Milestone 4: Broker Adapter Prototypes
 
 - Add disabled-by-default broker adapters.

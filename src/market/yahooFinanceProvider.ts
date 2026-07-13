@@ -1,4 +1,5 @@
 import type { AssetClass, MarketCandle, MarketDataset, MarketPrice } from "../shared/types.ts";
+import type { AssetRegistryRecord } from "./assets.ts";
 
 interface YahooChartResponse {
   chart?: {
@@ -23,7 +24,7 @@ interface YahooChartResponse {
   };
 }
 
-const SYMBOLS: Record<string, AssetClass> = {
+const KNOWN_SYMBOLS: Record<string, AssetClass> = {
   "BTC-USD": "crypto",
   SPY: "etf"
 };
@@ -42,22 +43,20 @@ export class YahooFinanceMarketDataProvider {
 
   async getMarketData(symbol: string): Promise<MarketDataset> {
     const normalized = normalizeSymbol(symbol);
+    const assetClass = inferAssetClass(normalized);
 
-    if (!SYMBOLS[normalized]) {
-      return invalidDataset(normalized, this.name, `Unsupported symbol: ${symbol}`, `Unsupported market symbol: ${symbol}`);
-    }
-
-    if (normalized === "BTC-USD") {
+    if (assetClass === "crypto" && normalized === "BTC-USD") {
       try {
         return await this.fetchCoinbaseBtc();
       } catch (error) {
         const technicalError = error instanceof Error ? error.message : "Unknown Coinbase market data error";
         try {
           const payload = await this.fetchYahooWithRetry(normalized);
-          return parseYahooChart(normalized, SYMBOLS[normalized], this.name, payload);
+          return parseYahooChart(normalized, assetClass, this.name, payload);
         } catch (fallbackError) {
           return invalidDataset(
             normalized,
+            assetClass,
             "public_market_data_fallback",
             "Market data temporarily unavailable; no trade was made.",
             `${technicalError}; Yahoo fallback failed: ${fallbackError instanceof Error ? fallbackError.message : "Unknown error"}`
@@ -68,18 +67,27 @@ export class YahooFinanceMarketDataProvider {
 
     try {
       const payload = await this.fetchYahooWithRetry(normalized);
-      const yahoo = parseYahooChart(normalized, SYMBOLS[normalized], this.name, payload);
+      const yahoo = parseYahooChart(normalized, assetClass, this.name, payload);
       if (yahoo.validated) {
         return yahoo;
       }
 
-      return this.fetchFallback(normalized, yahoo.technicalError ?? yahoo.error);
+      return this.fetchFallback(normalized, assetClass, yahoo.technicalError ?? yahoo.error);
     } catch (error) {
-      return this.fetchFallback(normalized, error instanceof Error ? error.message : "Unknown market data error");
+      return this.fetchFallback(normalized, assetClass, error instanceof Error ? error.message : "Unknown market data error");
     }
   }
 
-  private async fetchFallback(symbol: string, previousError?: string): Promise<MarketDataset> {
+  async getMarketDataForAsset(asset: AssetRegistryRecord): Promise<MarketDataset> {
+    const data = await this.getMarketData(asset.providerSymbol);
+    return {
+      ...data,
+      symbol: asset.symbol,
+      assetClass: asset.assetType
+    };
+  }
+
+  private async fetchFallback(symbol: string, assetClass: AssetClass, previousError?: string): Promise<MarketDataset> {
     try {
       if (symbol === "BTC-USD") {
         return await this.fetchCoinbaseBtc(previousError);
@@ -91,6 +99,7 @@ export class YahooFinanceMarketDataProvider {
     } catch (error) {
       return invalidDataset(
         symbol,
+        assetClass,
         "public_market_data_fallback",
         "Market data temporarily unavailable; no trade was made.",
         `${previousError ?? "Primary provider failed"}; fallback failed: ${
@@ -99,7 +108,7 @@ export class YahooFinanceMarketDataProvider {
       );
     }
 
-    return invalidDataset(symbol, this.name, "Market data temporarily unavailable; no trade was made.", previousError ?? "No fallback available.");
+    return invalidDataset(symbol, assetClass, this.name, "Market data temporarily unavailable; no trade was made.", previousError ?? "No fallback available.");
   }
 
   private async fetchYahooWithRetry(symbol: string): Promise<YahooChartResponse> {
@@ -237,7 +246,7 @@ function parseYahooChart(
 ): MarketDataset {
   const result = payload.chart?.result?.[0];
   if (!result) {
-    return invalidDataset(symbol, source, payload.chart?.error?.description ?? "Missing chart result");
+    return invalidDataset(symbol, assetClass, source, payload.chart?.error?.description ?? "Missing chart result");
   }
 
   const quote = result.indicators?.quote?.[0];
@@ -292,10 +301,16 @@ function parseYahooChart(
   };
 }
 
-function invalidDataset(symbol: string, source: string, userMessage: string, technicalError = userMessage): MarketDataset {
+function invalidDataset(
+  symbol: string,
+  assetClass: AssetClass,
+  source: string,
+  userMessage: string,
+  technicalError = userMessage
+): MarketDataset {
   return {
     symbol,
-    assetClass: SYMBOLS[symbol] ?? "stock",
+    assetClass,
     priceUsd: 0,
     asOf: new Date(0).toISOString(),
     source,
@@ -308,6 +323,16 @@ function invalidDataset(symbol: string, source: string, userMessage: string, tec
     status: "unavailable",
     quality: "invalid"
   };
+}
+
+function inferAssetClass(symbol: string): AssetClass {
+  if (KNOWN_SYMBOLS[symbol]) {
+    return KNOWN_SYMBOLS[symbol];
+  }
+  if (symbol.endsWith("-USD")) {
+    return "crypto";
+  }
+  return "stock";
 }
 
 function parseStooqHistory(csv: string): MarketCandle[] {

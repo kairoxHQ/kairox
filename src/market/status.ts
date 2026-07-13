@@ -1,6 +1,6 @@
 import { listRows } from "../shared/db.ts";
 import { userMessageForMarketData } from "../shared/messages.ts";
-import type { MarketCandle, MarketDataset } from "../shared/types.ts";
+import type { AssetClass, MarketCandle, MarketDataset } from "../shared/types.ts";
 
 export interface MarketDataStatus {
   symbol: string;
@@ -16,7 +16,7 @@ export interface MarketDataStatus {
 
 interface SnapshotRow {
   symbol: string;
-  assetClass: "stock" | "etf" | "crypto" | "option" | "future" | "cash";
+  assetClass: AssetClass;
   source: string;
   priceUsd: number;
   priceAsOf: string;
@@ -26,11 +26,11 @@ interface SnapshotRow {
 }
 
 export function cacheFreshnessSeconds(symbol: string): number {
-  return symbol === "BTC-USD" ? 5 * 60 : 30 * 60;
+  return isCryptoSymbol(symbol) ? 5 * 60 : 30 * 60;
 }
 
 export function lastKnownGoodMaxAgeSeconds(symbol: string): number {
-  return symbol === "BTC-USD" ? 30 * 60 : 4 * 24 * 60 * 60;
+  return isCryptoSymbol(symbol) ? 30 * 60 : 4 * 24 * 60 * 60;
 }
 
 export function shouldUseCachedSnapshot(symbol: string, ageSeconds: number): boolean {
@@ -195,4 +195,8 @@ function parseCandles(value: string): MarketCandle[] {
   } catch {
     return [];
   }
+}
+
+function isCryptoSymbol(symbol: string): boolean {
+  return symbol.toUpperCase().endsWith("-USD");
 }

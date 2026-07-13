@@ -1,17 +1,49 @@
 import type { AssetClass } from "../shared/types.ts";
+import type { MarketHoursMode } from "./assets.ts";
 
-export function canExecuteAt(assetClass: AssetClass, now: Date): { allowed: boolean; reason?: string } {
-  if (assetClass === "crypto") {
+export function canExecuteAt(
+  assetClass: AssetClass,
+  now: Date,
+  marketHoursMode: MarketHoursMode = defaultMarketHoursMode(assetClass)
+): { allowed: boolean; reason?: string } {
+  if (marketHoursMode === "disabled") {
+    return { allowed: false, reason: "This asset is disabled for paper execution." };
+  }
+
+  if (marketHoursMode === "continuous") {
     return { allowed: true };
   }
 
-  if (assetClass === "stock" || assetClass === "etf") {
+  if (marketHoursMode === "us_regular") {
     return isRegularUsMarketHours(now)
       ? { allowed: true }
-      : { allowed: false, reason: "Regular US stock-market hours are closed, so stock and ETF paper executions are blocked." };
+      : { allowed: false, reason: "Regular US market hours are closed, so this paper execution is blocked." };
+  }
+
+  if (marketHoursMode === "fund_end_of_day") {
+    return isRegularUsMarketHours(now)
+      ? { allowed: true }
+      : { allowed: false, reason: "Fund paper execution is limited to regular US market hours and end-of-day pricing." };
+  }
+
+  if (marketHoursMode === "cash_equivalent") {
+    return { allowed: false, reason: "Cash-equivalent assets are tracked but not opened by the paper strategy." };
   }
 
   return { allowed: false, reason: "This asset class is not enabled for paper execution yet." };
+}
+
+function defaultMarketHoursMode(assetClass: AssetClass): MarketHoursMode {
+  if (assetClass === "crypto") {
+    return "continuous";
+  }
+  if (assetClass === "stock" || assetClass === "etf" || assetClass === "reit" || assetClass === "bond_fund") {
+    return "us_regular";
+  }
+  if (assetClass === "mutual_fund") {
+    return "fund_end_of_day";
+  }
+  return "cash_equivalent";
 }
 
 export function isRegularUsMarketHours(now: Date): boolean {

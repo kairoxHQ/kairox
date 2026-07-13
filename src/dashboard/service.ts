@@ -327,12 +327,17 @@ function round(value: number): number {
 }
 
 function positionRow(position: { symbol: string; assetClass?: string; quantity: number; marketValueUsd: number }): string {
-  const unit = position.symbol === "BTC-USD" ? "BTC" : position.assetClass === "stock" || position.assetClass === "etf" ? "shares" : "units";
+  const unit =
+    position.assetClass === "crypto"
+      ? position.symbol.split("-")[0]
+      : position.assetClass === "stock" || position.assetClass === "etf" || position.assetClass === "reit"
+        ? "shares"
+        : "units";
   return row(position.symbol, `${formatQuantity(position.quantity, position.symbol)} ${unit} · ${money(position.marketValueUsd)}`);
 }
 
-function formatQuantity(quantity: number, symbol: string): string {
-  if (symbol === "BTC-USD") {
+function formatQuantity(quantity: number, symbol: string, assetClass?: string): string {
+  if (assetClass === "crypto" || symbol.includes("-")) {
     return quantity.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
   }
   return quantity.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");

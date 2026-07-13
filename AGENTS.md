@@ -24,4 +24,4 @@ Kairox is paper-first. Keep all implementation choices aligned with safe, broker
 
 ## Current Scope
 
-This milestone is a foundation only. It supports one local user named Tim, a `$20` paper portfolio, a Bitcoin buy-and-hold benchmark, and a cash benchmark.
+This milestone remains paper-only. It supports one local user named Tim, a `$20` paper portfolio, a Bitcoin buy-and-hold benchmark, a cash benchmark, and a database-driven asset registry/watchlist foundation.

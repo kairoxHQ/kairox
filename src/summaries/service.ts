@@ -1,5 +1,6 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { calculatePerformance } from "../portfolio/performance.ts";
+import { listEnabledWatchlistAssets } from "../market/assets.ts";
 import { getMarketDataStatuses } from "../market/status.ts";
 import { sanitizeForUser } from "../shared/messages.ts";
 
@@ -59,17 +60,19 @@ export async function generateSummaries(db: D1Database, now = new Date()): Promi
     )
   );
   const marketStatuses = await getMarketDataStatuses(db) as Array<{ symbol: string; userMessage: string }>;
+  const watchlistAssets = await listEnabledWatchlistAssets(db);
+  const watchedSymbols = watchlistAssets.map((asset) => asset.symbol);
   const marketStatusText = marketStatuses.length
     ? marketStatuses.map((status) => `${status.symbol}: ${summaryStatusMessage(status)}`).join("; ")
     : "none recorded";
 
   await upsertSummary(db, "morning", date, "Morning Kairox paper-trading summary", [
     `Portfolio value: $${performance.totalValueUsd}.`,
-    `Overnight BTC activity is reflected in the latest BTC-USD market snapshot when available.`,
+    `Overnight crypto activity is reflected in the latest crypto market snapshots when available.`,
     `Previous result: total return $${performance.totalReturnUsd}.`,
     `Positions held: ${positions.length ? positions.map((position) => position.symbol).join(", ") : "none"}.`,
     `Market data status: ${marketStatusText}.`,
-    "Watching BTC-USD and SPY for validated momentum, moving-average, RSI, risk, and market-hours conditions."
+    `Watching ${watchedSymbols.length ? watchedSymbols.join(", ") : "the enabled asset watchlist"} for validated momentum, moving-average, RSI, risk, and market-hours conditions.`
   ], { performance, positions, marketStatuses });
 
   await upsertSummary(db, "end_of_day", date, "End-of-day Kairox paper-trading summary", [
