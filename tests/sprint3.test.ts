@@ -131,6 +131,39 @@ test("dashboard HTML contains portfolio sections without exposing secrets", () =
   assert.doesNotMatch(html, /PAPER_RUN_SECRET/);
 });
 
+test("dashboard layout uses one centered shell and predictable grid breakpoints", () => {
+  const html = renderDashboardHtml({
+    settings: { automationPaused: false },
+    performance: {
+      totalValueUsd: 20,
+      cashUsd: 20,
+      totalReturnUsd: 0,
+      priceReturnUsd: 0,
+      dividendReturnUsd: 0,
+      tradeCount: 0,
+      maxDrawdownPct: 0,
+      benchmarkReturns: []
+    },
+    positions: [],
+    recommendations: [],
+    journal: [],
+    trades: [],
+    scheduledRuns: [],
+    summaries: [],
+    rejectedOpportunities: []
+  });
+
+  assert.match(html, /--page-max: 1360px/);
+  assert.match(html, /<div class="page-shell header-inner">/);
+  assert.match(html, /<main class="page-shell">/);
+  assert.match(html, /margin-inline: auto/);
+  assert.match(html, /grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(html, /@media \(max-width: 1100px\)/);
+  assert.match(html, /@media \(max-width: 640px\)/);
+  assert.match(html, /nav \{ display: flex; justify-content: center; flex-wrap: wrap/);
+  assert.match(html, /a:focus-visible/);
+});
+
 test("dashboard timestamp formatter converts UTC to Eastern with daylight saving label", () => {
   const formatted = formatDashboardTimestamp(
     "2026-07-13T06:33:00.000Z",

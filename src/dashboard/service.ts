@@ -291,25 +291,40 @@ export function renderDashboardHtml(data: {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kairox Dashboard</title>
   <style>
-    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; background: #f4f6f8; color: #17202a; }
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #f4f6f8;
+      color: #17202a;
+      --page-max: 1360px;
+      --page-pad: clamp(16px, 3.5vw, 40px);
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+    }
+    * { box-sizing: border-box; }
+    html, body { max-width: 100%; overflow-x: clip; }
     body { margin: 0; line-height: 1.45; }
-    header { padding: 22px clamp(16px, 4vw, 44px); background: #121c2e; color: white; }
-    main { padding: 18px clamp(14px, 4vw, 44px) 44px; display: grid; gap: 18px; max-width: 1180px; margin: 0 auto; }
+    header { padding-block: 24px 18px; background: #121c2e; color: white; }
+    .page-shell { width: 100%; max-width: var(--page-max); margin-inline: auto; padding-inline: var(--page-pad); }
+    .header-inner { display: grid; justify-items: center; text-align: center; gap: var(--space-2); overflow: hidden; }
+    main.page-shell { padding-block: var(--space-5) 44px; display: grid; gap: var(--space-5); min-width: 0; }
     h1 { margin: 0 0 6px; font-size: clamp(1.55rem, 5vw, 2.35rem); letter-spacing: 0; }
     h2 { margin: 0 0 12px; font-size: 1.02rem; letter-spacing: 0; }
     .sub { color: #c8d2e2; margin: 0; }
-    .summary { display: grid; grid-template-columns: minmax(220px, 1.35fr) repeat(3, minmax(130px, 1fr)); gap: 12px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
-    .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-    .panel { background: white; border: 1px solid #dce3eb; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+    .summary, .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); align-items: stretch; }
+    .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); align-items: start; }
+    .panel { background: white; border: 1px solid #dce3eb; border-radius: 8px; padding: var(--space-4); box-shadow: 0 1px 2px rgba(16,24,40,.04); min-width: 0; overflow: hidden; }
     .metric { font-size: clamp(1.35rem, 5vw, 2rem); font-weight: 740; overflow-wrap: anywhere; }
     .metric-sm { font-size: 1.05rem; font-weight: 700; overflow-wrap: anywhere; }
     .label { color: #657386; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
-    .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid #edf0f4; padding: 10px 0; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); border-top: 1px solid #edf0f4; padding: var(--space-3) 0; }
     .row:first-child { border-top: 0; }
-    .card-list { display: grid; gap: 10px; }
-    .mini-card { border: 1px solid #edf0f4; border-radius: 8px; padding: 12px; background: #fbfcfd; }
-    .mini-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-bottom: 6px; }
+    .card-list { display: grid; gap: var(--space-3); }
+    .mini-card { border: 1px solid #edf0f4; border-radius: 8px; padding: var(--space-3); background: #fbfcfd; min-width: 0; }
+    .mini-head { display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; margin-bottom: 6px; }
     .muted { color: #64748b; font-size: .86rem; }
     .pill, .badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 9px; font-size: .76rem; font-weight: 700; white-space: nowrap; }
     .pill { background: #e8f1ff; color: #123d75; }
@@ -323,41 +338,53 @@ export function renderDashboardHtml(data: {
     .status-market-closed { background: #edf2f7; color: #425466; }
     .status-stale { background: #ffe5d0; color: #8a3b12; }
     .status-unavailable { background: #ffe1e1; color: #9f1c1c; }
-    .ticker-strip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: thin; }
-    .ticker-item { min-width: 178px; flex: 0 0 auto; border: 1px solid #dce3eb; border-radius: 8px; padding: 10px; color: inherit; text-decoration: none; background: #fbfcfd; }
-    .ticker-top, .quote-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .ticker-strip { display: flex; gap: var(--space-3); width: 100%; max-width: 100%; overflow-x: auto; overflow-y: hidden; padding-block: 2px 6px; scrollbar-width: thin; scroll-padding-inline: var(--space-3); contain: layout paint; }
+    .ticker-item { width: 190px; min-height: 126px; flex: 0 0 190px; border: 1px solid #dce3eb; border-radius: 8px; padding: var(--space-3); color: inherit; text-decoration: none; background: #fbfcfd; display: grid; gap: 4px; align-content: start; }
+    .ticker-top, .quote-line { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); }
     .ticker-value { font-weight: 760; font-size: 1rem; }
     .quote-up { color: #12633a; }
     .quote-down { color: #9f2f22; }
     .quote-flat { color: #425466; }
-    .holding-quotes { display: grid; gap: 10px; }
-    .holding-profile { border-top: 1px solid #edf0f4; padding-top: 10px; }
+    .holding-quotes { display: grid; gap: var(--space-3); }
+    .holding-profile { border-top: 1px solid #edf0f4; padding-top: var(--space-3); }
     .holding-profile:first-child { border-top: 0; padding-top: 0; }
-    .holding-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+    .holding-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-3); }
     .holding-card { color: inherit; text-decoration: none; }
     .history { width: 100%; height: 150px; display: block; }
-    .filters { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; }
+    .filters { display: flex; gap: var(--space-2); overflow-x: auto; padding-bottom: var(--space-3); scrollbar-width: thin; }
     .filter { border: 1px solid #cfd8e3; background: #f7fafc; color: #1f2a37; border-radius: 999px; padding: 6px 10px; font-size: .78rem; font-weight: 700; }
-    .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; }
+    .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
     .axis { stroke: #d9e1ea; stroke-width: 1; }
     .line { fill: none; stroke: #246bfe; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
-    nav { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0 0; }
+    nav { display: flex; justify-content: center; flex-wrap: wrap; gap: var(--space-2); width: 100%; max-width: 100%; padding-top: var(--space-2); contain: layout paint; }
     nav a { color: white; text-decoration: none; border: 1px solid rgba(255,255,255,.3); border-radius: 999px; padding: 6px 10px; white-space: nowrap; }
+    a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 3px solid #7db2ff; outline-offset: 3px; }
     pre { white-space: pre-wrap; margin: 0; font-family: inherit; line-height: 1.45; }
-    @media (max-width: 780px) { .summary, .two-col { grid-template-columns: 1fr; } .row { align-items: flex-start; flex-direction: column; gap: 4px; } }
+    @media (max-width: 1100px) { .summary, .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .two-col { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) {
+      :root { --page-pad: 14px; }
+      header { padding-block: 20px 14px; }
+      .summary, .grid, .asset-grid, .holding-grid { grid-template-columns: 1fr; }
+      .row { align-items: flex-start; flex-direction: column; gap: 4px; }
+      nav { justify-content: flex-start; flex-wrap: wrap; overflow: hidden; padding-bottom: 2px; scrollbar-width: thin; }
+      .header-inner { text-align: left; justify-items: start; }
+      .ticker-item { flex-basis: 166px; width: 166px; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Kairox</h1>
-    <p class="sub">Paper portfolio dashboard. Live trading is disabled.</p>
-    <nav>
-      <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
-      <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-      <a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
-    </nav>
+    <div class="page-shell header-inner">
+      <h1>Kairox</h1>
+      <p class="sub">Paper portfolio dashboard. Live trading is disabled.</p>
+      <nav>
+        <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
+        <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
+        <a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+      </nav>
+    </div>
   </header>
-  <main>
+  <main class="page-shell">
     ${section("market-ticker", "Market Ticker", `<div class="ticker-strip" data-market-ticker>${(data.marketTicker?.instruments ?? []).map(tickerItem).join("")}</div>`)}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
