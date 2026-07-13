@@ -9,6 +9,7 @@ import {
   upsertMarketDataStatus
 } from "../market/status.ts";
 import { calculatePerformance, recordEquityHistory } from "../portfolio/performance.ts";
+import { getPortfolioProfile, listPortfolioProfiles, type PortfolioProfile } from "../portfolio/profiles.ts";
 import { assessPaperTrade } from "../risk/checks.ts";
 import { decidePaperAction, estimateTransactionCost, type StrategyDecision } from "../strategy/paperStrategy.ts";
 import { calculateIndicators } from "../strategy/indicators.ts";
@@ -52,12 +53,15 @@ export interface PaperRunOptions {
   runKey?: string;
   now?: Date;
   allowExecution?: boolean;
+  portfolioId?: string;
 }
 
 export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}): Promise<unknown> {
   const now = options.now ?? new Date();
   const runStartedAt = now.toISOString();
-  const runKey = options.runKey ?? `paper:${runStartedAt.slice(0, 16)}`;
+  const portfolioId = options.portfolioId ?? TIM_PORTFOLIO_ID;
+  const profile = await getPortfolioProfile(env.DB, portfolioId);
+  const runKey = options.runKey ?? `paper:${profile.profileKey}:${runStartedAt.slice(0, 16)}`;
   const executionAllowedBySystem = options.allowExecution ?? true;
   const existingRun = await env.DB.prepare("SELECT summary_json AS summaryJson FROM strategy_runs WHERE run_key = ?")
     .bind(runKey)
@@ -68,7 +72,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   }
 
   const provider = new YahooFinanceMarketDataProvider();
-  const assets = await listEnabledWatchlistAssets(env.DB);
+  const assets = await listEnabledWatchlistAssets(env.DB, portfolioId);
   const evaluated: RankedOpportunity[] = [];
   let openedNewPositionThisRun = false;
 
@@ -78,21 +82,22 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     await recordMarketSnapshot(env.DB, marketData);
     await upsertMarketDataStatus(env.DB, marketStatusFromDataset(marketData, new Date().toISOString()));
 
-    const portfolio = await getPortfolioRow(env.DB);
-    const position = await getPosition(env.DB, symbol);
-    const openPositions = await getOpenPositions(env.DB);
+    const portfolio = await getPortfolioRow(env.DB, portfolioId);
+    const position = await getPosition(env.DB, portfolioId, symbol);
+    const openPositions = await getOpenPositions(env.DB, portfolioId);
     const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[symbol, marketData.priceUsd]]));
     const exposure = exposureForAsset(asset, openPositions, portfolioState.totalValueUsd, portfolioState.drawdownPct);
-    const screen = screenAsset({ asset, marketData, now, exposure });
+    const screen = adjustScreenForProfile(screenAsset({ asset, marketData, now, exposure }), profile);
     const decision = screen.eligible ? decidePaperAction({
       marketData,
       hasPosition: !!position && position.quantity > 0
     }) : screenedOutDecision(marketData, screen);
+    const profileDecision = applyProfileDecisionPolicy(decision, profile);
 
     evaluated.push({
       asset,
       marketData,
-      decision,
+      decision: profileDecision,
       screen,
       positionValueUsd: position?.marketValueUsd ?? 0,
       hasPosition: !!position && position.quantity > 0
@@ -104,11 +109,11 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
   for (const item of ranked) {
     const { asset, marketData, decision, screen } = item;
-    const position = await getPosition(env.DB, asset.symbol);
-    const portfolio = await getPortfolioRow(env.DB);
+    const position = await getPosition(env.DB, portfolioId, asset.symbol);
+    const portfolio = await getPortfolioRow(env.DB, portfolioId);
     const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[asset.symbol, marketData.priceUsd]]));
 
-    const duplicateSignal = await hasProcessedSignal(env.DB, decision.signalKey);
+    const duplicateSignal = await hasProcessedSignal(env.DB, portfolioId, decision.signalKey);
     const executionGateReasons: string[] = [];
     const isExecutionAction = decision.action === "BUY" || decision.action === "SELL";
     if (isExecutionAction && !executionAllowedBySystem) {
@@ -126,7 +131,9 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     }
 
     const proposedTradeValueUsd =
-      decision.action === "BUY" ? Math.min(portfolioState.totalValueUsd * 0.1, portfolioState.cashUsd) : position?.marketValueUsd ?? 0;
+      decision.action === "BUY"
+        ? Math.min(portfolioState.totalValueUsd * profile.parameters.maxNewTradePct, Math.max(0, portfolioState.cashUsd - portfolioState.totalValueUsd * profile.parameters.cashReservePct))
+        : position?.marketValueUsd ?? 0;
     const baseRisk = assessPaperTrade({
       action: decision.action,
       marketData,
@@ -137,7 +144,10 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
       drawdownPct: portfolioState.drawdownPct,
       duplicateSignal,
       openedNewPositionThisRun,
-      hasPosition: !!position && position.quantity > 0
+      hasPosition: !!position && position.quantity > 0,
+      maxNewTradePct: profile.parameters.maxNewTradePct,
+      maxPositionPct: profile.parameters.maxPositionPct,
+      drawdownBlockPct: profile.parameters.drawdownBlockPct
     });
     const risk =
       executionGateReasons.length > 0
@@ -148,13 +158,13 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
           }
         : baseRisk;
 
-    await recordRecommendationAndJournal(env.DB, marketData, decision, risk, screen);
+    await recordRecommendationAndJournal(env.DB, portfolioId, marketData, decision, risk, screen);
 
     let executed = false;
     let reason = risk.reasons.join(" ");
 
     if (risk.allowed && (decision.action === "BUY" || decision.action === "SELL")) {
-      const execution = await executePaperTrade(env.DB, marketData, decision, proposedTradeValueUsd, position);
+      const execution = await executePaperTrade(env.DB, portfolioId, marketData, decision, proposedTradeValueUsd, position);
       executed = execution.executed;
       reason = execution.reason;
       if (executed && decision.action === "BUY" && !position) {
@@ -173,12 +183,18 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     });
   }
 
-  await updateDailyAndBenchmarks(env.DB);
-  const performance = await recordEquityHistory(env.DB, runStartedAt);
+  await updateDailyAndBenchmarks(env.DB, portfolioId);
+  const performance = await recordEquityHistory(env.DB, runStartedAt, portfolioId);
   await generateSummaries(env.DB, now);
-  const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB), new Map());
+  const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB, portfolioId), new Map(), portfolioId);
   const summary = {
     runKey,
+    profile: {
+      portfolioId,
+      profileKey: profile.profileKey,
+      displayName: profile.displayName,
+      riskPosture: profile.riskPosture
+    },
     startedAt: runStartedAt,
     trigger: options.trigger ?? "manual",
     paperOnly: true,
@@ -193,6 +209,25 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     .run();
 
   return summary;
+}
+
+export async function runAllPaperProfiles(env: Env, options: Omit<PaperRunOptions, "portfolioId" | "runKey"> = {}): Promise<unknown> {
+  const profiles = await listPortfolioProfiles(env.DB);
+  const startedAt = (options.now ?? new Date()).toISOString();
+  const results = [];
+  for (const profile of profiles) {
+    results.push(await runPaperStrategy(env, {
+      ...options,
+      portfolioId: profile.portfolioId,
+      runKey: `paper:${profile.profileKey}:${startedAt.slice(0, 16)}`
+    }));
+  }
+  return {
+    startedAt,
+    paperOnly: true,
+    liveTradingEnabled: false,
+    profiles: results
+  };
 }
 
 export async function getMarket(db: D1Database): Promise<unknown> {
@@ -251,8 +286,8 @@ export async function getTrades(db: D1Database): Promise<unknown> {
 }
 
 export async function getPerformance(db: D1Database): Promise<unknown> {
-  const portfolio = await getPortfolioRow(db);
-  const state = await calculatePortfolioState(db, portfolio, new Map());
+  const portfolio = await getPortfolioRow(db, TIM_PORTFOLIO_ID);
+  const state = await calculatePortfolioState(db, portfolio, new Map(), TIM_PORTFOLIO_ID);
   const snapshots = await listRows(
     db.prepare(
       `SELECT snapshot_date AS snapshotDate, cash_usd AS cashUsd,
@@ -326,10 +361,10 @@ export async function getOpportunities(db: D1Database): Promise<unknown> {
   };
 }
 
-async function getPortfolioRow(db: D1Database): Promise<PortfolioRow> {
+async function getPortfolioRow(db: D1Database, portfolioId: string): Promise<PortfolioRow> {
   const row = await db
     .prepare("SELECT id, cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd FROM portfolios WHERE id = ?")
-    .bind(TIM_PORTFOLIO_ID)
+    .bind(portfolioId)
     .first<PortfolioRow>();
 
   if (!row) {
@@ -339,7 +374,7 @@ async function getPortfolioRow(db: D1Database): Promise<PortfolioRow> {
   return row;
 }
 
-async function getPosition(db: D1Database, symbol: string): Promise<PositionRow | null> {
+async function getPosition(db: D1Database, portfolioId: string, symbol: string): Promise<PositionRow | null> {
   return db
     .prepare(
       `SELECT id, symbol, asset_class AS assetClass, quantity,
@@ -348,11 +383,11 @@ async function getPosition(db: D1Database, symbol: string): Promise<PositionRow 
        FROM positions
        WHERE portfolio_id = ? AND symbol = ? AND quantity > 0`
     )
-    .bind(TIM_PORTFOLIO_ID, symbol)
+    .bind(portfolioId, symbol)
     .first<PositionRow>();
 }
 
-async function getOpenPositions(db: D1Database): Promise<PositionRow[]> {
+async function getOpenPositions(db: D1Database, portfolioId: string): Promise<PositionRow[]> {
   return listRows<PositionRow>(
     db
       .prepare(
@@ -362,7 +397,7 @@ async function getOpenPositions(db: D1Database): Promise<PositionRow[]> {
          FROM positions
          WHERE portfolio_id = ? AND quantity > 0`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
 }
 
@@ -437,7 +472,47 @@ function screenedOutDecision(marketData: MarketDataset, screen: ScreenResult): S
   };
 }
 
-async function calculatePortfolioState(db: D1Database, portfolio: PortfolioRow, prices: Map<string, number>) {
+function applyProfileDecisionPolicy(decision: StrategyDecision, profile: PortfolioProfile): StrategyDecision {
+  if (decision.action !== "BUY") {
+    return decision;
+  }
+  if (decision.confidenceScore >= profile.parameters.minConfidence) {
+    return decision;
+  }
+  return {
+    ...decision,
+    action: "DO_NOTHING",
+    confidenceScore: Math.max(decision.confidenceScore, 0.75),
+    riskScore: 0.05,
+    explanation: `${profile.displayName} requires at least ${Math.round(profile.parameters.minConfidence * 100)}% confidence before opening a new paper position.`
+  };
+}
+
+function adjustScreenForProfile(screen: ScreenResult, profile: PortfolioProfile): ScreenResult {
+  let score = screen.score;
+  const reasons: string[] = [];
+  if (screen.assetType === "crypto") {
+    score *= profile.parameters.cryptoPreference;
+    if (profile.profileKey === "kairox_conservative" && screen.currentExposurePct > 0.05) {
+      reasons.push("Conservative profile limits crypto exposure.");
+    }
+  }
+  if (screen.assetType === "bond_fund" || screen.symbol === "SCHD") {
+    score *= profile.parameters.dividendPreference;
+  }
+  if (profile.profileKey === "kairox_conservative" && screen.categoryExposurePct > 0.25) {
+    reasons.push("Conservative profile applies stronger concentration protection.");
+  }
+  const eligible = screen.eligible && reasons.length === 0;
+  return {
+    ...screen,
+    eligible,
+    score: Math.round(Math.max(0, Math.min(100, score)) * 10000) / 10000,
+    reason: eligible ? screen.reason : [screen.reason, ...reasons].join(" ")
+  };
+}
+
+async function calculatePortfolioState(db: D1Database, portfolio: PortfolioRow, prices: Map<string, number>, portfolioId = TIM_PORTFOLIO_ID) {
   const positions = await listRows<PositionRow>(
     db
       .prepare(
@@ -447,7 +522,7 @@ async function calculatePortfolioState(db: D1Database, portfolio: PortfolioRow, 
          FROM positions
          WHERE portfolio_id = ? AND quantity > 0`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
   const positionsValueUsd = positions.reduce((sum, position) => {
     const price = prices.get(position.symbol) ?? position.currentPriceUsd;
@@ -456,7 +531,7 @@ async function calculatePortfolioState(db: D1Database, portfolio: PortfolioRow, 
   const totalValueUsd = portfolio.cashUsd + positionsValueUsd;
   const highWater = await db
     .prepare("SELECT MAX(total_value_usd) AS highWater FROM daily_snapshots WHERE portfolio_id = ?")
-    .bind(TIM_PORTFOLIO_ID)
+    .bind(portfolioId)
     .first<{ highWater: number | null }>();
   const highWaterValue = Math.max(highWater?.highWater ?? portfolio.startingBalanceUsd, portfolio.startingBalanceUsd);
   const drawdownPct = highWaterValue > 0 ? Math.max(0, (highWaterValue - totalValueUsd) / highWaterValue) : 0;
@@ -494,6 +569,7 @@ async function recordMarketSnapshot(db: D1Database, data: MarketDataset): Promis
 
 async function recordRecommendationAndJournal(
   db: D1Database,
+  portfolioId: string,
   marketData: MarketDataset,
   decision: StrategyDecision,
   risk: { allowed: boolean; riskScore: number; reasons: string[] },
@@ -501,8 +577,8 @@ async function recordRecommendationAndJournal(
 ): Promise<void> {
   const action = risk.allowed ? decision.action : "DO_NOTHING";
   const explanation = risk.allowed ? decision.explanation : `Risk checks blocked execution: ${risk.reasons.join(" ")}`;
-  const recommendationId = id("rec", decision.signalKey);
-  const journalId = id("journal", decision.signalKey);
+  const recommendationId = id("rec", `${portfolioId}:${decision.signalKey}`);
+  const journalId = id("journal", `${portfolioId}:${decision.signalKey}`);
 
   await db
     .prepare(
@@ -515,7 +591,7 @@ async function recordRecommendationAndJournal(
     )
     .bind(
       recommendationId,
-      TIM_PORTFOLIO_ID,
+      portfolioId,
       marketData.symbol,
       action,
       explanation,
@@ -546,7 +622,7 @@ async function recordRecommendationAndJournal(
     )
     .bind(
       journalId,
-      TIM_PORTFOLIO_ID,
+      portfolioId,
       recommendationId,
       action,
       explanation,
@@ -565,22 +641,23 @@ async function recordRecommendationAndJournal(
     .run();
 }
 
-async function hasProcessedSignal(db: D1Database, signalKey: string): Promise<boolean> {
-  const row = await db.prepare("SELECT id FROM trades WHERE signal_key = ?").bind(signalKey).first<{ id: string }>();
+async function hasProcessedSignal(db: D1Database, portfolioId: string, signalKey: string): Promise<boolean> {
+  const row = await db.prepare("SELECT id FROM trades WHERE portfolio_id = ? AND signal_key = ?").bind(portfolioId, signalKey).first<{ id: string }>();
   return !!row;
 }
 
 async function executePaperTrade(
   db: D1Database,
+  portfolioId: string,
   marketData: MarketDataset,
   decision: StrategyDecision,
   proposedTradeValueUsd: number,
   position: PositionRow | null
 ): Promise<{ executed: boolean; reason: string }> {
   const side = decision.action;
-  const orderId = id("order", decision.signalKey);
-  const tradeId = id("trade", decision.signalKey);
-  const idempotencyKey = `paper:${decision.signalKey}`;
+  const orderId = id("order", `${portfolioId}:${decision.signalKey}`);
+  const tradeId = id("trade", `${portfolioId}:${decision.signalKey}`);
+  const idempotencyKey = `paper:${portfolioId}:${decision.signalKey}`;
 
   if (side === "BUY") {
     const notional = proposedTradeValueUsd;
@@ -593,10 +670,10 @@ async function executePaperTrade(
       return { executed: false, reason: "Trade size too small after estimated costs." };
     }
 
-    await insertOrder(db, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision);
-    await insertTrade(db, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey);
-    await upsertPosition(db, marketData, quantity, fillPrice, position);
-    await updateCash(db, -(quantity * fillPrice + fee));
+    await insertOrder(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision);
+    await insertTrade(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey);
+    await upsertPosition(db, portfolioId, marketData, quantity, fillPrice, position);
+    await updateCash(db, portfolioId, -(quantity * fillPrice + fee));
     return { executed: true, reason: "Paper buy filled at validated market price with estimated costs." };
   }
 
@@ -606,10 +683,10 @@ async function executePaperTrade(
     const gross = quantity * fillPrice;
     const fee = Math.max(0.01, gross * FEE_RATE);
 
-    await insertOrder(db, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision);
-    await insertTrade(db, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey);
+    await insertOrder(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision);
+    await insertTrade(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey);
     await closePosition(db, position.id, marketData, fillPrice);
-    await updateCash(db, gross - fee);
+    await updateCash(db, portfolioId, gross - fee);
     return { executed: true, reason: "Paper sell filled at validated market price with estimated costs." };
   }
 
@@ -618,6 +695,7 @@ async function executePaperTrade(
 
 async function insertOrder(
   db: D1Database,
+  portfolioId: string,
   orderId: string,
   marketData: MarketDataset,
   side: "BUY" | "SELL",
@@ -637,7 +715,7 @@ async function insertOrder(
     )
     .bind(
       orderId,
-      TIM_PORTFOLIO_ID,
+      portfolioId,
       marketData.symbol,
       marketData.assetClass,
       side,
@@ -657,6 +735,7 @@ async function insertOrder(
 
 async function insertTrade(
   db: D1Database,
+  portfolioId: string,
   tradeId: string,
   orderId: string,
   marketData: MarketDataset,
@@ -673,18 +752,19 @@ async function insertTrade(
         quantity, price_usd, fees_usd, paper_only, signal_key
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(tradeId, orderId, TIM_PORTFOLIO_ID, marketData.symbol, marketData.assetClass, side, quantity, fillPrice, fee, 1, signalKey)
+    .bind(tradeId, orderId, portfolioId, marketData.symbol, marketData.assetClass, side, quantity, fillPrice, fee, 1, signalKey)
     .run();
 }
 
 async function upsertPosition(
   db: D1Database,
+  portfolioId: string,
   marketData: MarketDataset,
   quantity: number,
   fillPrice: number,
   existing: PositionRow | null
 ): Promise<void> {
-  const positionId = `pos_${marketData.symbol.replace(/[^A-Z0-9]/g, "_")}`;
+  const positionId = `pos_${portfolioId}_${marketData.symbol.replace(/[^A-Z0-9]/g, "_")}`;
   const existingQuantity = existing?.quantity ?? 0;
   const newQuantity = existingQuantity + quantity;
   const newAverage =
@@ -707,7 +787,7 @@ async function upsertPosition(
     )
     .bind(
       positionId,
-      TIM_PORTFOLIO_ID,
+      portfolioId,
       marketData.symbol,
       marketData.assetClass,
       newQuantity,
@@ -729,16 +809,16 @@ async function closePosition(db: D1Database, positionId: string, marketData: Mar
     .run();
 }
 
-async function updateCash(db: D1Database, deltaUsd: number): Promise<void> {
+async function updateCash(db: D1Database, portfolioId: string, deltaUsd: number): Promise<void> {
   await db
     .prepare("UPDATE portfolios SET cash_usd = cash_usd + ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(deltaUsd, TIM_PORTFOLIO_ID)
+    .bind(deltaUsd, portfolioId)
     .run();
 }
 
-async function updateDailyAndBenchmarks(db: D1Database): Promise<void> {
-  const portfolio = await getPortfolioRow(db);
-  const state = await calculatePortfolioState(db, portfolio, new Map());
+async function updateDailyAndBenchmarks(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<void> {
+  const portfolio = await getPortfolioRow(db, portfolioId);
+  const state = await calculatePortfolioState(db, portfolio, new Map(), portfolioId);
   const snapshotDate = new Date().toISOString().slice(0, 10);
   const latestBtc = await latestValidatedMarket(db, "BTC-USD");
   const latestSpy = await latestValidatedMarket(db, "SPY");
@@ -749,7 +829,7 @@ async function updateDailyAndBenchmarks(db: D1Database): Promise<void> {
         id, portfolio_id, snapshot_date, cash_usd, positions_value_usd, total_value_usd
       ) VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .bind(`snapshot_${snapshotDate}`, TIM_PORTFOLIO_ID, snapshotDate, state.cashUsd, state.positionsValueUsd, state.totalValueUsd)
+    .bind(`snapshot_${portfolioId}_${snapshotDate}`, portfolioId, snapshotDate, state.cashUsd, state.positionsValueUsd, state.totalValueUsd)
     .run();
 
   await db

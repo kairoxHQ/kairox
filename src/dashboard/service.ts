@@ -6,9 +6,10 @@ import { getMarketDataStatuses } from "../market/status.ts";
 import { sanitizeForUser } from "../shared/messages.ts";
 import { listEnabledWatchlistAssets } from "../market/assets.ts";
 import { getOpportunities } from "../paper/service.ts";
+import { getProfileComparison } from "../portfolio/profiles.ts";
 
 export async function getDashboardData(db: D1Database): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db),
@@ -127,7 +128,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              GROUP BY symbol
            ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
         )
-      )
+      ),
+      getProfileComparison(db)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -164,6 +166,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
       currentPositionValueUsd: positionsBySymbol.get(asset.symbol) ?? 0
     })),
     opportunities: opportunityData.opportunities
+    ,
+    profileComparison
   };
 }
 
@@ -215,6 +219,7 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
     equityHistory: Array<{ recordedAt: string; totalValueUsd: number }>;
     assetUniverse: Array<{ symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }>;
     opportunities: Array<DashboardOpportunity>;
+    profileComparison: DashboardComparison;
   };
   const html = renderDashboardHtml(data);
 
@@ -250,6 +255,7 @@ export function renderDashboardHtml(data: {
   equityHistory?: Array<{ recordedAt: string; totalValueUsd: number }>;
   assetUniverse?: Array<{ symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }>;
   opportunities?: Array<DashboardOpportunity>;
+  profileComparison?: DashboardComparison;
 }): string {
   const latestDecision = data.journal?.[0];
   const latestRecommendation = data.recommendations[0];
@@ -338,6 +344,7 @@ export function renderDashboardHtml(data: {
       ${section("market-data", "Market Data Status", (data.marketDataStatus ?? []).map((m) => marketStatusRow(m)).join(""))}
     </section>
     ${section("asset-universe", "Asset Universe", renderFilters() + `<div class="asset-grid">${(data.assetUniverse ?? []).map(assetCard).join("")}</div>`)}
+    ${section("profiles", "Simulation Profiles", `<div class="asset-grid">${(data.profileComparison?.profiles ?? []).map(profileCard).join("")}</div>`)}
     ${section("opportunities", "Opportunities", renderFilters() + `<div class="card-list">${(data.opportunities ?? []).map(opportunityCard).join("")}</div>`)}
     <section class="two-col">
       ${section("trades", "Latest Trades", data.trades.map((t) => tradeCard(t)).join(""))}
@@ -353,6 +360,22 @@ export function renderDashboardHtml(data: {
 </body>
 </html>`;
   return html;
+}
+
+interface DashboardComparison {
+  comparisonPolicy: { normalizedStartIndex: number; explanation: string };
+  profiles: Array<{
+    portfolioId: string;
+    profileKey: string;
+    displayName: string;
+    philosophy: string;
+    riskPosture: string;
+    comparisonStartTimestamp: string;
+    comparisonStartEquityUsd: number;
+    actualEquityUsd: number;
+    normalizedIndex: number;
+    normalizedReturnPct: number;
+  }>;
 }
 
 function metric(label: string, value: string): string {
@@ -477,6 +500,16 @@ function opportunityCard(opportunity: DashboardOpportunity): string {
     <div class="row"><span>Price/NAV</span><span>${escapeHtml(opportunity.latestPriceOrNav === null ? "Unavailable" : money(opportunity.latestPriceOrNav))}</span></div>
     <div class="row"><span>Exposure</span><span>${escapeHtml(opportunity.currentExposure === null ? "Unavailable" : pct(opportunity.currentExposure))}</span></div>
     <div class="muted">${escapeHtml(sanitizeForUser(opportunity.exclusionOrSkipReason, "No action was taken."))}</div>
+  </div>`;
+}
+
+function profileCard(profile: DashboardComparison["profiles"][number]): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(profile.displayName)}</strong><span class="pill">${escapeHtml(profile.riskPosture)}</span></div>
+    <div>${escapeHtml(money(profile.actualEquityUsd))}</div>
+    <div class="muted">Normalized ${escapeHtml(profile.normalizedIndex.toFixed(2))} (${escapeHtml(pct(profile.normalizedReturnPct))})</div>
+    <div class="muted">Start ${escapeHtml(money(profile.comparisonStartEquityUsd))} · ${escapeHtml(formatDateTime(profile.comparisonStartTimestamp))}</div>
+    <div class="muted">${escapeHtml(profile.philosophy)}</div>
   </div>`;
 }
 

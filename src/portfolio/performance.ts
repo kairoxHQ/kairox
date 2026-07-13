@@ -39,10 +39,10 @@ interface PositionRow {
   marketValueUsd: number;
 }
 
-export async function calculatePerformance(db: D1Database): Promise<PerformanceMetrics> {
+export async function calculatePerformance(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<PerformanceMetrics> {
   const portfolio = await db
     .prepare("SELECT cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd FROM portfolios WHERE id = ?")
-    .bind(TIM_PORTFOLIO_ID)
+    .bind(portfolioId)
     .first<PortfolioRow>();
   if (!portfolio) {
     throw new Error("Paper portfolio is not initialized.");
@@ -56,11 +56,11 @@ export async function calculatePerformance(db: D1Database): Promise<PerformanceM
          FROM positions
          WHERE portfolio_id = ? AND quantity > 0`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
   const trades = await db
     .prepare("SELECT COUNT(*) AS count, COALESCE(SUM(fees_usd), 0) AS fees FROM trades WHERE portfolio_id = ?")
-    .bind(TIM_PORTFOLIO_ID)
+    .bind(portfolioId)
     .first<{ count: number; fees: number }>();
   const dividends = await db
     .prepare(
@@ -68,7 +68,7 @@ export async function calculatePerformance(db: D1Database): Promise<PerformanceM
        FROM dividend_events
        WHERE portfolio_id = ? AND reliability_status = 'recorded'`
     )
-    .bind(TIM_PORTFOLIO_ID)
+    .bind(portfolioId)
     .first<{ income: number }>();
 
   const positionsValueUsd = positions.reduce((sum, position) => sum + position.marketValueUsd, 0);
@@ -81,7 +81,7 @@ export async function calculatePerformance(db: D1Database): Promise<PerformanceM
   const totalReturnUsd = totalValueUsd + dividendIncomeUsd - portfolio.startingBalanceUsd;
   const realizedProfitLossUsd = totalReturnUsd - unrealizedProfitLossUsd - dividendIncomeUsd;
   const priceReturnUsd = totalReturnUsd - dividendIncomeUsd;
-  const maxDrawdownPct = await calculateMaxDrawdown(db, portfolio.startingBalanceUsd, totalValueUsd);
+  const maxDrawdownPct = await calculateMaxDrawdown(db, portfolioId, portfolio.startingBalanceUsd, totalValueUsd);
 
   return {
     startingBalanceUsd: round(portfolio.startingBalanceUsd),
@@ -102,8 +102,8 @@ export async function calculatePerformance(db: D1Database): Promise<PerformanceM
   };
 }
 
-export async function recordEquityHistory(db: D1Database, recordedAt = new Date().toISOString()): Promise<PerformanceMetrics> {
-  const metrics = await calculatePerformance(db);
+export async function recordEquityHistory(db: D1Database, recordedAt = new Date().toISOString(), portfolioId = TIM_PORTFOLIO_ID): Promise<PerformanceMetrics> {
+  const metrics = await calculatePerformance(db, portfolioId);
   await db
     .prepare(
       `INSERT OR REPLACE INTO portfolio_equity_history (
@@ -114,8 +114,8 @@ export async function recordEquityHistory(db: D1Database, recordedAt = new Date(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
-      `equity_${recordedAt.slice(0, 16).replace(/[^0-9TZ]/g, "")}`,
-      TIM_PORTFOLIO_ID,
+      `equity_${portfolioId}_${recordedAt.slice(0, 16).replace(/[^0-9TZ]/g, "")}`,
+      portfolioId,
       recordedAt,
       metrics.cashUsd,
       metrics.positionsValueUsd,
@@ -154,7 +154,7 @@ export function compareBenchmark(startValueUsd: number, latestValueUsd: number):
   };
 }
 
-async function calculateMaxDrawdown(db: D1Database, startingBalance: number, currentValue: number): Promise<number> {
+async function calculateMaxDrawdown(db: D1Database, portfolioId: string, startingBalance: number, currentValue: number): Promise<number> {
   const snapshots = await listRows<{ totalValueUsd: number }>(
     db
       .prepare(
@@ -163,7 +163,7 @@ async function calculateMaxDrawdown(db: D1Database, startingBalance: number, cur
          WHERE portfolio_id = ?
          ORDER BY recorded_at ASC`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
   return calculateMaxDrawdownFromSeries([startingBalance, ...snapshots.map((snapshot) => snapshot.totalValueUsd), currentValue]);
 }

@@ -17,6 +17,9 @@ export interface PaperRiskInput {
   duplicateSignal: boolean;
   openedNewPositionThisRun: boolean;
   hasPosition: boolean;
+  maxNewTradePct?: number;
+  maxPositionPct?: number;
+  drawdownBlockPct?: number;
 }
 
 export function assessRecommendation(action: DecisionAction, marketData: MarketPrice): RiskAssessment {
@@ -57,8 +60,12 @@ export function assessPaperTrade(input: PaperRiskInput): RiskAssessment {
     reasons.push("This signal has already been processed.");
   }
 
-  if (input.drawdownPct >= 0.1 && input.action === "BUY") {
-    reasons.push("Portfolio drawdown is at or above 10%; new positions are blocked.");
+  const maxNewTradePct = input.maxNewTradePct ?? 0.1;
+  const maxPositionPct = input.maxPositionPct ?? 0.5;
+  const drawdownBlockPct = input.drawdownBlockPct ?? 0.1;
+
+  if (input.drawdownPct >= drawdownBlockPct && input.action === "BUY") {
+    reasons.push(`Portfolio drawdown is at or above ${Math.round(drawdownBlockPct * 100)}%; new positions are blocked.`);
   }
 
   if (input.action === "BUY") {
@@ -66,12 +73,12 @@ export function assessPaperTrade(input: PaperRiskInput): RiskAssessment {
       reasons.push("Maximum one new position per strategy run has already been reached.");
     }
 
-    if (input.proposedTradeValueUsd > input.portfolioValueUsd * 0.1) {
-      reasons.push("Proposed new paper trade risks more than 10% of portfolio value.");
+    if (input.proposedTradeValueUsd > input.portfolioValueUsd * maxNewTradePct) {
+      reasons.push(`Proposed new paper trade risks more than ${Math.round(maxNewTradePct * 100)}% of portfolio value.`);
     }
 
-    if (input.currentPositionValueUsd + input.proposedTradeValueUsd > input.portfolioValueUsd * 0.5) {
-      reasons.push("Proposed position would exceed 50% of portfolio value.");
+    if (input.currentPositionValueUsd + input.proposedTradeValueUsd > input.portfolioValueUsd * maxPositionPct) {
+      reasons.push(`Proposed position would exceed ${Math.round(maxPositionPct * 100)}% of portfolio value.`);
     }
 
     if (input.proposedTradeValueUsd > input.cashUsd) {

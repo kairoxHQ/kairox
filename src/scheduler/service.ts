@@ -1,5 +1,6 @@
 import { runPaperStrategy } from "../paper/service.ts";
 import { recordEquityHistory } from "../portfolio/performance.ts";
+import { listPortfolioProfiles } from "../portfolio/profiles.ts";
 import { getSettings } from "../settings/service.ts";
 import { listRows } from "../shared/db.ts";
 import type { Env } from "../shared/types.ts";
@@ -41,19 +42,25 @@ export async function runScheduledPaperStrategy(
 
   try {
     const settings = await getSettings(env.DB);
-    const summary = await runPaperStrategy(env, {
-      trigger: "scheduled",
-      runKey,
-      now: scheduledDate,
-      allowExecution: shouldAllowScheduledExecution(settings.automationPaused)
-    });
-    await recordEquityHistory(env.DB, new Date().toISOString());
+    const profiles = await listPortfolioProfiles(env.DB);
+    const profileSummaries = [];
+    for (const profile of profiles) {
+      const profileRunKey = `${runKey}:${profile.profileKey}`;
+      profileSummaries.push(await runPaperStrategy(env, {
+        trigger: "scheduled",
+        runKey: profileRunKey,
+        now: scheduledDate,
+        allowExecution: shouldAllowScheduledExecution(settings.automationPaused),
+        portfolioId: profile.portfolioId
+      }));
+      await recordEquityHistory(env.DB, new Date().toISOString(), profile.portfolioId);
+    }
     await generateSummaries(env.DB, scheduledDate);
     const storedSummary = {
       runKey,
       status: "completed",
       automationPaused: settings.automationPaused,
-      summary
+      profiles: profileSummaries
     };
     await finishScheduledRun(env.DB, runKey, "completed", JSON.stringify(storedSummary), null);
     return storedSummary;
