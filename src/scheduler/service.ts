@@ -92,18 +92,143 @@ export function shouldAllowScheduledExecution(automationPaused: boolean): boolea
 }
 
 export async function getScheduledRuns(db: D1Database): Promise<unknown> {
-  return {
-    scheduledRuns: await listRows(
-      db.prepare(
-        `SELECT id, run_key AS runKey, cron, scheduled_at AS scheduledAt,
-          started_at AS startedAt, finished_at AS finishedAt, status,
-          error_details AS errorDetails, summary_json AS summaryJson, created_at AS createdAt
-         FROM scheduled_runs
-         ORDER BY started_at DESC
-         LIMIT 50`
-      )
+  const rows = await listRows<ScheduledRunRow>(
+    db.prepare(
+      `SELECT id, run_key AS runKey, cron, scheduled_at AS scheduledAt,
+        started_at AS startedAt, finished_at AS finishedAt, status,
+        error_details AS errorDetails, summary_json AS summaryJson, created_at AS createdAt
+       FROM scheduled_runs
+       ORDER BY started_at DESC
+       LIMIT 50`
     )
+  );
+  return {
+    scheduledRuns: rows,
+    auditRuns: rows.map(summarizeScheduledRun)
   };
+}
+
+export interface ScheduledRunRow {
+  id: string;
+  runKey: string;
+  cron: string;
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  errorDetails: string | null;
+  summaryJson: string | null;
+  createdAt: string;
+}
+
+interface PaperProfileSummary {
+  idempotent?: boolean;
+  profile?: {
+    portfolioId: string;
+    profileKey: string;
+    displayName: string;
+  };
+  symbols?: Array<{
+    symbol: string;
+    action: string;
+    executed: boolean;
+    reason: string;
+  }>;
+}
+
+interface ScheduledRunSummaryJson {
+  runKey?: string;
+  status?: string;
+  automationPaused?: boolean;
+  profiles?: PaperProfileSummary[];
+  reason?: string;
+}
+
+export function summarizeScheduledRun(row: ScheduledRunRow) {
+  const parsed = parseSummary(row.summaryJson);
+  const profiles = parsed?.profiles ?? [];
+  const profileAudits = profiles.map((profile) => {
+    const symbols = profile.symbols ?? [];
+    const providerFailures = symbols.filter((symbol) => isProviderFailure(symbol.reason)).length;
+    const staleDataRejections = symbols.filter((symbol) => /stale/i.test(symbol.reason)).length;
+    const duplicatePrevention = profile.idempotent === true || symbols.some((symbol) => /duplicate|already processed|idempotent/i.test(symbol.reason));
+    const safeguardsTriggered = symbols
+      .filter((symbol) => isSafeguardReason(symbol.reason))
+      .map((symbol) => ({ symbol: symbol.symbol, reason: publicReason(symbol.reason) }));
+    const actions = symbols.reduce<Record<string, number>>((counts, symbol) => {
+      counts[symbol.action] = (counts[symbol.action] ?? 0) + 1;
+      return counts;
+    }, {});
+    return {
+      portfolioId: profile.profile?.portfolioId ?? "unknown",
+      profileKey: profile.profile?.profileKey ?? "unknown",
+      displayName: profile.profile?.displayName ?? "Unknown profile",
+      assetsAttempted: symbols.length,
+      assetsEvaluatedSuccessfully: symbols.filter((symbol) => !isProviderFailure(symbol.reason) && !/stale|malformed|unavailable/i.test(symbol.reason)).length,
+      assetsSkipped: symbols.filter((symbol) => !symbol.executed).length,
+      providerFailures,
+      staleDataRejections,
+      recommendations: actions,
+      tradesCreated: symbols.filter((symbol) => symbol.executed).length,
+      duplicatePrevention,
+      safeguardsTriggered
+    };
+  });
+
+  const durationMs = durationBetween(row.startedAt, row.finishedAt);
+  return {
+    runKey: row.runKey,
+    scheduledAt: row.scheduledAt,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt,
+    status: row.status,
+    durationMs,
+    finalStatus: row.status,
+    automationPaused: parsed?.automationPaused ?? null,
+    profileCount: profileAudits.length,
+    assetsAttempted: profileAudits.reduce((sum, profile) => sum + profile.assetsAttempted, 0),
+    assetsEvaluatedSuccessfully: profileAudits.reduce((sum, profile) => sum + profile.assetsEvaluatedSuccessfully, 0),
+    assetsSkipped: profileAudits.reduce((sum, profile) => sum + profile.assetsSkipped, 0),
+    providerFailures: profileAudits.reduce((sum, profile) => sum + profile.providerFailures, 0),
+    staleDataRejections: profileAudits.reduce((sum, profile) => sum + profile.staleDataRejections, 0),
+    tradesCreated: profileAudits.reduce((sum, profile) => sum + profile.tradesCreated, 0),
+    duplicatePrevention: profileAudits.some((profile) => profile.duplicatePrevention),
+    errorDetails: row.errorDetails ? publicReason(row.errorDetails) : null,
+    skipReason: parsed?.reason ? publicReason(parsed.reason) : null,
+    profiles: profileAudits
+  };
+}
+
+function parseSummary(value: string | null): ScheduledRunSummaryJson | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as ScheduledRunSummaryJson;
+  } catch {
+    return null;
+  }
+}
+
+function durationBetween(startedAt: string, finishedAt: string | null): number | null {
+  if (!finishedAt) {
+    return null;
+  }
+  const start = new Date(startedAt).getTime();
+  const finish = new Date(finishedAt).getTime();
+  return Number.isFinite(start) && Number.isFinite(finish) ? Math.max(0, finish - start) : null;
+}
+
+function isProviderFailure(reason: string): boolean {
+  return /provider|quote|market data|unavailable|failed|failure|malformed|temporarily unavailable/i.test(reason);
+}
+
+function isSafeguardReason(reason: string): boolean {
+  return /risk checks|cash|drawdown|concentration|duplicate|market hours|paused|blocked|limit/i.test(reason);
+}
+
+function publicReason(reason: string): string {
+  return reason.replace(/\s+/g, " ").slice(0, 240);
 }
 
 async function insertScheduledRun(

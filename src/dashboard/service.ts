@@ -8,6 +8,7 @@ import { listEnabledWatchlistAssets } from "../market/assets.ts";
 import { getOpportunities } from "../paper/service.ts";
 import { getProfileComparison } from "../portfolio/profiles.ts";
 import { getIntelligenceOverview } from "../intelligence/service.ts";
+import { summarizeScheduledRun } from "../scheduler/service.ts";
 
 export async function getDashboardData(db: D1Database): Promise<unknown> {
   const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence] =
@@ -68,7 +69,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
       listRows(
         db.prepare(
           `SELECT run_key AS runKey, scheduled_at AS scheduledAt, started_at AS startedAt,
-            finished_at AS finishedAt, status, error_details AS errorDetails
+            finished_at AS finishedAt, status, error_details AS errorDetails,
+            summary_json AS summaryJson, id, cron, created_at AS createdAt
            FROM scheduled_runs
            ORDER BY started_at DESC
            LIMIT 8`
@@ -152,6 +154,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
     journal,
     trades,
     scheduledRuns,
+    scheduledRunAudits: scheduledRuns.map((run) => summarizeScheduledRun(run as DashboardScheduledRunRow)),
     summaries,
     rejectedOpportunities: rejected,
     marketDataStatus: marketStatuses,
@@ -216,6 +219,7 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
     journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number }>;
     trades: Array<{ symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }>;
     scheduledRuns: Array<{ runKey: string; status: string; startedAt: string; errorDetails?: string }>;
+    scheduledRunAudits: DashboardScheduledRunAudit[];
     summaries: Array<{ summaryType: string; title: string; body: string }>;
     rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
     marketDataStatus: Array<{ symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }>;
@@ -253,6 +257,7 @@ export function renderDashboardHtml(data: {
   journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number }>;
   trades: Array<{ symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }>;
   scheduledRuns: Array<{ runKey: string; status: string; startedAt: string; errorDetails?: string }>;
+  scheduledRunAudits?: DashboardScheduledRunAudit[];
   summaries: Array<{ summaryType: string; title: string; body: string }>;
   rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
   marketDataStatus?: Array<{ symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }>;
@@ -358,7 +363,7 @@ export function renderDashboardHtml(data: {
     </section>
     ${section("performance", "Performance", renderHistoryChart(data.equityHistory ?? []) + data.performance.benchmarkReturns.map((b) => row(b.benchmarkName, `${pct(b.returnPct)} (${money(b.latestValueUsd)})`)).join(""))}
     ${section("recommendations", "Latest Recommendations", data.recommendations.map((r) => row(`${r.symbol} ${r.action}`, sanitizeForUser(r.explanation, "No action was taken."))).join(""))}
-    ${section("scheduled", "Scheduled Runs", data.scheduledRuns.map((r) => row(r.status, `${r.runKey} ${r.errorDetails ?? ""}`)).join(""))}
+    ${section("scheduled", "Scheduled Runs", renderScheduledAudit(data.scheduledRunAudits ?? []))}
     ${section("settings", "Settings", row("Mode", "Paper only") + row("Automation", data.settings.automationPaused ? "Paused" : "Active") + row("Live trading", "Disabled"))}
     ${section("rejected", "Deferred Opportunities", data.rejectedOpportunities.map((r) => row(r.symbol, sanitizeForUser(r.explanation, "Market data temporarily unavailable; no trade was made."))).join(""))}
     ${section("summaries", "Summaries", data.summaries.map((s) => `<div class="mini-card"><strong>${escapeHtml(s.title)}</strong><pre>${escapeHtml(sanitizeForUser(s.body, "Summary includes only user-safe market and portfolio information."))}</pre></div>`).join(""))}
@@ -379,8 +384,67 @@ interface DashboardComparison {
     comparisonStartTimestamp: string;
     comparisonStartEquityUsd: number;
     actualEquityUsd: number;
+    cashUsd?: number;
+    cashPct?: number;
+    openPositions?: number;
+    latestDecision?: string;
+    latestDecisionReason?: string;
+    totalReturnPct?: number;
+    maxDrawdownPct?: number;
+    volatilityPct?: number | null;
+    tradeCount?: number;
+    recommendationCount?: number;
+    journalEntryCount?: number;
+    equityHistoryCount?: number;
+    paperOnlyLabel?: string;
     normalizedIndex: number;
     normalizedReturnPct: number;
+  }>;
+}
+
+interface DashboardScheduledRunRow {
+  id: string;
+  runKey: string;
+  cron: string;
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  errorDetails: string | null;
+  summaryJson: string | null;
+  createdAt: string;
+}
+
+interface DashboardScheduledRunAudit {
+  runKey: string;
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  durationMs: number | null;
+  finalStatus: string;
+  profileCount: number;
+  assetsAttempted: number;
+  assetsEvaluatedSuccessfully: number;
+  assetsSkipped: number;
+  providerFailures: number;
+  staleDataRejections: number;
+  tradesCreated: number;
+  duplicatePrevention: boolean;
+  errorDetails: string | null;
+  skipReason: string | null;
+  profiles: Array<{
+    displayName: string;
+    profileKey: string;
+    assetsAttempted: number;
+    assetsEvaluatedSuccessfully: number;
+    assetsSkipped: number;
+    providerFailures: number;
+    staleDataRejections: number;
+    recommendations: Record<string, number>;
+    tradesCreated: number;
+    duplicatePrevention: boolean;
+    safeguardsTriggered: Array<{ symbol: string; reason: string }>;
   }>;
 }
 
@@ -534,12 +598,57 @@ function opportunityCard(opportunity: DashboardOpportunity): string {
 
 function profileCard(profile: DashboardComparison["profiles"][number]): string {
   return `<div class="mini-card">
-    <div class="mini-head"><strong>${escapeHtml(profile.displayName)}</strong><span class="pill">${escapeHtml(profile.riskPosture)}</span></div>
+    <div class="mini-head"><strong>${escapeHtml(profile.displayName)}</strong><span class="pill">${escapeHtml(profile.paperOnlyLabel ?? "VIRTUAL / PAPER ONLY")}</span></div>
+    <div class="muted">${escapeHtml(profile.riskPosture)}</div>
     <div>${escapeHtml(money(profile.actualEquityUsd))}</div>
     <div class="muted">Normalized ${escapeHtml(profile.normalizedIndex.toFixed(2))} (${escapeHtml(pct(profile.normalizedReturnPct))})</div>
+    <div class="muted">Cash ${escapeHtml(pct(profile.cashPct ?? 0))} · Positions ${escapeHtml(String(profile.openPositions ?? 0))}</div>
+    <div class="muted">Latest decision ${escapeHtml(profile.latestDecision ?? "None")}</div>
+    <div class="muted">Total return ${escapeHtml(pct(profile.totalReturnPct ?? profile.normalizedReturnPct))} · Max drawdown ${escapeHtml(pct(profile.maxDrawdownPct ?? 0))}</div>
+    <div class="muted">Volatility ${escapeHtml(profile.volatilityPct === null || profile.volatilityPct === undefined ? "Needs more history" : pct(profile.volatilityPct))}</div>
+    <div class="muted">Isolation: ${escapeHtml(String(profile.tradeCount ?? 0))} trades · ${escapeHtml(String(profile.recommendationCount ?? 0))} recommendations · ${escapeHtml(String(profile.journalEntryCount ?? 0))} journal entries · ${escapeHtml(String(profile.equityHistoryCount ?? 0))} equity points</div>
     <div class="muted">Start ${escapeHtml(money(profile.comparisonStartEquityUsd))} · ${escapeHtml(formatDateTime(profile.comparisonStartTimestamp))}</div>
     <div class="muted">${escapeHtml(profile.philosophy)}</div>
   </div>`;
+}
+
+function renderScheduledAudit(audits: DashboardScheduledRunAudit[]): string {
+  if (audits.length === 0) {
+    return '<span class="pill">No scheduled runs yet</span>';
+  }
+  return `<div class="card-list">${audits.map((audit) => `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(audit.status)}</strong><span class="pill">${escapeHtml(formatDateTime(audit.startedAt))}</span></div>
+    <div class="muted">${escapeHtml(audit.runKey)}</div>
+    <div class="grid">
+      ${miniMetric("Profiles", String(audit.profileCount))}
+      ${miniMetric("Assets attempted", String(audit.assetsAttempted))}
+      ${miniMetric("Successful", String(audit.assetsEvaluatedSuccessfully))}
+      ${miniMetric("Skipped", String(audit.assetsSkipped))}
+      ${miniMetric("Provider failures", String(audit.providerFailures))}
+      ${miniMetric("Stale rejections", String(audit.staleDataRejections))}
+      ${miniMetric("Trades", String(audit.tradesCreated))}
+      ${miniMetric("Duplicate guard", audit.duplicatePrevention ? "Triggered" : "Clear")}
+    </div>
+    ${audit.errorDetails ? `<div class="muted">Error: ${escapeHtml(audit.errorDetails)}</div>` : ""}
+    ${audit.skipReason ? `<div class="muted">Skipped: ${escapeHtml(audit.skipReason)}</div>` : ""}
+    <div class="card-list">${audit.profiles.map(scheduledProfileAudit).join("")}</div>
+  </div>`).join("")}</div>`;
+}
+
+function scheduledProfileAudit(profile: DashboardScheduledRunAudit["profiles"][number]): string {
+  const recommendations = Object.entries(profile.recommendations).map(([action, count]) => `${action}: ${count}`).join(", ") || "None";
+  const safeguards = profile.safeguardsTriggered.slice(0, 3).map((item) => `${item.symbol}: ${item.reason}`).join(" | ");
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(profile.displayName)}</strong><span class="pill">VIRTUAL / PAPER ONLY</span></div>
+    <div class="muted">Attempted ${escapeHtml(String(profile.assetsAttempted))} · successful ${escapeHtml(String(profile.assetsEvaluatedSuccessfully))} · skipped ${escapeHtml(String(profile.assetsSkipped))}</div>
+    <div class="muted">Recommendations: ${escapeHtml(recommendations)} · trades ${escapeHtml(String(profile.tradesCreated))}</div>
+    <div class="muted">Provider failures ${escapeHtml(String(profile.providerFailures))} · stale ${escapeHtml(String(profile.staleDataRejections))} · duplicate guard ${escapeHtml(profile.duplicatePrevention ? "triggered" : "clear")}</div>
+    ${safeguards ? `<div class="muted">Safeguards: ${escapeHtml(safeguards)}</div>` : ""}
+  </div>`;
+}
+
+function miniMetric(label: string, value: string): string {
+  return `<div class="mini-card"><div class="label">${escapeHtml(label)}</div><div class="metric-sm">${escapeHtml(value)}</div></div>`;
 }
 
 function renderIntelligence(intelligence?: DashboardIntelligence): string {

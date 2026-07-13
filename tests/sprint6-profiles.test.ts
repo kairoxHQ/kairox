@@ -61,6 +61,17 @@ test("profile-specific risk thresholds preserve isolation and different policies
   assert.equal(highRisk.allowed, true);
 });
 
+test("profile-scoped idempotency permits the same signal across virtual portfolios", () => {
+  const sql = readFileSync("migrations/0011_profile_scoped_idempotency.sql", "utf8");
+
+  assert.match(sql, /DROP INDEX IF EXISTS idx_recommendations_signal_key/);
+  assert.match(sql, /DROP INDEX IF EXISTS idx_decision_journal_signal_key/);
+  assert.match(sql, /DROP INDEX IF EXISTS idx_trades_signal_key/);
+  assert.match(sql, /ON recommendations\(portfolio_id, signal_key\)/);
+  assert.match(sql, /ON decision_journal\(portfolio_id, signal_key\)/);
+  assert.match(sql, /ON trades\(portfolio_id, signal_key\)/);
+});
+
 test("dashboard renders actual and normalized profile comparison", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
@@ -96,6 +107,17 @@ test("dashboard renders actual and normalized profile comparison", () => {
           comparisonStartTimestamp: "2026-07-13T01:00:00.000Z",
           comparisonStartEquityUsd: 19.97,
           actualEquityUsd: 19.97,
+          cashPct: 1,
+          openPositions: 0,
+          latestDecision: "DO_NOTHING",
+          totalReturnPct: 0,
+          maxDrawdownPct: 0,
+          volatilityPct: null,
+          tradeCount: 0,
+          recommendationCount: 1,
+          journalEntryCount: 1,
+          equityHistoryCount: 1,
+          paperOnlyLabel: "VIRTUAL / PAPER ONLY",
           normalizedIndex: 100,
           normalizedReturnPct: 0
         }
@@ -105,6 +127,10 @@ test("dashboard renders actual and normalized profile comparison", () => {
 
   assert.match(html, /Simulation Profiles/);
   assert.match(html, /Kairox Conservative/);
+  assert.match(html, /VIRTUAL \/ PAPER ONLY/);
+  assert.match(html, /Cash 100\.00%/);
+  assert.match(html, /Latest decision DO_NOTHING/);
+  assert.match(html, /Volatility Needs more history/);
   assert.match(html, /Normalized 100\.00/);
 });
 

@@ -1,4 +1,5 @@
 import { listRows, PERMANENT_PORTFOLIO_IDS, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { calculatePerformance } from "./performance.ts";
 
 export interface PortfolioProfile {
   id: string;
@@ -110,6 +111,8 @@ export async function getProfileComparison(db: D1Database): Promise<unknown> {
     ).bind(...PERMANENT_PORTFOLIO_IDS)
   );
   const byPortfolio = new Map(rows.map((row) => [row.portfolioId, row]));
+  const metrics = await Promise.all(profiles.map((profile) => getProfileReadinessMetrics(db, profile.portfolioId)));
+  const metricsByPortfolio = new Map(metrics.map((metric) => [metric.portfolioId, metric]));
 
   return {
     comparisonPolicy: {
@@ -119,17 +122,106 @@ export async function getProfileComparison(db: D1Database): Promise<unknown> {
     },
     profiles: profiles.map((profile) => {
       const row = byPortfolio.get(profile.portfolioId);
+      const readiness = metricsByPortfolio.get(profile.portfolioId);
       const actualEquityUsd = (row?.cashUsd ?? 0) + (row?.positionsValueUsd ?? 0);
       const normalizedIndex =
         profile.comparisonStartEquityUsd > 0 ? (actualEquityUsd / profile.comparisonStartEquityUsd) * profile.normalizedStartIndex : profile.normalizedStartIndex;
       return {
         ...profile,
         actualEquityUsd: round(actualEquityUsd),
+        cashUsd: round(row?.cashUsd ?? 0),
+        cashPct: round(actualEquityUsd > 0 ? (row?.cashUsd ?? 0) / actualEquityUsd : 0),
+        openPositions: readiness?.openPositions ?? 0,
+        latestDecision: readiness?.latestDecision ?? "None",
+        latestDecisionReason: readiness?.latestDecisionReason ?? "No decisions recorded yet.",
+        totalReturnPct: readiness?.totalReturnPct ?? 0,
+        maxDrawdownPct: readiness?.maxDrawdownPct ?? 0,
+        volatilityPct: readiness?.volatilityPct ?? null,
+        tradeCount: readiness?.tradeCount ?? 0,
+        recommendationCount: readiness?.recommendationCount ?? 0,
+        journalEntryCount: readiness?.journalEntryCount ?? 0,
+        equityHistoryCount: readiness?.equityHistoryCount ?? 0,
+        paperOnlyLabel: "VIRTUAL / PAPER ONLY",
         normalizedIndex: round(normalizedIndex),
         normalizedReturnPct: round(normalizedIndex / profile.normalizedStartIndex - 1)
       };
     })
   };
+}
+
+async function getProfileReadinessMetrics(db: D1Database, portfolioId: string) {
+  const [performance, latestDecision, counts, equityHistory] = await Promise.all([
+    calculatePerformance(db, portfolioId),
+    db
+      .prepare(
+        `SELECT decision, explanation
+         FROM decision_journal
+         WHERE portfolio_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`
+      )
+      .bind(portfolioId)
+      .first<{ decision: string; explanation: string }>(),
+    db
+      .prepare(
+        `SELECT
+          (SELECT COUNT(*) FROM positions WHERE portfolio_id = ? AND quantity > 0) AS openPositions,
+          (SELECT COUNT(*) FROM recommendations WHERE portfolio_id = ?) AS recommendationCount,
+          (SELECT COUNT(*) FROM decision_journal WHERE portfolio_id = ?) AS journalEntryCount,
+          (SELECT COUNT(*) FROM portfolio_equity_history WHERE portfolio_id = ?) AS equityHistoryCount`
+      )
+      .bind(portfolioId, portfolioId, portfolioId, portfolioId)
+      .first<{
+        openPositions: number;
+        recommendationCount: number;
+        journalEntryCount: number;
+        equityHistoryCount: number;
+      }>(),
+    listRows<{ totalValueUsd: number }>(
+      db
+        .prepare(
+          `SELECT total_value_usd AS totalValueUsd
+           FROM portfolio_equity_history
+           WHERE portfolio_id = ?
+           ORDER BY recorded_at ASC`
+        )
+        .bind(portfolioId)
+    )
+  ]);
+
+  return {
+    portfolioId,
+    openPositions: counts?.openPositions ?? 0,
+    latestDecision: latestDecision?.decision ?? "None",
+    latestDecisionReason: latestDecision?.explanation ?? "No decisions recorded yet.",
+    totalReturnPct: performance.totalReturnPct,
+    maxDrawdownPct: performance.maxDrawdownPct,
+    volatilityPct: calculateSimpleVolatility(equityHistory.map((row) => row.totalValueUsd)),
+    tradeCount: performance.tradeCount,
+    recommendationCount: counts?.recommendationCount ?? 0,
+    journalEntryCount: counts?.journalEntryCount ?? 0,
+    equityHistoryCount: counts?.equityHistoryCount ?? 0
+  };
+}
+
+function calculateSimpleVolatility(values: number[]): number | null {
+  if (values.length < 3) {
+    return null;
+  }
+  const returns: number[] = [];
+  for (let index = 1; index < values.length; index += 1) {
+    const previous = values[index - 1];
+    const current = values[index];
+    if (previous > 0) {
+      returns.push((current - previous) / previous);
+    }
+  }
+  if (returns.length < 2) {
+    return null;
+  }
+  const average = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance = returns.reduce((sum, value) => sum + (value - average) ** 2, 0) / (returns.length - 1);
+  return round(Math.sqrt(variance));
 }
 
 function parseProfileRow(row: ProfileRow): PortfolioProfile {

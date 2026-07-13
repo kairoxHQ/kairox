@@ -4,7 +4,7 @@ import { renderDashboardHtml } from "../src/dashboard/service.ts";
 import { assessDividendQuality, calculateReinvestedQuantity } from "../src/dividends/service.ts";
 import { canExecuteAt, isRegularUsMarketHours } from "../src/market/hours.ts";
 import { calculateMaxDrawdownFromSeries, compareBenchmark } from "../src/portfolio/performance.ts";
-import { buildScheduledRunKey, hasOverlappingRun, shouldAllowScheduledExecution } from "../src/scheduler/service.ts";
+import { buildScheduledRunKey, hasOverlappingRun, shouldAllowScheduledExecution, summarizeScheduledRun } from "../src/scheduler/service.ts";
 
 test("scheduled run keys are idempotent within the same cron minute", () => {
   const first = buildScheduledRunKey("*/30 13-21 * * 1-5", new Date("2026-07-13T14:00:05.000Z"));
@@ -71,6 +71,40 @@ test("dashboard HTML contains portfolio sections without exposing secrets", () =
     journal: [{ symbol: "BTC-USD", decision: "HOLD", explanation: "No deterministic exit signal.", confidenceScore: 0.72 }],
     trades: [{ symbol: "BTC-USD", side: "BUY", quantity: 0.00003111916041121339, priceUsd: 64000, executedAt: "2026-07-13T14:00:00.000Z" }],
     scheduledRuns: [{ runKey: "scheduled:test", status: "completed", startedAt: "2026-07-13T14:00:00.000Z" }],
+    scheduledRunAudits: [
+      {
+        runKey: "scheduled:test",
+        scheduledAt: "2026-07-13T14:00:00.000Z",
+        startedAt: "2026-07-13T14:00:00.000Z",
+        finishedAt: "2026-07-13T14:00:02.000Z",
+        status: "completed",
+        durationMs: 2000,
+        finalStatus: "completed",
+        profileCount: 1,
+        assetsAttempted: 2,
+        assetsEvaluatedSuccessfully: 1,
+        assetsSkipped: 1,
+        providerFailures: 0,
+        staleDataRejections: 1,
+        tradesCreated: 0,
+        duplicatePrevention: false,
+        errorDetails: null,
+        skipReason: null,
+        profiles: [{
+          displayName: "Tim Balanced",
+          profileKey: "tim_balanced",
+          assetsAttempted: 2,
+          assetsEvaluatedSuccessfully: 1,
+          assetsSkipped: 1,
+          providerFailures: 0,
+          staleDataRejections: 1,
+          recommendations: { HOLD: 1, DO_NOTHING: 1 },
+          tradesCreated: 0,
+          duplicatePrevention: false,
+          safeguardsTriggered: []
+        }]
+      }
+    ],
     summaries: [{ summaryType: "morning", title: "Morning", body: "Watching BTC-USD and SPY." }],
     rejectedOpportunities: [{ symbol: "SPY", explanation: "US market is closed." }],
     marketDataStatus: [{ symbol: "SPY", source: "cache", fetchedAt: "2026-07-13T14:00:00.000Z", isFresh: false, status: "cached", userMessage: "Using a recent cached market snapshot." }],
@@ -85,9 +119,48 @@ test("dashboard HTML contains portfolio sections without exposing secrets", () =
   assert.match(html, /Decision Journal/);
   assert.match(html, /Latest Recommendations/);
   assert.match(html, /Scheduled Runs/);
+  assert.match(html, /Assets attempted/);
+  assert.match(html, /Provider failures/);
+  assert.match(html, /Tim Balanced/);
   assert.match(html, /0\.00003112 BTC/);
   assert.match(html, /class="badge badge-buy">BUY/);
   assert.match(html, /class="badge status-cached">Cached/);
   assert.match(html, /Portfolio History/);
   assert.doesNotMatch(html, /PAPER_RUN_SECRET/);
+});
+
+test("scheduled run audit summarizes production-safe operational health", () => {
+  const audit = summarizeScheduledRun({
+    id: "scheduled_1",
+    runKey: "scheduled:*/30 * * * *:2026-07-13T14:00",
+    cron: "*/30 * * * *",
+    scheduledAt: "2026-07-13T14:00:00.000Z",
+    startedAt: "2026-07-13T14:00:00.000Z",
+    finishedAt: "2026-07-13T14:00:05.000Z",
+    status: "completed",
+    errorDetails: null,
+    createdAt: "2026-07-13T14:00:00.000Z",
+    summaryJson: JSON.stringify({
+      runKey: "scheduled:*/30 * * * *:2026-07-13T14:00",
+      status: "completed",
+      automationPaused: false,
+      profiles: [
+        {
+          profile: { portfolioId: "portfolio_tim_paper", profileKey: "tim_balanced", displayName: "Tim Balanced" },
+          symbols: [
+            { symbol: "BTC-USD", action: "HOLD", executed: false, reason: "No deterministic exit signal." },
+            { symbol: "FXAIX", action: "DO_NOTHING", executed: false, reason: "Market data is unavailable, stale, or malformed." }
+          ]
+        }
+      ]
+    })
+  });
+
+  assert.equal(audit.durationMs, 5000);
+  assert.equal(audit.profileCount, 1);
+  assert.equal(audit.assetsAttempted, 2);
+  assert.equal(audit.providerFailures, 1);
+  assert.equal(audit.staleDataRejections, 1);
+  assert.equal(audit.tradesCreated, 0);
+  assert.equal(audit.profiles[0].recommendations.HOLD, 1);
 });
