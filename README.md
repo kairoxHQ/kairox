@@ -11,7 +11,7 @@ Canonical repository: `kairoxHQ/kairox`
 - One local user: Tim.
 - Simulated starting portfolio: `$20`.
 - Benchmarks: Bitcoin buy-and-hold and cash.
-- Scheduled automated paper runs through Cloudflare cron triggers. During the Cloudflare account cutover, the new `kairox` production scheduler remains disabled until the old `cryptolab-ai` scheduler is disabled in the legacy account.
+- Scheduled automated paper runs through Cloudflare cron triggers on the production `kairox` Worker.
 - Mobile-friendly dashboard at `/dashboard`.
 - Paper trading only.
 - No brokerage credentials, live orders, leverage, options execution, futures execution, or paid AI API calls.
@@ -44,11 +44,11 @@ Recommendations default to `DO_NOTHING` unless validated market data and risk ch
 
 ## Sprint 3 Automation
 
-Cloudflare scheduled events are designed to run the strategy every 30 minutes:
+Cloudflare scheduled events run the strategy every 30 minutes:
 
 - `*/30 * * * *`
 
-Only one production scheduler may be active at a time. The new Kairox account must not enable the `kairox` cron trigger until the old `cryptolab-ai` cron trigger is disabled in the legacy April Family Cookbook Cloudflare account.
+Only one production scheduler may be active at a time. The legacy `cryptolab-ai` scheduler must remain disabled now that the dedicated `kairox` production scheduler is active.
 
 SPY and future stock/ETF assets are blocked from simulated execution outside regular US market hours. BTC-USD may be evaluated outside stock-market hours. Overlapping scheduled runs and duplicate cron deliveries are blocked with D1 run keys.
 

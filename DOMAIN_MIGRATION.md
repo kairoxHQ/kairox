@@ -18,7 +18,7 @@ This keeps room for a product/marketing site at the apex domain while the existi
 - Production Worker fallback URL: `https://kairox.kairoxtradingbot.workers.dev`
 - Legacy rollback Worker URL: `https://cryptolab-ai.aprilfamilycookbook.workers.dev`
 - Canonical GitHub repository: `kairoxHQ/kairox`
-- Intended cron schedule after legacy scheduler shutdown: `*/30 * * * *`
+- Active production cron schedule: `*/30 * * * *`
 - Required secret name for protected endpoints: `PAPER_RUN_SECRET`
 - Existing paper-trading history in D1
 
@@ -41,13 +41,11 @@ Deploying this configuration attaches `app.kairoxhq.com` to the existing `kairox
 
 The root domain `kairoxhq.com` is intentionally reserved for a future marketing site.
 
-## Scheduler Cutover Gate
+## Scheduler Cutover
 
 Only one production scheduler may be active at a time.
 
-The legacy Worker `cryptolab-ai` in the April Family Cookbook Cloudflare account was observed still writing scheduled runs after the D1 restore. The dedicated Kairox account cannot disable that legacy scheduler with its current Wrangler credentials. Keep the new `kairox` cron trigger omitted from `wrangler.jsonc` until the legacy `cryptolab-ai` cron trigger is disabled in the old account.
-
-After the old scheduler is disabled and verified, add:
+The legacy Worker `cryptolab-ai` in the April Family Cookbook Cloudflare account must remain disabled. The dedicated Kairox Worker `kairox` owns the active production cron trigger:
 
 ```jsonc
 "triggers": {
@@ -55,7 +53,7 @@ After the old scheduler is disabled and verified, add:
 }
 ```
 
-Then run a dry-run deploy, deploy `kairox`, and verify exactly one new scheduled run writes to `kairox-production-db`.
+After any future scheduler change, run a dry-run deploy, deploy `kairox`, and verify exactly one new scheduled run writes to `kairox-production-db`.
 
 ## Verification Commands
 
@@ -95,4 +93,4 @@ curl.exe -X POST "$workerUrl/paper/run" -H "x-cryptolab-paper-secret: $paperRunS
 - Do not rotate secrets unless intentionally planned.
 - Do not remove the workers.dev URL.
 - Do not enable live trading.
-- Do not enable the new production scheduler until the old production scheduler is disabled.
+- Do not re-enable the old production scheduler.

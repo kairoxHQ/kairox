@@ -238,9 +238,7 @@ Expected safety checks:
 
 ## Scheduler Cutover
 
-Do not enable the `kairox` production cron trigger until the legacy `cryptolab-ai` cron trigger is disabled in the April Family Cookbook Cloudflare account.
-
-After the legacy scheduler is disabled and verified, add this to `wrangler.jsonc`:
+The `kairox` production cron trigger is active in `wrangler.jsonc`:
 
 ```jsonc
 "triggers": {
@@ -248,11 +246,13 @@ After the legacy scheduler is disabled and verified, add this to `wrangler.jsonc
 }
 ```
 
-Then run:
+Keep the legacy `cryptolab-ai` cron trigger disabled in the April Family Cookbook Cloudflare account. Only one production scheduler may be active at a time.
+
+After any future scheduler change, run:
 
 ```powershell
 npx.cmd wrangler deploy --dry-run --outdir dist
 npx.cmd wrangler deploy
 ```
 
-Verify that only `kairox` has an active production scheduler and that the new scheduled run writes to `kairox-production-db`.
+Verify that only `kairox` has an active production scheduler and that scheduled runs write to `kairox-production-db`.
