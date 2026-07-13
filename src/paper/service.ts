@@ -11,6 +11,8 @@ import {
 import { calculatePerformance, recordEquityHistory } from "../portfolio/performance.ts";
 import { assessPaperTrade } from "../risk/checks.ts";
 import { decidePaperAction, estimateTransactionCost, type StrategyDecision } from "../strategy/paperStrategy.ts";
+import { calculateIndicators } from "../strategy/indicators.ts";
+import { rankOpportunities, screenAsset, type RankedOpportunity, type ScreenResult } from "../strategy/screener.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import type { Env, MarketDataset } from "../shared/types.ts";
 import { generateSummaries } from "../summaries/service.ts";
@@ -41,6 +43,8 @@ interface RunSymbolSummary {
   executed: boolean;
   reason: string;
   signalKey: string;
+  rank?: number | null;
+  screenScore?: number;
 }
 
 export interface PaperRunOptions {
@@ -65,7 +69,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
   const provider = new YahooFinanceMarketDataProvider();
   const assets = await listEnabledWatchlistAssets(env.DB);
-  const summaries: RunSymbolSummary[] = [];
+  const evaluated: RankedOpportunity[] = [];
   let openedNewPositionThisRun = false;
 
   for (const asset of assets) {
@@ -76,11 +80,33 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
     const portfolio = await getPortfolioRow(env.DB);
     const position = await getPosition(env.DB, symbol);
+    const openPositions = await getOpenPositions(env.DB);
     const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[symbol, marketData.priceUsd]]));
-    const decision = decidePaperAction({
+    const exposure = exposureForAsset(asset, openPositions, portfolioState.totalValueUsd, portfolioState.drawdownPct);
+    const screen = screenAsset({ asset, marketData, now, exposure });
+    const decision = screen.eligible ? decidePaperAction({
       marketData,
       hasPosition: !!position && position.quantity > 0
+    }) : screenedOutDecision(marketData, screen);
+
+    evaluated.push({
+      asset,
+      marketData,
+      decision,
+      screen,
+      positionValueUsd: position?.marketValueUsd ?? 0,
+      hasPosition: !!position && position.quantity > 0
     });
+  }
+
+  const ranked = rankOpportunities(evaluated);
+  const summaries: RunSymbolSummary[] = [];
+
+  for (const item of ranked) {
+    const { asset, marketData, decision, screen } = item;
+    const position = await getPosition(env.DB, asset.symbol);
+    const portfolio = await getPortfolioRow(env.DB);
+    const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[asset.symbol, marketData.priceUsd]]));
 
     const duplicateSignal = await hasProcessedSignal(env.DB, decision.signalKey);
     const executionGateReasons: string[] = [];
@@ -122,7 +148,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
           }
         : baseRisk;
 
-    await recordRecommendationAndJournal(env.DB, marketData, decision, risk);
+    await recordRecommendationAndJournal(env.DB, marketData, decision, risk, screen);
 
     let executed = false;
     let reason = risk.reasons.join(" ");
@@ -137,11 +163,13 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     }
 
     summaries.push({
-      symbol,
+      symbol: asset.symbol,
       action: risk.allowed ? decision.action : "DO_NOTHING",
       executed,
       reason,
-      signalKey: decision.signalKey
+      signalKey: decision.signalKey,
+      rank: screen.rank,
+      screenScore: screen.score
     });
   }
 
@@ -243,18 +271,28 @@ export async function getPerformance(db: D1Database): Promise<unknown> {
 export async function getOpportunities(db: D1Database): Promise<unknown> {
   const recommendations = await listRows<{
     symbol: string;
+    assetType: string | null;
     action: string;
     explanation: string;
     confidenceScore: number;
     riskScore: number;
+    screenEligible: number | null;
+    screenScore: number | null;
+    screenRank: number | null;
+    screenReason: string | null;
+    dataFreshness: string | null;
+    currentExposurePct: number | null;
     priceUsd: number | null;
     priceAsOf: string | null;
     signalKey: string;
     createdAt: string;
   }>(
     db.prepare(
-      `SELECT symbol, action, explanation, confidence_score AS confidenceScore,
+      `SELECT symbol, asset_type AS assetType, action, explanation, confidence_score AS confidenceScore,
         risk_score AS riskScore, price_usd AS priceUsd, price_as_of AS priceAsOf,
+        screen_eligible AS screenEligible, screen_score AS screenScore,
+        screen_rank AS screenRank, screen_reason AS screenReason,
+        data_freshness AS dataFreshness, current_exposure_pct AS currentExposurePct,
         signal_key AS signalKey, created_at AS createdAt
        FROM recommendations
        ORDER BY created_at DESC
@@ -263,8 +301,23 @@ export async function getOpportunities(db: D1Database): Promise<unknown> {
   );
 
   return {
-    opportunities: recommendations,
-    rejected: recommendations.filter((row) => row.action === "DO_NOTHING"),
+    opportunities: recommendations.map((row) => ({
+      symbol: row.symbol,
+      assetType: row.assetType ?? "unknown",
+      eligible: row.screenEligible === null ? row.action !== "DO_NOTHING" : row.screenEligible === 1,
+      screenScore: row.screenScore,
+      rank: row.screenRank,
+      latestPriceOrNav: row.priceUsd,
+      freshness: row.dataFreshness ?? "Unavailable",
+      decision: row.action,
+      confidence: row.confidenceScore,
+      exclusionOrSkipReason: row.screenReason ?? row.explanation,
+      currentExposure: row.currentExposurePct,
+      priceAsOf: row.priceAsOf,
+      createdAt: row.createdAt,
+      signalKey: row.signalKey
+    })),
+    rejected: recommendations.filter((row) => row.action === "DO_NOTHING" || row.screenEligible === 0),
     policy: {
       paperOnly: true,
       defaultAction: "DO_NOTHING",
@@ -299,6 +352,20 @@ async function getPosition(db: D1Database, symbol: string): Promise<PositionRow 
     .first<PositionRow>();
 }
 
+async function getOpenPositions(db: D1Database): Promise<PositionRow[]> {
+  return listRows<PositionRow>(
+    db
+      .prepare(
+        `SELECT id, symbol, asset_class AS assetClass, quantity,
+          avg_entry_price_usd AS avgEntryPriceUsd, current_price_usd AS currentPriceUsd,
+          market_value_usd AS marketValueUsd
+         FROM positions
+         WHERE portfolio_id = ? AND quantity > 0`
+      )
+      .bind(TIM_PORTFOLIO_ID)
+  );
+}
+
 async function getMarketData(
   db: D1Database,
   provider: YahooFinanceMarketDataProvider,
@@ -330,6 +397,43 @@ async function getMarketData(
     ...live,
     userMessage: live.userMessage ?? userMessageForMarketData(symbol, live.error),
     error: live.userMessage ?? userMessageForMarketData(symbol, live.error)
+  };
+}
+
+function exposureForAsset(
+  asset: AssetRegistryRecord,
+  positions: PositionRow[],
+  totalValueUsd: number,
+  drawdownPct: number
+) {
+  const denominator = totalValueUsd > 0 ? totalValueUsd : 1;
+  const symbolExposureUsd = positions
+    .filter((position) => position.symbol === asset.symbol)
+    .reduce((sum, position) => sum + position.marketValueUsd, 0);
+  const categoryExposureUsd = positions
+    .filter((position) => position.assetClass === asset.assetType)
+    .reduce((sum, position) => sum + position.marketValueUsd, 0);
+
+  return {
+    portfolioValueUsd: totalValueUsd,
+    drawdownPct,
+    symbolExposurePct: symbolExposureUsd / denominator,
+    categoryExposurePct: categoryExposureUsd / denominator
+  };
+}
+
+function screenedOutDecision(marketData: MarketDataset, screen: ScreenResult): StrategyDecision {
+  const indicators = calculateIndicators(marketData.candles);
+  const signalKey = `${marketData.symbol}:DO_NOTHING:screen:${marketData.asOf}:${screen.reason.slice(0, 48)}`;
+  return {
+    symbol: marketData.symbol,
+    action: "DO_NOTHING",
+    confidenceScore: 0.9,
+    riskScore: 0.05,
+    indicators,
+    explanation: screen.reason,
+    signalKey,
+    transactionCostEstimateUsd: 0
   };
 }
 
@@ -392,7 +496,8 @@ async function recordRecommendationAndJournal(
   db: D1Database,
   marketData: MarketDataset,
   decision: StrategyDecision,
-  risk: { allowed: boolean; riskScore: number; reasons: string[] }
+  risk: { allowed: boolean; riskScore: number; reasons: string[] },
+  screen?: ScreenResult
 ): Promise<void> {
   const action = risk.allowed ? decision.action : "DO_NOTHING";
   const explanation = risk.allowed ? decision.explanation : `Risk checks blocked execution: ${risk.reasons.join(" ")}`;
@@ -404,8 +509,9 @@ async function recordRecommendationAndJournal(
       `INSERT OR IGNORE INTO recommendations (
         id, portfolio_id, symbol, action, explanation, confidence_score, risk_score,
         market_data_source, price_usd, price_as_of, signal_key, indicators_json,
-        transaction_cost_estimate_usd
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        transaction_cost_estimate_usd, asset_type, screen_eligible, screen_score,
+        screen_rank, screen_reason, data_freshness, current_exposure_pct
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       recommendationId,
@@ -420,7 +526,14 @@ async function recordRecommendationAndJournal(
       marketData.asOf,
       decision.signalKey,
       JSON.stringify(decision.indicators),
-      decision.transactionCostEstimateUsd
+      decision.transactionCostEstimateUsd,
+      screen?.assetType ?? marketData.assetClass,
+      screen ? (screen.eligible ? 1 : 0) : null,
+      screen?.score ?? null,
+      screen?.rank ?? null,
+      screen?.reason ?? null,
+      screen?.dataFreshness ?? null,
+      screen?.currentExposurePct ?? null
     )
     .run();
 

@@ -4,9 +4,11 @@ import { getSettings } from "../settings/service.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { getMarketDataStatuses } from "../market/status.ts";
 import { sanitizeForUser } from "../shared/messages.ts";
+import { listEnabledWatchlistAssets } from "../market/assets.ts";
+import { getOpportunities } from "../paper/service.ts";
 
 export async function getDashboardData(db: D1Database): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db),
@@ -112,9 +114,25 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
            LIMIT 1`
         )
         .bind(TIM_PORTFOLIO_ID)
-        .first<{ totalValueUsd: number }>()
+        .first<{ totalValueUsd: number }>(),
+      listEnabledWatchlistAssets(db),
+      getOpportunities(db) as Promise<{ opportunities: Array<DashboardOpportunity> }>,
+      listRows(
+        db.prepare(
+          `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf
+           FROM market_snapshots ms
+           JOIN (
+             SELECT symbol, MAX(created_at) AS createdAt
+             FROM market_snapshots
+             GROUP BY symbol
+           ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
+        )
+      )
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
+  const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
+  const statusBySymbol = new Map((marketStatuses as Array<{ symbol: string }>).map((status) => [status.symbol, status]));
+  const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
 
   return {
     settings,
@@ -133,8 +151,43 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
     summaries,
     rejectedOpportunities: rejected,
     marketDataStatus: marketStatuses,
-    equityHistory
+    equityHistory,
+    assetUniverse: assets.map((asset) => ({
+      symbol: asset.symbol,
+      assetType: asset.assetType,
+      enabled: asset.enabled,
+      tradable: asset.tradable,
+      priceUsd: priceBySymbol.get(asset.symbol)?.priceUsd ?? null,
+      priceAsOf: priceBySymbol.get(asset.symbol)?.priceAsOf ?? null,
+      freshness: statusLabel(statusBySymbol.get(asset.symbol) as DashboardMarketStatus | undefined),
+      status: statusMessage(statusLabel(statusBySymbol.get(asset.symbol) as DashboardMarketStatus | undefined), (statusBySymbol.get(asset.symbol) as DashboardMarketStatus | undefined)?.userMessage ?? ""),
+      currentPositionValueUsd: positionsBySymbol.get(asset.symbol) ?? 0
+    })),
+    opportunities: opportunityData.opportunities
   };
+}
+
+interface DashboardOpportunity {
+  symbol: string;
+  assetType: string;
+  eligible: boolean;
+  screenScore: number | null;
+  rank: number | null;
+  latestPriceOrNav: number | null;
+  freshness: string;
+  decision: string;
+  confidence: number;
+  exclusionOrSkipReason: string;
+  currentExposure: number | null;
+}
+
+interface DashboardMarketStatus {
+  symbol: string;
+  source: string;
+  fetchedAt: string;
+  isFresh: boolean;
+  status: string;
+  userMessage: string;
 }
 
 export async function renderDashboard(db: D1Database): Promise<Response> {
@@ -160,6 +213,8 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
     rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
     marketDataStatus: Array<{ symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }>;
     equityHistory: Array<{ recordedAt: string; totalValueUsd: number }>;
+    assetUniverse: Array<{ symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }>;
+    opportunities: Array<DashboardOpportunity>;
   };
   const html = renderDashboardHtml(data);
 
@@ -193,6 +248,8 @@ export function renderDashboardHtml(data: {
   rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
   marketDataStatus?: Array<{ symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }>;
   equityHistory?: Array<{ recordedAt: string; totalValueUsd: number }>;
+  assetUniverse?: Array<{ symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }>;
+  opportunities?: Array<DashboardOpportunity>;
 }): string {
   const latestDecision = data.journal?.[0];
   const latestRecommendation = data.recommendations[0];
@@ -239,6 +296,9 @@ export function renderDashboardHtml(data: {
     .status-stale { background: #ffe5d0; color: #8a3b12; }
     .status-unavailable { background: #ffe1e1; color: #9f1c1c; }
     .history { width: 100%; height: 150px; display: block; }
+    .filters { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; }
+    .filter { border: 1px solid #cfd8e3; background: #f7fafc; color: #1f2a37; border-radius: 999px; padding: 6px 10px; font-size: .78rem; font-weight: 700; }
+    .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; }
     .axis { stroke: #d9e1ea; stroke-width: 1; }
     .line { fill: none; stroke: #246bfe; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
     nav { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0 0; }
@@ -277,6 +337,8 @@ export function renderDashboardHtml(data: {
       ${section("positions", "Positions", data.positions.map((p) => positionRow(p)).join(""))}
       ${section("market-data", "Market Data Status", (data.marketDataStatus ?? []).map((m) => marketStatusRow(m)).join(""))}
     </section>
+    ${section("asset-universe", "Asset Universe", renderFilters() + `<div class="asset-grid">${(data.assetUniverse ?? []).map(assetCard).join("")}</div>`)}
+    ${section("opportunities", "Opportunities", renderFilters() + `<div class="card-list">${(data.opportunities ?? []).map(opportunityCard).join("")}</div>`)}
     <section class="two-col">
       ${section("trades", "Latest Trades", data.trades.map((t) => tradeCard(t)).join(""))}
       ${section("journal", "Decision Journal", (data.journal ?? []).map((j) => decisionCard(j)).join(""))}
@@ -348,7 +410,10 @@ function marketStatusRow(status: { symbol: string; source: string; fetchedAt: st
   return `<div class="row"><span>${escapeHtml(status.symbol)}</span><span>${badge(label, statusClass(label))} ${escapeHtml(statusMessage(label, status.userMessage))}<br><span class="muted">${escapeHtml(status.source)} · ${escapeHtml(formatDateTime(status.fetchedAt))}</span></span></div>`;
 }
 
-function statusLabel(status: { isFresh: boolean; status: string; userMessage: string }): "Fresh" | "Cached" | "Stale" | "Unavailable" {
+function statusLabel(status?: { isFresh: boolean; status: string; userMessage: string }): "Fresh" | "Cached" | "Stale" | "Unavailable" {
+  if (!status) {
+    return "Unavailable";
+  }
   if (/stale/i.test(status.userMessage)) {
     return "Stale";
   }
@@ -381,6 +446,42 @@ function statusMessage(label: string, message: string): string {
 function tradeCard(trade: { symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }): string {
   const sideClass = trade.side === "BUY" ? "badge-buy" : trade.side === "SELL" ? "badge-sell" : "badge-neutral";
   return `<div class="mini-card"><div class="mini-head"><span>${badge(trade.side, sideClass)} <strong>${escapeHtml(trade.symbol)}</strong></span><span class="muted">${escapeHtml(formatDateTime(trade.executedAt))}</span></div><div>${escapeHtml(formatQuantity(trade.quantity, trade.symbol))} @ ${escapeHtml(money(trade.priceUsd))}</div></div>`;
+}
+
+function renderFilters(): string {
+  return `<div class="filters">
+    ${["All assets", "ETFs", "Stocks", "Crypto", "REITs", "Mutual funds", "Eligible only"].map((label) => `<span class="filter">${escapeHtml(label)}</span>`).join("")}
+  </div>`;
+}
+
+function assetCard(asset: { symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }): string {
+  const status = asset.enabled ? (asset.tradable ? "Tracked and paper-tradable" : "Tracked only") : "Disabled";
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(asset.symbol)}</strong>${badge(asset.freshness, statusClass(asset.freshness))}</div>
+    <div class="muted">${escapeHtml(asset.assetType.replace("_", " "))} · ${escapeHtml(status)}</div>
+    <div>${escapeHtml(asset.priceUsd === null ? "Price/NAV unavailable" : money(asset.priceUsd))}</div>
+    <div class="muted">${escapeHtml(asset.status)}</div>
+    <div class="muted">Position ${escapeHtml(money(asset.currentPositionValueUsd))}</div>
+  </div>`;
+}
+
+function opportunityCard(opportunity: DashboardOpportunity): string {
+  const decisionClass = opportunity.decision === "BUY" ? "badge-buy" : opportunity.decision === "SELL" ? "badge-sell" : "badge-neutral";
+  return `<div class="mini-card">
+    <div class="mini-head">
+      <span><strong>${escapeHtml(opportunity.rank ? `#${opportunity.rank} ${opportunity.symbol}` : opportunity.symbol)}</strong> <span class="muted">${escapeHtml(opportunity.assetType)}</span></span>
+      ${badge(opportunity.decision, decisionClass)}
+    </div>
+    <div class="row"><span>Score</span><span>${escapeHtml(formatNullableNumber(opportunity.screenScore))}</span></div>
+    <div class="row"><span>Confidence</span><span>${escapeHtml(confidenceLabel(opportunity.confidence))}</span></div>
+    <div class="row"><span>Price/NAV</span><span>${escapeHtml(opportunity.latestPriceOrNav === null ? "Unavailable" : money(opportunity.latestPriceOrNav))}</span></div>
+    <div class="row"><span>Exposure</span><span>${escapeHtml(opportunity.currentExposure === null ? "Unavailable" : pct(opportunity.currentExposure))}</span></div>
+    <div class="muted">${escapeHtml(sanitizeForUser(opportunity.exclusionOrSkipReason, "No action was taken."))}</div>
+  </div>`;
+}
+
+function formatNullableNumber(value: number | null): string {
+  return value === null ? "Unavailable" : value.toFixed(2);
 }
 
 function decisionCard(decision: { symbol?: string; decision: string; explanation: string; confidenceScore?: number }): string {

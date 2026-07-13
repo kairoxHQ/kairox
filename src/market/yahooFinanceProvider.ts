@@ -26,7 +26,17 @@ interface YahooChartResponse {
 
 const KNOWN_SYMBOLS: Record<string, AssetClass> = {
   "BTC-USD": "crypto",
-  SPY: "etf"
+  SPY: "etf",
+  VOO: "etf",
+  VTI: "etf",
+  QQQ: "etf",
+  SCHD: "etf",
+  SOXX: "etf",
+  BND: "bond_fund",
+  MSFT: "stock",
+  AAPL: "stock",
+  O: "reit",
+  FXAIX: "mutual_fund"
 };
 
 export class YahooFinanceMarketDataProvider {
@@ -124,7 +134,7 @@ export class YahooFinanceMarketDataProvider {
         const response = await this.fetchFn(url, {
           headers: {
             accept: "application/json",
-            "user-agent": "Mozilla/5.0 (compatible; CryptoLabAI/0.2; +https://cryptolab-ai.aprilfamilycookbook.workers.dev)"
+            "user-agent": "Mozilla/5.0 (compatible; Kairox/0.2; +https://app.kairoxhq.com)"
           },
           signal: controller.signal
         });
