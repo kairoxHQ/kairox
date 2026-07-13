@@ -32,6 +32,14 @@
 - Keep BTC-USD and SPY enabled as seed records instead of hardcoded trading-loop constants.
 - Keep options, futures, forex, leverage, short selling, and live execution out of scope.
 
+## Milestone 7B: Valuation, Journey, And Milestones
+
+- Add live paper valuation from existing holdings and validated public market snapshots.
+- Add idempotent daily account snapshots with account-timezone boundaries.
+- Add reusable historical performance metrics that separate trading return from deposits and withdrawals.
+- Add a normalized beginner/intermediate/advanced dashboard data contract.
+- Add configurable milestone definitions, idempotent awards, and the permanent Kairox Journey timeline.
+
 ## Milestone 4: Broker Adapter Prototypes
 
 - Add disabled-by-default broker adapters.

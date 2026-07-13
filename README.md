@@ -16,6 +16,7 @@ Kairox is guided by the belief that individual investors deserve clear, evidence
 - [Domain Migration](DOMAIN_MIGRATION.md)
 - [Roadmap](ROADMAP.md)
 - [Principles](PRINCIPLES.md)
+- [Development Log](DEVELOPMENT_LOG.md)
 
 ## Current Status
 
@@ -27,6 +28,7 @@ Kairox is guided by the belief that individual investors deserve clear, evidence
 - Scheduled automated paper runs through Cloudflare cron triggers on the production `kairox` Worker.
 - Database-driven asset registry and watchlists for stocks, ETFs, mutual funds, crypto, REITs, bond funds, and money-market or cash-equivalent funds.
 - Mobile-friendly dashboard at `/dashboard`.
+- Live paper-portfolio valuation, daily account snapshots, milestone awards, and an append-only Kairox Journey timeline.
 - Paper trading only.
 - No brokerage credentials, live orders, leverage, options execution, futures execution, or paid AI API calls.
 
@@ -43,6 +45,13 @@ Kairox is guided by the belief that individual investors deserve clear, evidence
 - `GET /performance`
 - `GET /dashboard`
 - `GET /dashboard/data`
+- `GET /dashboard/contract`
+- `GET /valuation`
+- `GET /daily-snapshots`
+- `GET /historical-performance`
+- `GET /daily-summary`
+- `GET /milestones`
+- `GET /journey`
 - `GET /scheduled-runs`
 - `GET /summaries`
 - `GET /settings`
@@ -82,11 +91,23 @@ https://app.kairoxhq.com/dashboard
 
 The dashboard shows portfolio value, cash, positions, gain/loss, price return, dividend return, trade count, scheduled runs, automation status, recommendations, rejected opportunities, benchmarks, summaries, and settings. It does not expose `PAPER_RUN_SECRET`.
 
+`GET /dashboard/contract` returns one normalized data contract for beginner, intermediate, and advanced dashboard views. All views share the same valuation, performance, market-data, trade, and decision source values.
+
 The fallback legacy Worker URL remains `https://cryptolab-ai.aprilfamilycookbook.workers.dev`. Current production Cloudflare resources in the dedicated Kairox account are Worker `kairox` and D1 database `kairox-production-db`. See `DOMAIN_MIGRATION.md`.
 
 ## Dividends
 
 Dividend support is accounting-first. The system separates price return, dividend return, and total return. It records simulated dividend events only when reliable amount and payment-date data is available. If dividend data is unavailable, it is marked unavailable and excluded from dividend-return calculations. Dividend yield is not a primary objective; it is a secondary preference when expected risk-adjusted total return is otherwise comparable.
+
+## Valuation, Snapshots, And Journey
+
+Kairox calculates live paper valuations from stored positions and the latest validated public market snapshots. If current market data is unavailable, the valuation keeps the last valid position price, marks the data stale or unavailable, and includes the market-data timestamp. Values are never invented by an AI model.
+
+Daily snapshots are stored in `account_daily_snapshots` with one row per portfolio and account-date. The account timezone defaults to `America/New_York`; timestamps are stored in UTC and converted only for account-date boundaries or display. Snapshot creation is idempotent and does not reset the day's starting value.
+
+Milestones are defined in `milestone_definitions` and awarded in `milestone_awards`. Definitions include ID, category, badge, condition type, threshold, comparison operator, repeatability, enabled state, and version. One-time milestones use unique award keys so retries cannot award them twice.
+
+The Kairox Journey timeline is stored in `journey_events`. It is append-only wherever practical and records important account, trade, risk, milestone, system, and manual-intervention events.
 
 ## Local Development
 
@@ -104,6 +125,7 @@ Normal environments can use:
 pnpm install
 pnpm run dev
 pnpm run typecheck
+pnpm test
 ```
 
 ## Cloudflare D1

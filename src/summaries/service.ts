@@ -3,6 +3,8 @@ import { calculatePerformance } from "../portfolio/performance.ts";
 import { listEnabledWatchlistAssets } from "../market/assets.ts";
 import { getMarketDataStatuses } from "../market/status.ts";
 import { sanitizeForUser } from "../shared/messages.ts";
+import { getLatestDailySnapshots, type DailySnapshotSummary } from "../portfolio/dailySnapshots.ts";
+import { getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
 
 export async function generateSummaries(db: D1Database, now = new Date()): Promise<void> {
   const date = now.toISOString().slice(0, 10);
@@ -112,6 +114,60 @@ export async function getSummaries(db: D1Database): Promise<unknown> {
   };
 }
 
+export async function getDailySummaryData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
+  const [valuation, snapshots, marketStatuses] = await Promise.all([
+    getPortfolioValuation(db, portfolioId),
+    getLatestDailySnapshots(db, portfolioId),
+    getMarketDataStatuses(db) as Promise<Array<{ symbol: string; status?: string; isFresh?: boolean; userMessage: string }>>
+  ]);
+  const latest = snapshots[0] ?? emptySnapshot(valuation);
+  return buildDailySummary(valuation, latest, marketStatuses);
+}
+
+export function buildDailySummary(
+  valuation: PortfolioValuation,
+  snapshot: DailySnapshotSummary,
+  marketStatuses: Array<{ symbol: string; status?: string; isFresh?: boolean; userMessage: string }>
+) {
+  const marketDataHealth = marketStatuses.length
+    ? marketStatuses.map((status) => ({ symbol: status.symbol, message: summaryStatusMessage(status) }))
+    : [{ symbol: "portfolio", message: "No market-data status records are available yet." }];
+  const tradesTaken = snapshot.tradeCount;
+  const beginnerSummary =
+    tradesTaken === 0
+      ? `Kairox made no trades today. The account is ${valuation.dataStatus === "live" ? "using live market data" : `showing ${valuation.dataStatus} market data`}.`
+      : `Kairox recorded ${tradesTaken} paper trade${tradesTaken === 1 ? "" : "s"} today.`;
+
+  return {
+    date: snapshot.snapshotDate,
+    startingAccountValueUsd: snapshot.startingTotalAccountValueUsd,
+    endingAccountValueUsd: snapshot.endingTotalAccountValueUsd ?? valuation.totalAccountValueUsd,
+    dailyDollarChangeUsd: snapshot.dailyProfitLossUsd,
+    dailyPercentageChange: snapshot.dailyReturnPct,
+    tradesTaken,
+    winningTrades: snapshot.winningTrades,
+    losingTrades: snapshot.losingTrades,
+    bestTrade: snapshot.bestTrade,
+    largestLoss: snapshot.largestLosingTrade,
+    feesUsd: snapshot.feesUsd,
+    dailyDrawdown: snapshot.maximumDailyDrawdownPct,
+    riskLimitStatus: valuation.dataStatus === "stale" || valuation.dataStatus === "unavailable" ? "Market-data guard active" : "Within configured paper limits",
+    marketDataHealth,
+    kairoxStatus: valuation.dataStatus === "unavailable" ? "waiting" : "watching",
+    beginnerSummary,
+    advancedSummary: {
+      valuationTimestamp: valuation.valuationTimestamp,
+      dataStatus: valuation.dataStatus,
+      realizedProfitLossUsd: snapshot.realizedProfitLossUsd,
+      unrealizedProfitLossUsd: snapshot.unrealizedProfitLossUsd,
+      highestAccountValueUsd: snapshot.highestAccountValueUsd,
+      lowestAccountValueUsd: snapshot.lowestAccountValueUsd,
+      reconciled: snapshot.reconciled,
+      reconciliationStatus: snapshot.reconciliationStatus
+    }
+  };
+}
+
 async function upsertSummary(
   db: D1Database,
   type: "morning" | "end_of_day",
@@ -150,4 +206,32 @@ function summaryStatusMessage(status: { status?: string; isFresh?: boolean; user
     return "Latest quote is stale; evaluation may be deferred.";
   }
   return sanitizeForUser(status.userMessage, "Market data temporarily unavailable; no trade was made.");
+}
+
+function emptySnapshot(valuation: PortfolioValuation): DailySnapshotSummary {
+  return {
+    portfolioId: valuation.portfolioId,
+    snapshotDate: valuation.valuationTimestamp.slice(0, 10),
+    startingCashUsd: valuation.cashUsd,
+    startingPortfolioValueUsd: valuation.portfolioValueUsd,
+    startingTotalAccountValueUsd: valuation.totalAccountValueUsd,
+    endingCashUsd: null,
+    endingPortfolioValueUsd: null,
+    endingTotalAccountValueUsd: null,
+    dailyProfitLossUsd: 0,
+    dailyReturnPct: 0,
+    realizedProfitLossUsd: 0,
+    unrealizedProfitLossUsd: valuation.unrealizedProfitLossUsd,
+    tradeCount: 0,
+    winningTrades: 0,
+    losingTrades: 0,
+    bestTrade: null,
+    largestLosingTrade: null,
+    feesUsd: 0,
+    highestAccountValueUsd: valuation.totalAccountValueUsd,
+    lowestAccountValueUsd: valuation.totalAccountValueUsd,
+    maximumDailyDrawdownPct: 0,
+    reconciled: valuation.dataMode === "paper",
+    reconciliationStatus: "no_daily_snapshot_yet"
+  };
 }

@@ -18,6 +18,10 @@ import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import type { Env, MarketDataset } from "../shared/types.ts";
 import { generateSummaries } from "../summaries/service.ts";
 import { userMessageForMarketData } from "../shared/messages.ts";
+import { completeDailySnapshot, ensureDailyStartSnapshot } from "../portfolio/dailySnapshots.ts";
+import { getPortfolioValuation, recordValuationSnapshot } from "../portfolio/valuation.ts";
+import { evaluateAndAwardMilestones } from "../milestones/service.ts";
+import { recordValuationJourneyEvents } from "../journey/service.ts";
 
 const SPREAD_RATE = 0.0025;
 const FEE_RATE = 0.001;
@@ -185,6 +189,12 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
   await updateDailyAndBenchmarks(env.DB, portfolioId);
   const performance = await recordEquityHistory(env.DB, runStartedAt, portfolioId);
+  await ensureDailyStartSnapshot(env.DB, portfolioId, now);
+  const valuation = await getPortfolioValuation(env.DB, portfolioId, now);
+  await recordValuationSnapshot(env.DB, valuation);
+  await completeDailySnapshot(env.DB, portfolioId, now);
+  await evaluateAndAwardMilestones(env.DB, portfolioId, valuation);
+  await recordValuationJourneyEvents(env.DB, valuation);
   await generateSummaries(env.DB, now);
   const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB, portfolioId), new Map(), portfolioId);
   const summary = {

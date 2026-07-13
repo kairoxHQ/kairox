@@ -19,6 +19,13 @@ import type { Env } from "./shared/types.ts";
 import { getJournal, getRecommendations } from "./journal/service.ts";
 import { getMarket } from "./paper/service.ts";
 import { getSummaries } from "./summaries/service.ts";
+import { getPortfolioValuation } from "./portfolio/valuation.ts";
+import { getLatestDailySnapshots } from "./portfolio/dailySnapshots.ts";
+import { getHistoricalMetrics } from "./portfolio/historicalMetrics.ts";
+import { getDashboardContract } from "./dashboard/contract.ts";
+import { getMilestones } from "./milestones/service.ts";
+import { getJourney } from "./journey/service.ts";
+import { getDailySummaryData } from "./summaries/service.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -32,6 +39,10 @@ function safetyStatus(env: Env) {
     futuresExecutionEnabled: false,
     paidAiApiCallsEnabled: false
   };
+}
+
+function requestedPortfolioId(url: URL): string | undefined {
+  return url.searchParams.get("portfolioId") ?? url.searchParams.get("portfolio_id") ?? undefined;
 }
 
 export default {
@@ -60,6 +71,13 @@ export default {
       "/performance",
       "/dashboard",
       "/dashboard/data",
+      "/dashboard/contract",
+      "/valuation",
+      "/daily-snapshots",
+      "/historical-performance",
+      "/daily-summary",
+      "/milestones",
+      "/journey",
       "/scheduled-runs",
       "/summaries",
       "/settings"
@@ -208,6 +226,32 @@ export default {
         return json(await getPerformance(env.DB));
       }
 
+      if (url.pathname === "/valuation") {
+        return json(await getPortfolioValuation(env.DB, requestedPortfolioId(url)));
+      }
+
+      if (url.pathname === "/daily-snapshots") {
+        return json({
+          snapshots: await getLatestDailySnapshots(env.DB, requestedPortfolioId(url))
+        });
+      }
+
+      if (url.pathname === "/historical-performance") {
+        return json({ metrics: await getHistoricalMetrics(env.DB, requestedPortfolioId(url)) });
+      }
+
+      if (url.pathname === "/daily-summary") {
+        return json(await getDailySummaryData(env.DB, requestedPortfolioId(url)));
+      }
+
+      if (url.pathname === "/milestones") {
+        return json(await getMilestones(env.DB, requestedPortfolioId(url)));
+      }
+
+      if (url.pathname === "/journey") {
+        return json(await getJourney(env.DB, requestedPortfolioId(url)));
+      }
+
       if (url.pathname === "/scheduled-runs") {
         return json(await getScheduledRuns(env.DB));
       }
@@ -222,6 +266,10 @@ export default {
 
       if (url.pathname === "/dashboard/data") {
         return json(await getDashboardData(env.DB));
+      }
+
+      if (url.pathname === "/dashboard/contract") {
+        return json(await getDashboardContract(env.DB, requestedPortfolioId(url)));
       }
 
       if (url.pathname === "/dashboard") {
