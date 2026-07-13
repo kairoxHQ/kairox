@@ -760,7 +760,8 @@ function summaryCard(summary: { summaryType: string; summaryDate?: string; title
 
 function formatTimestampElement(value?: string, mode: "updated" | "cached" = "updated"): string {
   const formatted = formatDashboardTimestamp(value, new Date(), undefined, mode);
-  return `<time data-kairox-time="${escapeHtml(value ?? "")}" data-kairox-time-mode="${mode}" data-kairox-time-status="${formatted.status}">${escapeHtml(formatted.text)}</time>`;
+  const fallback = formatted.status === "clock_skew" || formatted.status === "missing" || formatted.status === "invalid" ? "Timestamp unavailable" : "Loading timestamp";
+  return `<time data-kairox-time="${escapeHtml(value ?? "")}" data-kairox-time-mode="${mode}" data-kairox-time-status="${formatted.status}">${escapeHtml(fallback)}</time>`;
 }
 
 export function formatDashboardTimestamp(
