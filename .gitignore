@@ -3,6 +3,7 @@ node_modules/
 .wrangler/
 .xdg-config/
 dist/
+migration-backup/
 .dev.vars
 .env
 .env.*
