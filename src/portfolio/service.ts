@@ -1,15 +1,21 @@
-import { listRows, TIM_PORTFOLIO_ID, TIM_USER_ID } from "../shared/db.ts";
+import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 
-export async function getPortfolio(db: D1Database) {
-  const user = await db.prepare("SELECT id, name, created_at AS createdAt FROM users WHERE id = ?").bind(TIM_USER_ID).first();
+export async function getPortfolio(db: D1Database, portfolioId = TIM_PORTFOLIO_ID) {
   const portfolio = await db
     .prepare(
-      `SELECT id, name, cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd,
-        currency, mode, created_at AS createdAt, updated_at AS updatedAt
-       FROM portfolios WHERE id = ?`
+      `SELECT p.id, p.user_id AS userId, p.broker_account_id AS brokerAccountId,
+        p.name, p.cash_usd AS cashUsd, p.starting_balance_usd AS startingBalanceUsd,
+        p.currency, p.mode, p.created_at AS createdAt, p.updated_at AS updatedAt,
+        ba.status AS accountStatus, ba.account_type AS accountType
+       FROM portfolios p
+       LEFT JOIN broker_accounts ba ON ba.id = p.broker_account_id
+       WHERE p.id = ?`
     )
-    .bind(TIM_PORTFOLIO_ID)
-    .first();
+    .bind(portfolioId)
+    .first<{ userId: string }>();
+  const user = portfolio
+    ? await db.prepare("SELECT id, name, created_at AS createdAt FROM users WHERE id = ?").bind(portfolio.userId).first()
+    : null;
   const positions = await listRows(
     db
       .prepare(
@@ -17,7 +23,7 @@ export async function getPortfolio(db: D1Database) {
           current_price_usd AS currentPriceUsd, market_value_usd AS marketValueUsd, updated_at AS updatedAt
          FROM positions WHERE portfolio_id = ? ORDER BY symbol`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
   const goals = await listRows(
     db
@@ -25,7 +31,7 @@ export async function getPortfolio(db: D1Database) {
         `SELECT objective, target_description AS targetDescription, created_at AS createdAt
          FROM portfolio_goals WHERE portfolio_id = ?`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
   const riskProfile = await db
     .prepare(
@@ -35,7 +41,7 @@ export async function getPortfolio(db: D1Database) {
         live_trading_allowed AS liveTradingAllowed
        FROM risk_profiles WHERE portfolio_id = ?`
     )
-    .bind(TIM_PORTFOLIO_ID)
+    .bind(portfolioId)
     .first();
 
   return { user, portfolio, positions, goals, riskProfile };

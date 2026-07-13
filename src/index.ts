@@ -27,6 +27,7 @@ import { getMilestones } from "./milestones/service.ts";
 import { getJourney } from "./journey/service.ts";
 import { getDailySummaryData } from "./summaries/service.ts";
 import { getAllProfileHoldingQuotes, getHoldingQuotes, getMarketTickerQuotes, getQuotesForSymbols } from "./market/quotes.ts";
+import { PerformanceAnalyticsService } from "./analytics/performance.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -115,7 +116,7 @@ export default {
       "/settings"
     ]);
 
-    if (getRoutes.has(url.pathname) && request.method !== "GET") {
+    if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
@@ -182,12 +183,12 @@ export default {
       }
 
       if (url.pathname === "/portfolio") {
-        return json(await getPortfolio(env.DB));
+        return json(await getPortfolio(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
       }
 
       if (url.pathname === "/recommendations") {
         return json({
-          recommendations: await getRecommendations(env.DB),
+          recommendations: await getRecommendations(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined),
           policy: {
             defaultAction: "DO_NOTHING",
             explanation: "Recommendations are read from the decision record. New recommendations must be logged before they are returned as recommendations of record."
@@ -196,7 +197,7 @@ export default {
       }
 
       if (url.pathname === "/journal") {
-        return json({ decisions: await getJournal(env.DB) });
+        return json({ decisions: await getJournal(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined) });
       }
 
       if (url.pathname === "/benchmarks") {
@@ -227,7 +228,7 @@ export default {
       }
 
       if (url.pathname === "/opportunities") {
-        return json(await getOpportunities(env.DB));
+        return json(await getOpportunities(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
       }
 
       if (url.pathname === "/profiles") {
@@ -271,11 +272,29 @@ export default {
       }
 
       if (url.pathname === "/trades") {
-        return json(await getTrades(env.DB));
+        return json(await getTrades(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
       }
 
       if (url.pathname === "/performance") {
-        return json(await getPerformance(env.DB));
+        return json(await getPerformance(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
+      }
+
+      if (url.pathname.startsWith("/api/analytics")) {
+        const analytics = new PerformanceAnalyticsService(env.DB);
+        const portfolioId = requestedPortfolioId(url);
+        if (url.pathname === "/api/analytics" || url.pathname === "/api/analytics/performance") {
+          return json(await analytics.getPerformance(portfolioId));
+        }
+        if (url.pathname === "/api/analytics/summary") {
+          return json(await analytics.getSummary(portfolioId));
+        }
+        if (url.pathname === "/api/analytics/history") {
+          return json(await analytics.getHistory(portfolioId));
+        }
+        if (url.pathname === "/api/analytics/records") {
+          return json(await analytics.getRecords(portfolioId));
+        }
+        return notFound();
       }
 
       if (url.pathname === "/valuation") {
@@ -317,7 +336,7 @@ export default {
       }
 
       if (url.pathname === "/dashboard/data") {
-        return json(await getDashboardData(env.DB));
+        return json(await getDashboardData(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
       }
 
       if (url.pathname === "/dashboard/contract") {
@@ -325,7 +344,7 @@ export default {
       }
 
       if (url.pathname === "/dashboard") {
-        return renderDashboard(env.DB);
+        return renderDashboard(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined);
       }
 
       if (url.pathname === "/diagnostics") {

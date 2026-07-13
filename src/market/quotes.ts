@@ -1,9 +1,10 @@
 import { isRegularUsMarketHours } from "./hours.ts";
 import { lastKnownGoodMaxAgeSeconds, shouldUseLastKnownGood } from "./status.ts";
 import { YahooFinanceMarketDataProvider } from "./yahooFinanceProvider.ts";
-import { listRows, PERMANENT_PORTFOLIO_IDS } from "../shared/db.ts";
+import { listRows } from "../shared/db.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
 import type { AssetClass, MarketCandle, MarketDataset } from "../shared/types.ts";
+import { listPortfolioProfiles } from "../portfolio/profiles.ts";
 
 export type UserQuoteStatus = "Live" | "Delayed" | "Cached" | "Market Closed" | "Stale" | "Unavailable";
 export type QuoteDirection = "up" | "down" | "unchanged";
@@ -126,8 +127,8 @@ export async function getQuotesForSymbols(db: D1Database, symbols: string, now =
 }
 
 export async function getHoldingQuotes(db: D1Database, portfolioId: string, now = new Date()): Promise<{ portfolioId: string; holdings: HoldingQuote[]; generatedAt: string }> {
-  const allowedPortfolio = PERMANENT_PORTFOLIO_IDS.find((id) => id === portfolioId);
-  if (!allowedPortfolio) {
+  const existing = await db.prepare("SELECT id FROM portfolios WHERE id = ?").bind(portfolioId).first<{ id: string }>();
+  if (!existing) {
     return { portfolioId, holdings: [], generatedAt: now.toISOString() };
   }
 
@@ -145,7 +146,7 @@ export async function getHoldingQuotes(db: D1Database, portfolioId: string, now 
          WHERE p.portfolio_id = ? AND p.quantity > 0
          ORDER BY p.market_value_usd DESC, p.symbol ASC`
       )
-      .bind(allowedPortfolio)
+      .bind(existing.id)
   );
   const provider = new YahooFinanceMarketDataProvider();
   const quotes = await Promise.all(
@@ -172,11 +173,12 @@ export async function getHoldingQuotes(db: D1Database, portfolioId: string, now 
     })
   );
 
-  return { portfolioId: allowedPortfolio, holdings: quotes, generatedAt: now.toISOString() };
+  return { portfolioId: existing.id, holdings: quotes, generatedAt: now.toISOString() };
 }
 
 export async function getAllProfileHoldingQuotes(db: D1Database, now = new Date()): Promise<{ profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>; generatedAt: string }> {
-  const profiles = await Promise.all(PERMANENT_PORTFOLIO_IDS.map((portfolioId) => getHoldingQuotes(db, portfolioId, now)));
+  const portfolioProfiles = await listPortfolioProfiles(db);
+  const profiles = await Promise.all(portfolioProfiles.map((profile) => getHoldingQuotes(db, profile.portfolioId, now)));
   return {
     profiles: profiles.map((profile) => ({ portfolioId: profile.portfolioId, holdings: profile.holdings })),
     generatedAt: now.toISOString()

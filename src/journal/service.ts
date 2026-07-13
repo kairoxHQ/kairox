@@ -1,6 +1,6 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 
-export async function getRecommendations(db: D1Database) {
+export async function getRecommendations(db: D1Database, portfolioId = TIM_PORTFOLIO_ID) {
   return listRows(
     db
       .prepare(
@@ -13,11 +13,11 @@ export async function getRecommendations(db: D1Database) {
          ORDER BY created_at DESC
          LIMIT 25`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
 }
 
-export async function getJournal(db: D1Database) {
+export async function getJournal(db: D1Database, portfolioId = TIM_PORTFOLIO_ID) {
   return listRows(
     db
       .prepare(
@@ -29,6 +29,6 @@ export async function getJournal(db: D1Database) {
          ORDER BY created_at DESC
          LIMIT 50`
       )
-      .bind(TIM_PORTFOLIO_ID)
+      .bind(portfolioId)
   );
 }

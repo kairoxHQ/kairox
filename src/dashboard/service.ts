@@ -6,16 +6,16 @@ import { getMarketDataStatuses } from "../market/status.ts";
 import { sanitizeForUser } from "../shared/messages.ts";
 import { listEnabledWatchlistAssets } from "../market/assets.ts";
 import { getOpportunities } from "../paper/service.ts";
-import { getProfileComparison } from "../portfolio/profiles.ts";
+import { getProfileComparison, listPortfolioProfiles } from "../portfolio/profiles.ts";
 import { getIntelligenceOverview } from "../intelligence/service.ts";
 import { summarizeScheduledRun } from "../scheduler/service.ts";
 import { getAllProfileHoldingQuotes, getMarketTickerQuotes, type HoldingQuote, type NormalizedQuote } from "../market/quotes.ts";
 
-export async function getDashboardData(db: D1Database): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes] =
+export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles] =
     await Promise.all([
       getSettings(db),
-      calculatePerformance(db),
+      calculatePerformance(db, portfolioId),
       getBenchmarks(db),
       listRows(
         db
@@ -27,7 +27,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              WHERE portfolio_id = ? AND quantity > 0
              ORDER BY market_value_usd DESC`
           )
-          .bind(TIM_PORTFOLIO_ID)
+          .bind(portfolioId)
       ),
       listRows(
         db
@@ -40,7 +40,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              ORDER BY created_at DESC
              LIMIT 8`
           )
-          .bind(TIM_PORTFOLIO_ID)
+          .bind(portfolioId)
       ),
       listRows(
         db
@@ -53,7 +53,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              ORDER BY created_at DESC
              LIMIT 8`
           )
-          .bind(TIM_PORTFOLIO_ID)
+          .bind(portfolioId)
       ),
       listRows(
         db
@@ -65,7 +65,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              ORDER BY executed_at DESC
              LIMIT 8`
           )
-          .bind(TIM_PORTFOLIO_ID)
+          .bind(portfolioId)
       ),
       listRows(
         db.prepare(
@@ -96,7 +96,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              ORDER BY created_at DESC
              LIMIT 8`
           )
-          .bind(TIM_PORTFOLIO_ID)
+          .bind(portfolioId)
       ),
       getMarketDataStatuses(db),
       listRows(
@@ -108,7 +108,7 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
              ORDER BY recorded_at ASC
              LIMIT 60`
           )
-          .bind(TIM_PORTFOLIO_ID)
+          .bind(portfolioId)
       ),
       db
         .prepare(
@@ -118,10 +118,10 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
            ORDER BY recorded_at ASC
            LIMIT 1`
         )
-        .bind(TIM_PORTFOLIO_ID)
+        .bind(portfolioId)
         .first<{ totalValueUsd: number }>(),
-      listEnabledWatchlistAssets(db),
-      getOpportunities(db) as Promise<{ opportunities: Array<DashboardOpportunity> }>,
+      listEnabledWatchlistAssets(db, portfolioId),
+      getOpportunities(db, portfolioId) as Promise<{ opportunities: Array<DashboardOpportunity> }>,
       listRows(
         db.prepare(
           `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf
@@ -136,7 +136,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
       getProfileComparison(db),
       getIntelligenceOverview(db),
       getMarketTickerQuotes(db),
-      getAllProfileHoldingQuotes(db)
+      getAllProfileHoldingQuotes(db),
+      listPortfolioProfiles(db)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -144,6 +145,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
   const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
 
   return {
+    selectedPortfolioId: portfolioId,
+    accountProfiles,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -205,8 +208,10 @@ interface DashboardMarketStatus {
   userMessage: string;
 }
 
-export async function renderDashboard(db: D1Database): Promise<Response> {
-  const data = await getDashboardData(db) as {
+export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<Response> {
+  const data = await getDashboardData(db, portfolioId) as {
+    selectedPortfolioId: string;
+    accountProfiles: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -247,6 +252,8 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
 }
 
 export function renderDashboardHtml(data: {
+  selectedPortfolioId?: string;
+  accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -353,6 +360,9 @@ export function renderDashboardHtml(data: {
     .history { width: 100%; height: 150px; display: block; }
     .filters { display: flex; gap: var(--space-2); overflow-x: auto; padding-bottom: var(--space-3); scrollbar-width: thin; }
     .filter { border: 1px solid #cfd8e3; background: #f7fafc; color: #1f2a37; border-radius: 999px; padding: 6px 10px; font-size: .78rem; font-weight: 700; }
+    .account-selector { display: flex; gap: var(--space-3); overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+    .account-option { min-width: 190px; border: 1px solid #dce3eb; border-radius: 8px; padding: var(--space-3); color: inherit; text-decoration: none; background: #fbfcfd; display: grid; gap: 4px; }
+    .account-option[aria-current="true"] { border-color: #246bfe; box-shadow: inset 0 0 0 1px #246bfe; background: #f4f8ff; }
     .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
     .axis { stroke: #d9e1ea; stroke-width: 1; }
     .line { fill: none; stroke: #246bfe; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
@@ -386,6 +396,7 @@ export function renderDashboardHtml(data: {
   </header>
   <main class="page-shell">
     ${section("market-ticker", "Market Ticker", `<div class="ticker-strip" data-market-ticker>${(data.marketTicker?.instruments ?? []).map(tickerItem).join("")}</div>`)}
+    ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -634,6 +645,23 @@ function summaryMetric(label: string, value: string, detail: string): string {
 
 function section(id: string, title: string, body: string): string {
   return `<section id="${id}" class="panel"><h2>${escapeHtml(title)}</h2>${body || '<span class="pill">No records yet</span>'}</section>`;
+}
+
+function renderAccountSelector(
+  profiles: Array<{ portfolioId: string; profileKey?: string; displayName: string; riskPosture?: string }>,
+  selectedPortfolioId: string
+): string {
+  if (profiles.length === 0) {
+    return '<span class="pill">No accounts available</span>';
+  }
+  return `<div class="account-selector">${profiles.map((profile) => {
+    const selected = profile.portfolioId === selectedPortfolioId;
+    return `<a class="account-option" href="/dashboard?portfolioId=${encodeURIComponent(profile.portfolioId)}" aria-current="${selected ? "true" : "false"}">
+      <div class="mini-head"><strong>${escapeHtml(profile.displayName)}</strong><span class="pill">Paper</span></div>
+      <div class="muted">${escapeHtml(profile.riskPosture ?? "simulation")}</div>
+      <div class="muted">${selected ? "Selected account" : "Open account dashboard"}</div>
+    </a>`;
+  }).join("")}</div>`;
 }
 
 function row(left: string, right: string): string {

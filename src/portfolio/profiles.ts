@@ -1,4 +1,4 @@
-import { listRows, PERMANENT_PORTFOLIO_IDS, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { calculatePerformance } from "./performance.ts";
 
 export interface PortfolioProfile {
@@ -106,9 +106,9 @@ export async function getProfileComparison(db: D1Database): Promise<unknown> {
         COALESCE(SUM(pos.market_value_usd), 0) AS positionsValueUsd
        FROM portfolios p
        LEFT JOIN positions pos ON pos.portfolio_id = p.id AND pos.quantity > 0
-       WHERE p.id IN (${PERMANENT_PORTFOLIO_IDS.map(() => "?").join(",")})
+       WHERE p.id IN (${profiles.map(() => "?").join(",")})
        GROUP BY p.id`
-    ).bind(...PERMANENT_PORTFOLIO_IDS)
+    ).bind(...profiles.map((profile) => profile.portfolioId))
   );
   const byPortfolio = new Map(rows.map((row) => [row.portfolioId, row]));
   const metrics = await Promise.all(profiles.map((profile) => getProfileReadinessMetrics(db, profile.portfolioId)));

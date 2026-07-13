@@ -280,7 +280,7 @@ export async function getDiagnostics(db: D1Database): Promise<unknown> {
   };
 }
 
-export async function getTrades(db: D1Database): Promise<unknown> {
+export async function getTrades(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   return {
     trades: await listRows(
       db.prepare(
@@ -288,16 +288,18 @@ export async function getTrades(db: D1Database): Promise<unknown> {
           quantity, price_usd AS priceUsd, fees_usd AS feesUsd, paper_only AS paperOnly,
           signal_key AS signalKey, executed_at AS executedAt
          FROM trades
+         WHERE portfolio_id = ?
          ORDER BY executed_at DESC
          LIMIT 50`
       )
+      .bind(portfolioId)
     )
   };
 }
 
-export async function getPerformance(db: D1Database): Promise<unknown> {
-  const portfolio = await getPortfolioRow(db, TIM_PORTFOLIO_ID);
-  const state = await calculatePortfolioState(db, portfolio, new Map(), TIM_PORTFOLIO_ID);
+export async function getPerformance(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
+  const portfolio = await getPortfolioRow(db, portfolioId);
+  const state = await calculatePortfolioState(db, portfolio, new Map(), portfolioId);
   const snapshots = await listRows(
     db.prepare(
       `SELECT snapshot_date AS snapshotDate, cash_usd AS cashUsd,
@@ -307,13 +309,13 @@ export async function getPerformance(db: D1Database): Promise<unknown> {
        WHERE portfolio_id = ?
        ORDER BY created_at DESC
        LIMIT 30`
-    ).bind(TIM_PORTFOLIO_ID)
+    ).bind(portfolioId)
   );
 
-  return { portfolio: state, metrics: await calculatePerformance(db), snapshots };
+  return { portfolio: state, metrics: await calculatePerformance(db, portfolioId), snapshots };
 }
 
-export async function getOpportunities(db: D1Database): Promise<unknown> {
+export async function getOpportunities(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   const recommendations = await listRows<{
     symbol: string;
     assetType: string | null;
@@ -340,9 +342,11 @@ export async function getOpportunities(db: D1Database): Promise<unknown> {
         data_freshness AS dataFreshness, current_exposure_pct AS currentExposurePct,
         signal_key AS signalKey, created_at AS createdAt
        FROM recommendations
+       WHERE portfolio_id = ?
        ORDER BY created_at DESC
        LIMIT 30`
     )
+    .bind(portfolioId)
   );
 
   return {
