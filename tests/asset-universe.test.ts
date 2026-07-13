@@ -97,11 +97,13 @@ test("asset universe endpoints are public read routes", async () => {
 
 test("Sprint 5B migration seeds the controlled universe idempotently", () => {
   const sql = readFileSync("migrations/0007_controlled_multi_asset_universe.sql", "utf8");
+  const correctionSql = readFileSync("migrations/0008_correct_soxx_expense_ratio.sql", "utf8");
   for (const symbol of ["VOO", "VTI", "QQQ", "SCHD", "SOXX", "BND", "MSFT", "AAPL", "O", "FXAIX"]) {
     assert.match(sql, new RegExp(`'${symbol}'`));
   }
   assert.match(sql, /INSERT OR IGNORE INTO assets/);
   assert.match(sql, /INSERT OR IGNORE INTO watchlist_assets/);
+  assert.match(correctionSql, /expense_ratio = 0\.0034/);
   assert.doesNotMatch(sql, /DELETE FROM portfolios|DELETE FROM positions|DELETE FROM trades/i);
 });
 
