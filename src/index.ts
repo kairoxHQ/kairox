@@ -28,6 +28,12 @@ import { getJourney } from "./journey/service.ts";
 import { getDailySummaryData } from "./summaries/service.ts";
 import { getAllProfileHoldingQuotes, getHoldingQuotes, getMarketTickerQuotes, getQuotesForSymbols } from "./market/quotes.ts";
 import { PerformanceAnalyticsService } from "./analytics/performance.ts";
+import {
+  approveAllocationProposal,
+  generateAllocationProposal,
+  listAllocationProposals,
+  rejectAllocationProposal
+} from "./allocation/proposals.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -105,6 +111,7 @@ export default {
       "/dashboard",
       "/dashboard/data",
       "/dashboard/contract",
+      "/allocation-proposals",
       "/valuation",
       "/daily-snapshots",
       "/historical-performance",
@@ -279,6 +286,36 @@ export default {
         return json(await getPerformance(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
       }
 
+      if (url.pathname === "/allocation-proposals") {
+        return json(await listAllocationProposals(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_tim_paper"));
+      }
+
+      if (url.pathname === "/allocation-proposals/generate") {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const proposal = await generateAllocationProposal(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_tim_paper");
+        return proposalActionResponse(request, proposal.portfolioId, proposal);
+      }
+
+      const approveProposalMatch = url.pathname.match(/^\/allocation-proposals\/([A-Za-z0-9_-]+)\/approve$/);
+      if (approveProposalMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const proposal = await approveProposalOrConflict(env.DB, approveProposalMatch[1]);
+        return proposalActionResponse(request, proposal.portfolioId, proposal);
+      }
+
+      const rejectProposalMatch = url.pathname.match(/^\/allocation-proposals\/([A-Za-z0-9_-]+)\/reject$/);
+      if (rejectProposalMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const proposal = await rejectAllocationProposal(env.DB, rejectProposalMatch[1], await proposalRejectionReason(request));
+        return proposalActionResponse(request, proposal.portfolioId, proposal);
+      }
+
       if (url.pathname.startsWith("/api/analytics")) {
         const analytics = new PerformanceAnalyticsService(env.DB);
         const portfolioId = requestedPortfolioId(url);
@@ -385,6 +422,46 @@ async function authorize(request: Request, env: Env): Promise<Response | null> {
   }
 
   return null;
+}
+
+async function proposalRejectionReason(request: Request): Promise<string> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      const body = await request.json<{ reason?: string }>();
+      return body.reason?.slice(0, 500) || "Rejected by reviewer.";
+    } catch {
+      return "Rejected by reviewer.";
+    }
+  }
+  if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
+    const form = await request.formData();
+    const reason = form.get("reason");
+    return typeof reason === "string" && reason ? reason.slice(0, 500) : "Rejected by reviewer.";
+  }
+  return "Rejected by reviewer.";
+}
+
+function proposalActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#allocation-proposal` }
+    });
+  }
+  return json(payload);
+}
+
+async function approveProposalOrConflict(db: D1Database, proposalId: string) {
+  try {
+    return await approveAllocationProposal(db, proposalId);
+  } catch (error) {
+    if (error instanceof Error && /not approvable/i.test(error.message)) {
+      throw new RequestError(409, error.message);
+    }
+    throw error;
+  }
 }
 
 async function constantTimeEquals(left: string, right: string): Promise<boolean> {

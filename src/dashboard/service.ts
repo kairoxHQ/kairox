@@ -11,9 +11,10 @@ import { getIntelligenceOverview } from "../intelligence/service.ts";
 import { summarizeScheduledRun } from "../scheduler/service.ts";
 import { getAllProfileHoldingQuotes, getMarketTickerQuotes, type HoldingQuote, type NormalizedQuote } from "../market/quotes.ts";
 import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { getLatestAllocationProposal, type AllocationProposal } from "../allocation/proposals.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -139,7 +140,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getMarketTickerQuotes(db),
       getAllProfileHoldingQuotes(db),
       listPortfolioProfiles(db),
-      getInvestmentPolicy(db, portfolioId)
+      getInvestmentPolicy(db, portfolioId),
+      getLatestAllocationProposal(db, portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -150,6 +152,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     selectedPortfolioId: portfolioId,
     accountProfiles,
     investmentPolicy,
+    allocationProposal,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -216,6 +219,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     selectedPortfolioId: string;
     accountProfiles: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
     investmentPolicy: InvestmentPolicy | null;
+    allocationProposal: AllocationProposal | null;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -260,6 +264,7 @@ export function renderDashboardHtml(data: {
   selectedPortfolioId?: string;
   accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
   investmentPolicy?: InvestmentPolicy | null;
+  allocationProposal?: AllocationProposal | null;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -405,6 +410,7 @@ export function renderDashboardHtml(data: {
     ${section("market-ticker", "Market Ticker", `<div class="ticker-strip" data-market-ticker>${(data.marketTicker?.instruments ?? []).map(tickerItem).join("")}</div>`)}
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
+    ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -693,6 +699,45 @@ function renderSimulationStatus(
       <div class="muted">${escapeHtml(policy.primaryObjective)}</div>
       <div class="muted">Single position ${escapeHtml(pct(policy.maxSinglePositionPct))} · Sector ${escapeHtml(pct(policy.maxSectorAllocationPct))}</div>
     </div>
+  </div>`;
+}
+
+function renderAllocationProposal(proposal: AllocationProposal | null | undefined, portfolioId: string): string {
+  const actions = `<div class="filters">
+    <form method="post" action="/allocation-proposals/generate?portfolioId=${encodeURIComponent(portfolioId)}"><button class="filter" type="submit">Regenerate proposal</button></form>
+    ${proposal ? `<form method="post" action="/allocation-proposals/${encodeURIComponent(proposal.id)}/approve"><button class="filter" type="submit" ${proposal.approvalAllowed ? "" : "disabled"}>Approve proposal</button></form>
+    <form method="post" action="/allocation-proposals/${encodeURIComponent(proposal.id)}/reject"><button class="filter" type="submit">Reject proposal</button></form>` : ""}
+  </div>`;
+  if (!proposal) {
+    return `${actions}<span class="pill">No allocation proposal yet</span>`;
+  }
+  const warnings = proposal.warnings.length ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml(proposal.warnings.join(" "))}</div></div>` : "";
+  return `${actions}
+    <div class="grid">
+      ${miniMetric("Status", proposal.status.replace(/_/g, " "))}
+      ${miniMetric("Version", String(proposal.version))}
+      ${miniMetric("Proposed investment", money(proposal.totalProposedInvestmentUsd))}
+      ${miniMetric("Remaining cash", `${money(proposal.remainingCashUsd)} (${pct(proposal.cashPct)})`)}
+      ${miniMetric("Equity", pct(proposal.equityPct))}
+      ${miniMetric("Bonds", pct(proposal.bondPct))}
+      ${miniMetric("Income producing", pct(proposal.incomePct))}
+      ${miniMetric("Policy", proposal.policyCompliant ? "Compliant" : "Blocked")}
+    </div>
+    <div class="card-list">${proposal.lines.map(allocationLineCard).join("")}</div>
+    ${warnings}
+    <div class="muted">${escapeHtml(proposal.rationale)} Generated ${formatTimestampElement(proposal.generatedAt)}.</div>`;
+}
+
+function allocationLineCard(line: AllocationProposal["lines"][number]): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(line.symbol)}</strong><span class="pill">${escapeHtml(line.assetCategory)}</span></div>
+    <div class="muted">${escapeHtml(line.securityName)}</div>
+    <div class="row"><span>Target</span><span>${escapeHtml(pct(line.targetAllocationPct))} · ${escapeHtml(money(line.targetAmountUsd))}</span></div>
+    <div class="row"><span>Price</span><span>${escapeHtml(line.currentPriceUsd === null ? "Unavailable" : money(line.currentPriceUsd))}</span></div>
+    <div class="row"><span>Estimated shares</span><span>${escapeHtml(line.estimatedShares === null ? "Unavailable" : line.estimatedShares.toFixed(6))}</span></div>
+    <div class="row"><span>Confidence</span><span>${escapeHtml(pct(line.confidenceScore))}</span></div>
+    <div class="muted">${escapeHtml(line.expectedRole)} · ${escapeHtml(line.riskContribution)}</div>
+    <div class="muted">${escapeHtml(line.reason)}</div>
   </div>`;
 }
 
