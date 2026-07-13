@@ -87,6 +87,99 @@ export async function listEnabledWatchlistAssets(db: D1Database, portfolioId = T
   return rows.map(parseAssetRow);
 }
 
+export async function getAssets(db: D1Database): Promise<unknown> {
+  const rows = await listRows<AssetRow>(
+    db.prepare(
+      `SELECT
+        id,
+        symbol,
+        display_name AS displayName,
+        asset_type AS assetType,
+        market,
+        currency,
+        provider_symbol AS providerSymbol,
+        enabled,
+        tradable,
+        fractional_supported AS fractionalSupported,
+        dividend_capable AS dividendCapable,
+        expense_ratio AS expenseRatio,
+        minimum_investment AS minimumInvestment,
+        market_hours_mode AS marketHoursMode,
+        price_precision AS pricePrecision,
+        quantity_precision AS quantityPrecision
+       FROM assets
+       ORDER BY enabled DESC, symbol ASC`
+    )
+  );
+
+  return {
+    supportedAssetTypes: ASSET_TYPES,
+    assets: rows.map(parseAssetRow)
+  };
+}
+
+export async function getWatchlists(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
+  const watchlists = await listRows<{
+    id: string;
+    name: string;
+    description: string | null;
+    enabled: number;
+    createdAt: string;
+    updatedAt: string;
+  }>(
+    db
+      .prepare(
+        `SELECT id, name, description, enabled, created_at AS createdAt, updated_at AS updatedAt
+         FROM watchlists
+         WHERE portfolio_id = ?
+         ORDER BY enabled DESC, name ASC`
+      )
+      .bind(portfolioId)
+  );
+
+  const watchlistAssets = await listRows<AssetRow & { watchlistId: string }>(
+    db
+      .prepare(
+        `SELECT
+          w.id AS watchlistId,
+          a.id,
+          a.symbol,
+          a.display_name AS displayName,
+          a.asset_type AS assetType,
+          a.market,
+          a.currency,
+          a.provider_symbol AS providerSymbol,
+          a.enabled,
+          a.tradable,
+          a.fractional_supported AS fractionalSupported,
+          a.dividend_capable AS dividendCapable,
+          a.expense_ratio AS expenseRatio,
+          a.minimum_investment AS minimumInvestment,
+          a.market_hours_mode AS marketHoursMode,
+          a.price_precision AS pricePrecision,
+          a.quantity_precision AS quantityPrecision,
+          wa.ranking_priority AS rankingPriority,
+          wa.notes
+         FROM watchlists w
+         JOIN watchlist_assets wa ON wa.watchlist_id = w.id
+         JOIN assets a ON a.id = wa.asset_id
+         WHERE w.portfolio_id = ?
+         ORDER BY w.name ASC, wa.enabled DESC, wa.ranking_priority ASC, a.symbol ASC`
+      )
+      .bind(portfolioId)
+  );
+
+  return {
+    watchlists: watchlists.map((watchlist) => ({
+      ...watchlist,
+      enabled: watchlist.enabled === 1,
+      assets: watchlistAssets
+        .filter((asset) => asset.watchlistId === watchlist.id)
+        .map(parseAssetRow)
+    }))
+  };
+}
+
 export function parseAssetRow(row: AssetRow): AssetRegistryRecord {
   if (!isAssetType(row.assetType)) {
     throw new Error(`Unsupported asset type in registry: ${row.assetType}`);

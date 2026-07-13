@@ -240,6 +240,39 @@ export async function getPerformance(db: D1Database): Promise<unknown> {
   return { portfolio: state, metrics: await calculatePerformance(db), snapshots };
 }
 
+export async function getOpportunities(db: D1Database): Promise<unknown> {
+  const recommendations = await listRows<{
+    symbol: string;
+    action: string;
+    explanation: string;
+    confidenceScore: number;
+    riskScore: number;
+    priceUsd: number | null;
+    priceAsOf: string | null;
+    signalKey: string;
+    createdAt: string;
+  }>(
+    db.prepare(
+      `SELECT symbol, action, explanation, confidence_score AS confidenceScore,
+        risk_score AS riskScore, price_usd AS priceUsd, price_as_of AS priceAsOf,
+        signal_key AS signalKey, created_at AS createdAt
+       FROM recommendations
+       ORDER BY created_at DESC
+       LIMIT 30`
+    )
+  );
+
+  return {
+    opportunities: recommendations,
+    rejected: recommendations.filter((row) => row.action === "DO_NOTHING"),
+    policy: {
+      paperOnly: true,
+      defaultAction: "DO_NOTHING",
+      explanation: "Opportunities are logged recommendations from the paper strategy. Execution remains blocked unless validation and risk checks pass."
+    }
+  };
+}
+
 async function getPortfolioRow(db: D1Database): Promise<PortfolioRow> {
   const row = await db
     .prepare("SELECT id, cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd FROM portfolios WHERE id = ?")

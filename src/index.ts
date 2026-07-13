@@ -1,7 +1,8 @@
 import { getBenchmarks } from "./market/benchmarks.ts";
+import { getAssets, getWatchlists } from "./market/assets.ts";
 import { getPortfolio } from "./portfolio/service.ts";
 import { getDashboardData, renderDashboard } from "./dashboard/service.ts";
-import { getDiagnostics, getPerformance, getTrades, runPaperStrategy } from "./paper/service.ts";
+import { getDiagnostics, getOpportunities, getPerformance, getTrades, runPaperStrategy } from "./paper/service.ts";
 import { runScheduledPaperStrategy, getScheduledRuns } from "./scheduler/service.ts";
 import { getSettings, setAutomationPaused } from "./settings/service.ts";
 import { checkDatabase } from "./shared/db.ts";
@@ -37,6 +38,9 @@ export default {
       "/journal",
       "/benchmarks",
       "/market",
+      "/assets",
+      "/watchlists",
+      "/opportunities",
       "/trades",
       "/performance",
       "/dashboard",
@@ -139,6 +143,18 @@ export default {
 
       if (url.pathname === "/market") {
         return json(await getMarket(env.DB));
+      }
+
+      if (url.pathname === "/assets") {
+        return json(await getAssets(env.DB));
+      }
+
+      if (url.pathname === "/watchlists") {
+        return json(await getWatchlists(env.DB));
+      }
+
+      if (url.pathname === "/opportunities") {
+        return json(await getOpportunities(env.DB));
       }
 
       if (url.pathname === "/trades") {

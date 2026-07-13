@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import worker from "../src/index.ts";
 import { parseAssetRow } from "../src/market/assets.ts";
 import { canExecuteAt } from "../src/market/hours.ts";
 import { YahooFinanceMarketDataProvider } from "../src/market/yahooFinanceProvider.ts";
@@ -76,6 +77,18 @@ test("public market provider can evaluate a non-hardcoded stock symbol", async (
   assert.equal(data.symbol, "AAPL");
   assert.equal(data.assetClass, "stock");
   assert.equal(data.validated, true);
+});
+
+test("asset universe endpoints are public read routes", async () => {
+  const env = { DB: {} as D1Database, APP_MODE: "paper", LIVE_TRADING_ENABLED: "false", STARTING_BALANCE_USD: "20", BENCHMARK_ASSET: "BTC" };
+
+  const assetResponse = await worker.fetch(new Request("https://kairox.test/assets", { method: "POST" }), env);
+  const watchlistResponse = await worker.fetch(new Request("https://kairox.test/watchlists", { method: "POST" }), env);
+  const opportunitiesResponse = await worker.fetch(new Request("https://kairox.test/opportunities", { method: "POST" }), env);
+
+  assert.equal(assetResponse.status, 405);
+  assert.equal(watchlistResponse.status, 405);
+  assert.equal(opportunitiesResponse.status, 405);
 });
 
 function yahooChartPayload(symbol: string) {
