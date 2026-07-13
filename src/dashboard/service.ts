@@ -9,9 +9,10 @@ import { getOpportunities } from "../paper/service.ts";
 import { getProfileComparison } from "../portfolio/profiles.ts";
 import { getIntelligenceOverview } from "../intelligence/service.ts";
 import { summarizeScheduledRun } from "../scheduler/service.ts";
+import { getAllProfileHoldingQuotes, getMarketTickerQuotes, type HoldingQuote, type NormalizedQuote } from "../market/quotes.ts";
 
 export async function getDashboardData(db: D1Database): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db),
@@ -133,7 +134,9 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
         )
       ),
       getProfileComparison(db),
-      getIntelligenceOverview(db)
+      getIntelligenceOverview(db),
+      getMarketTickerQuotes(db),
+      getAllProfileHoldingQuotes(db)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -173,7 +176,9 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
     opportunities: opportunityData.opportunities
     ,
     profileComparison,
-    intelligence
+    intelligence,
+    marketTicker,
+    profileHoldingQuotes
   };
 }
 
@@ -228,6 +233,8 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
     opportunities: Array<DashboardOpportunity>;
     profileComparison: DashboardComparison;
     intelligence: DashboardIntelligence;
+    marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
+    profileHoldingQuotes?: { profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>; generatedAt: string };
   };
   const html = renderDashboardHtml(data);
 
@@ -266,6 +273,8 @@ export function renderDashboardHtml(data: {
   opportunities?: Array<DashboardOpportunity>;
   profileComparison?: DashboardComparison;
   intelligence?: DashboardIntelligence;
+  marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
+  profileHoldingQuotes?: { profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>; generatedAt: string };
 }): string {
   const latestDecision = data.journal?.[0];
   const latestRecommendation = data.recommendations[0];
@@ -308,9 +317,24 @@ export function renderDashboardHtml(data: {
     .badge-sell { background: #ffe8e5; color: #9f2f22; }
     .badge-neutral { background: #edf2f7; color: #425466; }
     .status-fresh { background: #dbf7e6; color: #12633a; }
+    .status-live { background: #dbf7e6; color: #12633a; }
+    .status-delayed { background: #e8f1ff; color: #123d75; }
     .status-cached { background: #fff2cc; color: #7a5400; }
+    .status-market-closed { background: #edf2f7; color: #425466; }
     .status-stale { background: #ffe5d0; color: #8a3b12; }
     .status-unavailable { background: #ffe1e1; color: #9f1c1c; }
+    .ticker-strip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: thin; }
+    .ticker-item { min-width: 178px; flex: 0 0 auto; border: 1px solid #dce3eb; border-radius: 8px; padding: 10px; color: inherit; text-decoration: none; background: #fbfcfd; }
+    .ticker-top, .quote-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .ticker-value { font-weight: 760; font-size: 1rem; }
+    .quote-up { color: #12633a; }
+    .quote-down { color: #9f2f22; }
+    .quote-flat { color: #425466; }
+    .holding-quotes { display: grid; gap: 10px; }
+    .holding-profile { border-top: 1px solid #edf0f4; padding-top: 10px; }
+    .holding-profile:first-child { border-top: 0; padding-top: 0; }
+    .holding-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+    .holding-card { color: inherit; text-decoration: none; }
     .history { width: 100%; height: 150px; display: block; }
     .filters { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; }
     .filter { border: 1px solid #cfd8e3; background: #f7fafc; color: #1f2a37; border-radius: 999px; padding: 6px 10px; font-size: .78rem; font-weight: 700; }
@@ -334,6 +358,7 @@ export function renderDashboardHtml(data: {
     </nav>
   </header>
   <main>
+    ${section("market-ticker", "Market Ticker", `<div class="ticker-strip" data-market-ticker>${(data.marketTicker?.instruments ?? []).map(tickerItem).join("")}</div>`)}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -353,6 +378,7 @@ export function renderDashboardHtml(data: {
       ${section("positions", "Positions", data.positions.map((p) => positionRow(p)).join(""))}
       ${section("market-data", "Market Data Status", (data.marketDataStatus ?? []).map((m) => marketStatusRow(m)).join(""))}
     </section>
+    ${section("holding-quotes", "Holding Quotes", renderHoldingQuotes(data.profileHoldingQuotes?.profiles ?? [], data.profileComparison))}
     ${section("asset-universe", "Asset Universe", renderFilters() + `<div class="asset-grid">${(data.assetUniverse ?? []).map(assetCard).join("")}</div>`)}
     ${section("profiles", "Simulation Profiles", `<div class="asset-grid">${(data.profileComparison?.profiles ?? []).map(profileCard).join("")}</div>`)}
     ${section("intelligence", "Intelligence", renderIntelligence(data.intelligence))}
@@ -400,6 +426,72 @@ export function renderDashboardHtml(data: {
         const mode = node.getAttribute("data-kairox-time-mode") || "updated";
         node.textContent = formatter.format(date) + " - " + relativeAge(date, mode);
       });
+      const marketTicker = document.querySelector("[data-market-ticker]");
+      const holdingQuotes = document.querySelector("[data-holding-quotes]");
+      const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 8 });
+      const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
+      function esc(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+      }
+      function quoteChange(item) {
+        if (item.absoluteChange === null || item.percentageChange === null) return "Unavailable";
+        const arrow = item.direction === "up" ? "▲" : item.direction === "down" ? "▼" : "■";
+        const sign = item.absoluteChange > 0 ? "+" : "";
+        return arrow + " " + sign + number.format(item.absoluteChange) + " (" + sign + (item.percentageChange * 100).toFixed(2) + "%)";
+      }
+      function quoteClass(item) {
+        return item.direction === "up" ? "quote-up" : item.direction === "down" ? "quote-down" : "quote-flat";
+      }
+      function quoteValue(item) {
+        if (item.price === null) return "Unavailable";
+        if (item.unit === "usd") return money.format(item.price);
+        if (item.unit === "percent") return number.format(item.price) + "%";
+        return number.format(item.price);
+      }
+      function timeText(value, mode) {
+        if (!value) return "Timestamp unavailable";
+        const date = new Date(value);
+        return Number.isFinite(date.getTime()) ? formatter.format(date) + " - " + relativeAge(date, mode) : "Timestamp unavailable";
+      }
+      function renderTicker(items) {
+        if (!marketTicker) return;
+        marketTicker.innerHTML = items.map((item) => '<a class="ticker-item" href="/quotes?symbols=' + encodeURIComponent(item.symbol) + '" aria-label="' + esc(item.displayName) + ' quote"><div class="ticker-top"><strong>' + esc(item.shortName) + '</strong><span class="badge status-' + esc(item.freshnessStatus.toLowerCase().replace(/ /g, "-")) + '">' + esc(item.freshnessStatus) + '</span></div><div class="ticker-value">' + esc(quoteValue(item)) + '</div><div class="' + quoteClass(item) + '">' + esc(quoteChange(item)) + '</div><div class="muted">' + esc(item.marketStatus) + " · " + esc(timeText(item.timestamp, item.freshnessStatus === "Cached" ? "cached" : "updated")) + '</div></a>').join("");
+      }
+      function renderHoldings(profiles) {
+        if (!holdingQuotes) return;
+        holdingQuotes.innerHTML = profiles.map((profile) => '<div class="holding-profile"><div class="mini-head"><strong>' + esc(profile.displayName || profile.portfolioId) + '</strong><span class="pill">PAPER ONLY</span></div><div class="holding-grid">' + (profile.holdings.length ? profile.holdings.map((item) => '<a class="mini-card holding-card" href="#asset-' + esc(item.symbol.replace(/[^A-Za-z0-9_-]/g, "-")) + '"><div class="mini-head"><strong>' + esc(item.symbol) + '</strong><span class="badge status-' + esc(item.freshnessStatus.toLowerCase().replace(/ /g, "-")) + '">' + esc(item.freshnessStatus) + '</span></div><div class="quote-line"><span>Qty</span><span>' + esc(number.format(item.quantity)) + '</span></div><div class="quote-line"><span>Price</span><span>' + esc(quoteValue(item)) + '</span></div><div class="' + quoteClass(item) + '">' + esc(quoteChange(item)) + '</div><div class="quote-line"><span>Value</span><span>' + esc(item.currentPositionValue === null ? "Unavailable" : money.format(item.currentPositionValue)) + '</span></div><div class="quote-line"><span>Avg cost</span><span>' + esc(money.format(item.averageCost)) + '</span></div><div class="quote-line"><span>Unrealized</span><span>' + esc(item.unrealizedGainLoss === null ? "Unavailable" : money.format(item.unrealizedGainLoss) + " (" + (item.unrealizedGainLossPercentage * 100).toFixed(2) + "%)") + '</span></div><div class="muted">' + esc(item.marketStatus) + " · " + esc(timeText(item.timestamp, item.freshnessStatus === "Cached" ? "cached" : "updated")) + '</div></a>').join("") : '<span class="pill">No open holdings</span>') + '</div></div>').join("");
+      }
+      function profileNameMap() {
+        const map = new Map();
+        document.querySelectorAll("[data-profile-name]").forEach((node) => map.set(node.getAttribute("data-profile-id"), node.getAttribute("data-profile-name")));
+        return map;
+      }
+      async function refreshQuotes() {
+        try {
+          const [tickerResponse, holdingsResponse] = await Promise.all([fetch("/market-ticker"), fetch("/profiles/holdings/quotes")]);
+          if (tickerResponse.ok) {
+            renderTicker((await tickerResponse.json()).instruments || []);
+          }
+          if (holdingsResponse.ok) {
+            const names = profileNameMap();
+            const payload = await holdingsResponse.json();
+            renderHoldings((payload.profiles || []).map((profile) => ({ ...profile, displayName: names.get(profile.portfolioId) || profile.portfolioId })));
+          }
+        } catch {
+          return;
+        }
+      }
+      let timer = null;
+      function scheduleQuotes() {
+        if (timer) clearTimeout(timer);
+        const delay = document.hidden ? 10 * 60 * 1000 : 60 * 1000;
+        timer = setTimeout(async () => {
+          await refreshQuotes();
+          scheduleQuotes();
+        }, delay);
+      }
+      document.addEventListener("visibilitychange", scheduleQuotes);
+      scheduleQuotes();
     })();
   </script>
 </body>
@@ -577,7 +669,7 @@ function statusLabel(status?: { isFresh: boolean; status: string; userMessage: s
 }
 
 function statusClass(label: string): string {
-  return `status-${label.toLowerCase()}`;
+  return `status-${label.toLowerCase().replace(/\s+/g, "-")}`;
 }
 
 function statusMessage(label: string, message: string): string {
@@ -606,7 +698,7 @@ function renderFilters(): string {
 
 function assetCard(asset: { symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }): string {
   const status = asset.enabled ? (asset.tradable ? "Tracked and paper-tradable" : "Tracked only") : "Disabled";
-  return `<div class="mini-card">
+  return `<div class="mini-card" id="asset-${escapeHtml(safeDomId(asset.symbol))}">
     <div class="mini-head"><strong>${escapeHtml(asset.symbol)}</strong>${badge(asset.freshness, statusClass(asset.freshness))}</div>
     <div class="muted">${escapeHtml(asset.assetType.replace("_", " "))} · ${escapeHtml(status)}</div>
     <div>${escapeHtml(asset.priceUsd === null ? "Price/NAV unavailable" : money(asset.priceUsd))}</div>
@@ -631,7 +723,7 @@ function opportunityCard(opportunity: DashboardOpportunity): string {
 }
 
 function profileCard(profile: DashboardComparison["profiles"][number]): string {
-  return `<div class="mini-card">
+  return `<div class="mini-card" data-profile-id="${escapeHtml(profile.portfolioId)}" data-profile-name="${escapeHtml(profile.displayName)}">
     <div class="mini-head"><strong>${escapeHtml(profile.displayName)}</strong><span class="pill">${escapeHtml(profile.paperOnlyLabel ?? "VIRTUAL / PAPER ONLY")}</span></div>
     <div class="muted">${escapeHtml(profile.riskPosture)}</div>
     <div>${escapeHtml(money(profile.actualEquityUsd))}</div>
@@ -644,6 +736,80 @@ function profileCard(profile: DashboardComparison["profiles"][number]): string {
     <div class="muted">Start ${escapeHtml(money(profile.comparisonStartEquityUsd))} - ${formatTimestampElement(profile.comparisonStartTimestamp)}</div>
     <div class="muted">${escapeHtml(profile.philosophy)}</div>
   </div>`;
+}
+
+function tickerItem(item: NormalizedQuote): string {
+  return `<a class="ticker-item" href="/quotes?symbols=${encodeURIComponent(item.symbol)}" aria-label="${escapeHtml(item.displayName)} quote">
+    <div class="ticker-top"><strong>${escapeHtml(item.shortName)}</strong>${badge(item.freshnessStatus, statusClass(item.freshnessStatus))}</div>
+    <div class="ticker-value">${escapeHtml(formatQuoteValue(item))}</div>
+    <div class="${escapeHtml(quoteDirectionClass(item.direction))}">${escapeHtml(formatQuoteChange(item))}</div>
+    <div class="muted">${escapeHtml(item.marketStatus)} &middot; ${formatTimestampElement(item.timestamp ?? undefined, item.freshnessStatus === "Cached" ? "cached" : "updated")}</div>
+  </a>`;
+}
+
+function renderHoldingQuotes(
+  profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>,
+  comparison?: DashboardComparison
+): string {
+  const nameByPortfolio = new Map((comparison?.profiles ?? []).map((profile) => [profile.portfolioId, profile.displayName]));
+  if (profiles.length === 0) {
+    return '<span class="pill">No quote data yet</span>';
+  }
+  return `<div class="holding-quotes" data-holding-quotes>${profiles.map((profile) => `
+    <div class="holding-profile">
+      <div class="mini-head"><strong>${escapeHtml(nameByPortfolio.get(profile.portfolioId) ?? profile.portfolioId)}</strong><span class="pill">PAPER ONLY</span></div>
+      <div class="holding-grid">${profile.holdings.length ? profile.holdings.map(holdingQuoteCard).join("") : '<span class="pill">No open holdings</span>'}</div>
+    </div>`).join("")}</div>`;
+}
+
+function holdingQuoteCard(item: HoldingQuote): string {
+  return `<a class="mini-card holding-card" href="#asset-${escapeHtml(safeDomId(item.symbol))}">
+    <div class="mini-head"><strong>${escapeHtml(item.symbol)}</strong>${badge(item.freshnessStatus, statusClass(item.freshnessStatus))}</div>
+    <div class="quote-line"><span>Qty</span><span>${escapeHtml(formatQuantity(item.quantity, item.symbol, item.assetType))}</span></div>
+    <div class="quote-line"><span>Price</span><span>${escapeHtml(formatQuoteValue(item))}</span></div>
+    <div class="${escapeHtml(quoteDirectionClass(item.direction))}">${escapeHtml(formatQuoteChange(item))}</div>
+    <div class="quote-line"><span>Value</span><span>${escapeHtml(item.currentPositionValue === null ? "Unavailable" : money(item.currentPositionValue))}</span></div>
+    <div class="quote-line"><span>Avg cost</span><span>${escapeHtml(money(item.averageCost))}</span></div>
+    <div class="quote-line"><span>Unrealized</span><span>${escapeHtml(formatUnrealized(item))}</span></div>
+    <div class="muted">${escapeHtml(item.marketStatus)} &middot; ${formatTimestampElement(item.timestamp ?? undefined, item.freshnessStatus === "Cached" ? "cached" : "updated")}</div>
+  </a>`;
+}
+
+function formatQuoteValue(item: NormalizedQuote): string {
+  if (item.price === null) {
+    return "Unavailable";
+  }
+  if (item.unit === "usd") {
+    return money(item.price);
+  }
+  if (item.unit === "percent") {
+    return `${item.price.toFixed(item.valuePrecision)}%`;
+  }
+  return item.price.toFixed(item.valuePrecision);
+}
+
+function formatQuoteChange(item: NormalizedQuote): string {
+  if (item.absoluteChange === null || item.percentageChange === null) {
+    return "Unavailable";
+  }
+  const arrow = item.direction === "up" ? "▲" : item.direction === "down" ? "▼" : "■";
+  const sign = item.absoluteChange > 0 ? "+" : "";
+  return `${arrow} ${sign}${item.absoluteChange.toFixed(item.changePrecision)} (${sign}${(item.percentageChange * 100).toFixed(2)}%)`;
+}
+
+function formatUnrealized(item: HoldingQuote): string {
+  if (item.unrealizedGainLoss === null || item.unrealizedGainLossPercentage === null) {
+    return "Unavailable";
+  }
+  return `${signedMoney(item.unrealizedGainLoss)} (${pct(item.unrealizedGainLossPercentage)})`;
+}
+
+function quoteDirectionClass(direction: string): string {
+  return direction === "up" ? "quote-up" : direction === "down" ? "quote-down" : "quote-flat";
+}
+
+function safeDomId(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
 function renderScheduledAudit(audits: DashboardScheduledRunAudit[]): string {

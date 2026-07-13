@@ -26,6 +26,7 @@ import { getDashboardContract } from "./dashboard/contract.ts";
 import { getMilestones } from "./milestones/service.ts";
 import { getJourney } from "./journey/service.ts";
 import { getDailySummaryData } from "./summaries/service.ts";
+import { getAllProfileHoldingQuotes, getHoldingQuotes, getMarketTickerQuotes, getQuotesForSymbols } from "./market/quotes.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -86,6 +87,8 @@ export default {
       "/journal",
       "/benchmarks",
       "/market",
+      "/market-ticker",
+      "/quotes",
       "/assets",
       "/watchlists",
       "/opportunities",
@@ -207,6 +210,14 @@ export default {
         return json(await getMarket(env.DB));
       }
 
+      if (url.pathname === "/market-ticker") {
+        return json(await getMarketTickerQuotes(env.DB));
+      }
+
+      if (url.pathname === "/quotes") {
+        return json(await getQuotesForSymbols(env.DB, url.searchParams.get("symbols") ?? ""));
+      }
+
       if (url.pathname === "/assets") {
         return json(await getAssets(env.DB));
       }
@@ -221,6 +232,18 @@ export default {
 
       if (url.pathname === "/profiles") {
         return json({ profiles: await listPortfolioProfiles(env.DB) });
+      }
+
+      const holdingsQuoteMatch = url.pathname.match(/^\/profiles\/([A-Za-z0-9_-]+)\/holdings\/quotes$/);
+      if (holdingsQuoteMatch) {
+        if (request.method !== "GET") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        return json(await getHoldingQuotes(env.DB, holdingsQuoteMatch[1]));
+      }
+
+      if (url.pathname === "/profiles/holdings/quotes") {
+        return json(await getAllProfileHoldingQuotes(env.DB));
       }
 
       if (url.pathname === "/comparison") {

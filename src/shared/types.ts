@@ -1,4 +1,4 @@
-export type AssetClass = "stock" | "etf" | "mutual_fund" | "crypto" | "reit" | "bond_fund" | "money_market";
+export type AssetClass = "stock" | "etf" | "mutual_fund" | "crypto" | "reit" | "bond_fund" | "money_market" | "index" | "yield";
 export type DecisionAction = "BUY" | "SELL" | "HOLD" | "DO_NOTHING";
 export type OrderSide = "BUY" | "SELL";
 

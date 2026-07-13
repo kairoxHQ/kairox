@@ -25,6 +25,12 @@ interface YahooChartResponse {
 }
 
 const KNOWN_SYMBOLS: Record<string, AssetClass> = {
+  "^GSPC": "index",
+  "^DJI": "index",
+  "^IXIC": "index",
+  "^RUT": "index",
+  "^VIX": "index",
+  "^TNX": "yield",
   "BTC-USD": "crypto",
   SPY: "etf",
   VOO: "etf",
