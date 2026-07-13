@@ -216,11 +216,11 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
     };
     positions: Array<{ symbol: string; assetClass?: string; quantity: number; marketValueUsd: number }>;
     recommendations: Array<{ symbol: string; action: string; explanation: string }>;
-    journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number }>;
+    journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number; createdAt?: string }>;
     trades: Array<{ symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }>;
     scheduledRuns: Array<{ runKey: string; status: string; startedAt: string; errorDetails?: string }>;
     scheduledRunAudits: DashboardScheduledRunAudit[];
-    summaries: Array<{ summaryType: string; title: string; body: string }>;
+    summaries: Array<{ summaryType: string; summaryDate?: string; title: string; body: string }>;
     rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
     marketDataStatus: Array<{ symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }>;
     equityHistory: Array<{ recordedAt: string; totalValueUsd: number }>;
@@ -254,11 +254,11 @@ export function renderDashboardHtml(data: {
   };
   positions: Array<{ symbol: string; assetClass?: string; quantity: number; marketValueUsd: number }>;
   recommendations: Array<{ symbol: string; action: string; explanation: string }>;
-  journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number }>;
+  journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number; createdAt?: string }>;
   trades: Array<{ symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }>;
   scheduledRuns: Array<{ runKey: string; status: string; startedAt: string; errorDetails?: string }>;
   scheduledRunAudits?: DashboardScheduledRunAudit[];
-  summaries: Array<{ summaryType: string; title: string; body: string }>;
+  summaries: Array<{ summaryType: string; summaryDate?: string; title: string; body: string }>;
   rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
   marketDataStatus?: Array<{ symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }>;
   equityHistory?: Array<{ recordedAt: string; totalValueUsd: number }>;
@@ -366,8 +366,42 @@ export function renderDashboardHtml(data: {
     ${section("scheduled", "Scheduled Runs", renderScheduledAudit(data.scheduledRunAudits ?? []))}
     ${section("settings", "Settings", row("Mode", "Paper only") + row("Automation", data.settings.automationPaused ? "Paused" : "Active") + row("Live trading", "Disabled"))}
     ${section("rejected", "Deferred Opportunities", data.rejectedOpportunities.map((r) => row(r.symbol, sanitizeForUser(r.explanation, "Market data temporarily unavailable; no trade was made."))).join(""))}
-    ${section("summaries", "Summaries", data.summaries.map((s) => `<div class="mini-card"><strong>${escapeHtml(s.title)}</strong><pre>${escapeHtml(sanitizeForUser(s.body, "Summary includes only user-safe market and portfolio information."))}</pre></div>`).join(""))}
+    ${section("summaries", "Summaries", data.summaries.map((s) => summaryCard(s)).join(""))}
   </main>
+  <script>
+    (() => {
+      const formatter = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZoneName: "short"
+      });
+      function relativeAge(date, mode) {
+        const diffMs = Math.max(0, Date.now() - date.getTime());
+        const units = [["day", 86400000], ["hour", 3600000], ["minute", 60000], ["second", 1000]];
+        const unit = units.find(([, size]) => diffMs >= size) || units[units.length - 1];
+        const amount = Math.floor(diffMs / unit[1]);
+        const plural = amount === 1 ? unit[0] : unit[0] + "s";
+        return (mode === "cached" ? "Cached from " : "Updated ") + amount + " " + plural + " ago";
+      }
+      document.querySelectorAll("[data-kairox-time]").forEach((node) => {
+        const raw = node.getAttribute("data-kairox-time");
+        const date = raw ? new Date(raw) : null;
+        if (!date || !Number.isFinite(date.getTime())) {
+          node.textContent = "Timestamp unavailable";
+          return;
+        }
+        if (date.getTime() - Date.now() > 5 * 60 * 1000) {
+          node.textContent = "Timestamp unavailable";
+          node.setAttribute("data-kairox-time-status", "clock_skew");
+          return;
+        }
+        const mode = node.getAttribute("data-kairox-time-mode") || "updated";
+        node.textContent = formatter.format(date) + " - " + relativeAge(date, mode);
+      });
+    })();
+  </script>
 </body>
 </html>`;
   return html;
@@ -523,7 +557,7 @@ function formatQuantity(quantity: number, symbol: string, assetClass?: string): 
 
 function marketStatusRow(status: { symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }): string {
   const label = statusLabel(status);
-  return `<div class="row"><span>${escapeHtml(status.symbol)}</span><span>${badge(label, statusClass(label))} ${escapeHtml(statusMessage(label, status.userMessage))}<br><span class="muted">${escapeHtml(status.source)} · ${escapeHtml(formatDateTime(status.fetchedAt))}</span></span></div>`;
+  return `<div class="row"><span>${escapeHtml(status.symbol)}</span><span>${badge(label, statusClass(label))} ${escapeHtml(statusMessage(label, status.userMessage))}<br><span class="muted">${escapeHtml(status.source)} - ${formatTimestampElement(status.fetchedAt, label === "Cached" ? "cached" : "updated")}</span></span></div>`;
 }
 
 function statusLabel(status?: { isFresh: boolean; status: string; userMessage: string }): "Fresh" | "Cached" | "Stale" | "Unavailable" {
@@ -561,7 +595,7 @@ function statusMessage(label: string, message: string): string {
 
 function tradeCard(trade: { symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }): string {
   const sideClass = trade.side === "BUY" ? "badge-buy" : trade.side === "SELL" ? "badge-sell" : "badge-neutral";
-  return `<div class="mini-card"><div class="mini-head"><span>${badge(trade.side, sideClass)} <strong>${escapeHtml(trade.symbol)}</strong></span><span class="muted">${escapeHtml(formatDateTime(trade.executedAt))}</span></div><div>${escapeHtml(formatQuantity(trade.quantity, trade.symbol))} @ ${escapeHtml(money(trade.priceUsd))}</div></div>`;
+  return `<div class="mini-card"><div class="mini-head"><span>${badge(trade.side, sideClass)} <strong>${escapeHtml(trade.symbol)}</strong></span><span class="muted">${formatTimestampElement(trade.executedAt)}</span></div><div>${escapeHtml(formatQuantity(trade.quantity, trade.symbol))} @ ${escapeHtml(money(trade.priceUsd))}</div></div>`;
 }
 
 function renderFilters(): string {
@@ -607,7 +641,7 @@ function profileCard(profile: DashboardComparison["profiles"][number]): string {
     <div class="muted">Total return ${escapeHtml(pct(profile.totalReturnPct ?? profile.normalizedReturnPct))} · Max drawdown ${escapeHtml(pct(profile.maxDrawdownPct ?? 0))}</div>
     <div class="muted">Volatility ${escapeHtml(profile.volatilityPct === null || profile.volatilityPct === undefined ? "Needs more history" : pct(profile.volatilityPct))}</div>
     <div class="muted">Isolation: ${escapeHtml(String(profile.tradeCount ?? 0))} trades · ${escapeHtml(String(profile.recommendationCount ?? 0))} recommendations · ${escapeHtml(String(profile.journalEntryCount ?? 0))} journal entries · ${escapeHtml(String(profile.equityHistoryCount ?? 0))} equity points</div>
-    <div class="muted">Start ${escapeHtml(money(profile.comparisonStartEquityUsd))} · ${escapeHtml(formatDateTime(profile.comparisonStartTimestamp))}</div>
+    <div class="muted">Start ${escapeHtml(money(profile.comparisonStartEquityUsd))} - ${formatTimestampElement(profile.comparisonStartTimestamp)}</div>
     <div class="muted">${escapeHtml(profile.philosophy)}</div>
   </div>`;
 }
@@ -617,7 +651,7 @@ function renderScheduledAudit(audits: DashboardScheduledRunAudit[]): string {
     return '<span class="pill">No scheduled runs yet</span>';
   }
   return `<div class="card-list">${audits.map((audit) => `<div class="mini-card">
-    <div class="mini-head"><strong>${escapeHtml(audit.status)}</strong><span class="pill">${escapeHtml(formatDateTime(audit.startedAt))}</span></div>
+    <div class="mini-head"><strong>${escapeHtml(audit.status)}</strong><span class="pill">${formatTimestampElement(audit.startedAt)}</span></div>
     <div class="muted">${escapeHtml(audit.runKey)}</div>
     <div class="grid">
       ${miniMetric("Profiles", String(audit.profileCount))}
@@ -682,8 +716,8 @@ function formatNullableNumber(value: number | null): string {
   return value === null ? "Unavailable" : value.toFixed(2);
 }
 
-function decisionCard(decision: { symbol?: string; decision: string; explanation: string; confidenceScore?: number }): string {
-  return `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(decision.symbol ?? "Portfolio")} ${escapeHtml(decision.decision)}</strong><span class="pill">${escapeHtml(confidenceLabel(decision.confidenceScore))}</span></div><div>${escapeHtml(sanitizeForUser(decision.explanation, "No action was taken."))}</div></div>`;
+function decisionCard(decision: { symbol?: string; decision: string; explanation: string; confidenceScore?: number; createdAt?: string }): string {
+  return `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(decision.symbol ?? "Portfolio")} ${escapeHtml(decision.decision)}</strong><span class="pill">${escapeHtml(confidenceLabel(decision.confidenceScore))}</span></div><div class="muted">${formatTimestampElement(decision.createdAt)}</div><div>${escapeHtml(sanitizeForUser(decision.explanation, "No action was taken."))}</div></div>`;
 }
 
 function confidenceLabel(value?: number): string {
@@ -699,7 +733,7 @@ function nextScheduledRunLabel(now = new Date()): string {
   const minutes = next.getUTCMinutes();
   const addMinutes = minutes < 30 ? 30 - minutes : 60 - minutes;
   next.setUTCMinutes(minutes + addMinutes, 0, 0);
-  return formatDateTime(next.toISOString());
+  return formatDashboardTimestamp(next.toISOString()).text;
 }
 
 function renderHistoryChart(history: Array<{ recordedAt: string; totalValueUsd: number }>): string {
@@ -720,20 +754,58 @@ function renderHistoryChart(history: Array<{ recordedAt: string; totalValueUsd: 
   return `<div class="mini-card"><strong>Portfolio History</strong><svg class="history" viewBox="0 0 ${width} ${height}" role="img" aria-label="Portfolio value history"><line class="axis" x1="0" y1="${height - 8}" x2="${width}" y2="${height - 8}"></line><polyline class="line" points="${points}"></polyline></svg><div class="muted">${escapeHtml(money(values[0]))} to ${escapeHtml(money(values.at(-1) ?? values[0]))}</div></div>`;
 }
 
-function formatDateTime(value?: string): string {
+function summaryCard(summary: { summaryType: string; summaryDate?: string; title: string; body: string }): string {
+  return `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(summary.title)}</strong><span class="muted">${escapeHtml(summary.summaryDate ?? summary.summaryType)}</span></div><pre>${escapeHtml(sanitizeForUser(summary.body, "Summary includes only user-safe market and portfolio information."))}</pre></div>`;
+}
+
+function formatTimestampElement(value?: string, mode: "updated" | "cached" = "updated"): string {
+  const formatted = formatDashboardTimestamp(value, new Date(), undefined, mode);
+  return `<time data-kairox-time="${escapeHtml(value ?? "")}" data-kairox-time-mode="${mode}" data-kairox-time-status="${formatted.status}">${escapeHtml(formatted.text)}</time>`;
+}
+
+export function formatDashboardTimestamp(
+  value?: string,
+  now = new Date(),
+  timeZone?: string,
+  mode: "updated" | "cached" = "updated"
+): { text: string; status: "ok" | "missing" | "invalid" | "clock_skew" } {
   if (!value) {
-    return "Not available";
+    return { text: "Timestamp unavailable", status: "missing" };
   }
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) {
-    return value;
+    return { text: "Timestamp unavailable", status: "invalid" };
   }
-  return date.toLocaleString("en-US", {
+  if (date.getTime() - now.getTime() > 5 * 60 * 1000) {
+    return { text: "Timestamp unavailable", status: "clock_skew" };
+  }
+  const absolute = new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
-    minute: "2-digit"
-  });
+    minute: "2-digit",
+    timeZoneName: "short",
+    ...(timeZone ? { timeZone } : {})
+  }).format(date);
+  return { text: `${absolute} - ${relativeAge(date, now, mode)}`, status: "ok" };
+}
+
+export function relativeAge(date: Date, now = new Date(), mode: "updated" | "cached" = "updated"): string {
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const value =
+    diffMs >= day
+      ? { amount: Math.floor(diffMs / day), unit: "day" }
+      : diffMs >= hour
+        ? { amount: Math.floor(diffMs / hour), unit: "hour" }
+        : diffMs >= minute
+          ? { amount: Math.floor(diffMs / minute), unit: "minute" }
+          : { amount: Math.floor(diffMs / 1000), unit: "second" };
+  const plural = value.amount === 1 ? value.unit : `${value.unit}s`;
+  const prefix = mode === "cached" ? "Cached from" : "Updated";
+  return `${prefix} ${value.amount} ${plural} ago`;
 }
 
 function escapeHtml(value: string): string {
