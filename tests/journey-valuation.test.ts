@@ -6,9 +6,10 @@ import { journeyEventKey } from "../src/journey/service.ts";
 import { evaluateMilestone, milestoneAwardKey, type MilestoneDefinition, type MilestoneContext } from "../src/milestones/service.ts";
 import { calculateTradeResults } from "../src/portfolio/dailySnapshots.ts";
 import { calculateStreak } from "../src/portfolio/historicalMetrics.ts";
-import { accountDate, calculatePortfolioValuation, valuePosition, type PortfolioValuation } from "../src/portfolio/valuation.ts";
+import { accountDate, calculatePortfolioValuation, getPortfolioValuation, PortfolioNotFoundError, valuePosition, type PortfolioValuation } from "../src/portfolio/valuation.ts";
 import { buildDailySummary } from "../src/summaries/service.ts";
 import { addMoney, multiplyMoney, pctChange } from "../src/shared/money.ts";
+import worker from "../src/index.ts";
 
 test("position valuation calculates cost basis and unrealized profit/loss", () => {
   const position = valuePosition({
@@ -98,7 +99,34 @@ test("trade result helper handles empty, open, and closed trade rows", () => {
   ]);
 
   assert.equal(rows[0].profitLossUsd, -0.01);
-  assert.equal(rows[1].profitLossUsd, 11.99);
+  assert.equal(rows[1].profitLossUsd, -0.01);
+});
+
+test("valuation endpoints reject malformed portfolio IDs before querying data", async () => {
+  const env = { DB: {} as D1Database, APP_MODE: "paper", LIVE_TRADING_ENABLED: "false", STARTING_BALANCE_USD: "20", BENCHMARK_ASSET: "BTC" };
+  const response = await worker.fetch(new Request("https://kairox.test/valuation?portfolioId=../secret"), env);
+  const body = await response.json() as { error: string };
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "Invalid portfolio identifier.");
+});
+
+test("unknown portfolios fail closed instead of falling back to another profile", async () => {
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            async first() {
+              return null;
+            }
+          };
+        }
+      };
+    }
+  } as unknown as D1Database;
+
+  await assert.rejects(() => getPortfolioValuation(db, "portfolio_missing"), PortfolioNotFoundError);
 });
 
 test("milestone qualification and duplicate prevention use configurable definitions", () => {

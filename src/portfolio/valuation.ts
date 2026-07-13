@@ -86,13 +86,23 @@ interface PriceRow {
   createdAt: string;
 }
 
+export class PortfolioNotFoundError extends Error {
+  readonly portfolioId: string;
+
+  constructor(portfolioId: string) {
+    super("Portfolio is not initialized.");
+    this.name = "PortfolioNotFoundError";
+    this.portfolioId = portfolioId;
+  }
+}
+
 export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PORTFOLIO_ID, now = new Date()): Promise<PortfolioValuation> {
   const portfolio = await db
     .prepare("SELECT id, cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd FROM portfolios WHERE id = ?")
     .bind(portfolioId)
     .first<PortfolioRow>();
   if (!portfolio) {
-    throw new Error("Portfolio is not initialized.");
+    throw new PortfolioNotFoundError(portfolioId);
   }
 
   const positions = await listRows<PositionRow>(

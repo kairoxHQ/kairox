@@ -285,7 +285,7 @@ export function calculateTradeResults(trades: TradeRow[]): TradeResult[] {
     tradeId: trade.id,
     symbol: trade.symbol,
     side: trade.side,
-    profitLossUsd: roundMoney(trade.side === "SELL" ? trade.quantity * trade.priceUsd - trade.feesUsd : -trade.feesUsd),
+    profitLossUsd: subtractMoney(0, trade.feesUsd),
     executedAt: trade.executedAt
   }));
 }

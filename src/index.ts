@@ -19,7 +19,7 @@ import type { Env } from "./shared/types.ts";
 import { getJournal, getRecommendations } from "./journal/service.ts";
 import { getMarket } from "./paper/service.ts";
 import { getSummaries } from "./summaries/service.ts";
-import { getPortfolioValuation } from "./portfolio/valuation.ts";
+import { getPortfolioValuation, PortfolioNotFoundError } from "./portfolio/valuation.ts";
 import { getLatestDailySnapshots } from "./portfolio/dailySnapshots.ts";
 import { getHistoricalMetrics } from "./portfolio/historicalMetrics.ts";
 import { getDashboardContract } from "./dashboard/contract.ts";
@@ -42,7 +42,24 @@ function safetyStatus(env: Env) {
 }
 
 function requestedPortfolioId(url: URL): string | undefined {
-  return url.searchParams.get("portfolioId") ?? url.searchParams.get("portfolio_id") ?? undefined;
+  const value = url.searchParams.get("portfolioId") ?? url.searchParams.get("portfolio_id") ?? undefined;
+  if (!value) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9_-]{1,96}$/.test(value)) {
+    throw new RequestError(400, "Invalid portfolio identifier.");
+  }
+  return value;
+}
+
+class RequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "RequestError";
+    this.status = status;
+  }
 }
 
 export default {
@@ -282,6 +299,12 @@ export default {
 
       return notFound();
     } catch (error) {
+      if (error instanceof RequestError) {
+        return json({ error: error.message }, error.status);
+      }
+      if (error instanceof PortfolioNotFoundError) {
+        return json({ error: "Portfolio not found" }, 404);
+      }
       return json(
         {
           error: "Request failed",
