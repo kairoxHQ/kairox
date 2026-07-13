@@ -52,6 +52,18 @@ function requestedPortfolioId(url: URL): string | undefined {
   return value;
 }
 
+async function requestedExistingPortfolioId(db: D1Database, url: URL): Promise<string | undefined> {
+  const portfolioId = requestedPortfolioId(url);
+  if (!portfolioId) {
+    return undefined;
+  }
+  const row = await db.prepare("SELECT id FROM portfolios WHERE id = ?").bind(portfolioId).first<{ id: string }>();
+  if (!row) {
+    throw new PortfolioNotFoundError(portfolioId);
+  }
+  return portfolioId;
+}
+
 class RequestError extends Error {
   readonly status: number;
 
@@ -249,7 +261,7 @@ export default {
 
       if (url.pathname === "/daily-snapshots") {
         return json({
-          snapshots: await getLatestDailySnapshots(env.DB, requestedPortfolioId(url))
+          snapshots: await getLatestDailySnapshots(env.DB, await requestedExistingPortfolioId(env.DB, url))
         });
       }
 
@@ -262,11 +274,11 @@ export default {
       }
 
       if (url.pathname === "/milestones") {
-        return json(await getMilestones(env.DB, requestedPortfolioId(url)));
+        return json(await getMilestones(env.DB, await requestedExistingPortfolioId(env.DB, url)));
       }
 
       if (url.pathname === "/journey") {
-        return json(await getJourney(env.DB, requestedPortfolioId(url)));
+        return json(await getJourney(env.DB, await requestedExistingPortfolioId(env.DB, url)));
       }
 
       if (url.pathname === "/scheduled-runs") {

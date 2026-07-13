@@ -129,6 +129,28 @@ test("unknown portfolios fail closed instead of falling back to another profile"
   await assert.rejects(() => getPortfolioValuation(db, "portfolio_missing"), PortfolioNotFoundError);
 });
 
+test("portfolio-scoped read routes return 404 for unknown portfolio IDs", async () => {
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            async first() {
+              return null;
+            }
+          };
+        }
+      };
+    }
+  } as unknown as D1Database;
+  const env = { DB: db, APP_MODE: "paper", LIVE_TRADING_ENABLED: "false", STARTING_BALANCE_USD: "20", BENCHMARK_ASSET: "BTC" };
+
+  for (const route of ["/daily-snapshots", "/milestones", "/journey"]) {
+    const response = await worker.fetch(new Request(`https://kairox.test${route}?portfolioId=portfolio_missing`), env);
+    assert.equal(response.status, 404, route);
+  }
+});
+
 test("milestone qualification and duplicate prevention use configurable definitions", () => {
   const definition: MilestoneDefinition = {
     id: "account_value_25",
