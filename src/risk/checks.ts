@@ -1,4 +1,5 @@
 import type { DecisionAction, MarketDataset, MarketPrice } from "../shared/types.ts";
+import { validateInvestmentPolicy, type InvestmentPolicy, type OrderIntent } from "../policies/investmentPolicy.ts";
 
 export interface RiskAssessment {
   allowed: boolean;
@@ -20,6 +21,10 @@ export interface PaperRiskInput {
   maxNewTradePct?: number;
   maxPositionPct?: number;
   drawdownBlockPct?: number;
+  investmentPolicy?: InvestmentPolicy | null;
+  orderIntent?: OrderIntent;
+  securityTags?: string[];
+  resultingSectorValueUsd?: number | null;
 }
 
 export function assessRecommendation(action: DecisionAction, marketData: MarketPrice): RiskAssessment {
@@ -89,6 +94,21 @@ export function assessPaperTrade(input: PaperRiskInput): RiskAssessment {
   if (input.action === "SELL" && input.currentPositionValueUsd <= 0) {
     reasons.push("Cannot sell without an existing long paper position.");
   }
+
+  const policyAssessment = validateInvestmentPolicy({
+    policy: input.investmentPolicy ?? null,
+    action: input.action,
+    orderIntent: input.orderIntent,
+    symbol: input.marketData.symbol,
+    assetClass: input.marketData.assetClass,
+    portfolioValueUsd: input.portfolioValueUsd,
+    cashUsd: input.cashUsd,
+    currentPositionValueUsd: input.currentPositionValueUsd,
+    proposedTradeValueUsd: input.proposedTradeValueUsd,
+    resultingSectorValueUsd: input.resultingSectorValueUsd,
+    securityTags: input.securityTags
+  });
+  reasons.push(...policyAssessment.reasons);
 
   const allowed = reasons.length === 3;
   return {

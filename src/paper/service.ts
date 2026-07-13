@@ -22,6 +22,7 @@ import { completeDailySnapshot, ensureDailyStartSnapshot } from "../portfolio/da
 import { getPortfolioValuation, recordValuationSnapshot } from "../portfolio/valuation.ts";
 import { evaluateAndAwardMilestones } from "../milestones/service.ts";
 import { recordValuationJourneyEvents } from "../journey/service.ts";
+import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
 
 const SPREAD_RATE = 0.0025;
 const FEE_RATE = 0.001;
@@ -65,6 +66,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   const runStartedAt = now.toISOString();
   const portfolioId = options.portfolioId ?? TIM_PORTFOLIO_ID;
   const profile = await getPortfolioProfile(env.DB, portfolioId);
+  const investmentPolicy = await getInvestmentPolicy(env.DB, portfolioId);
   const runKey = options.runKey ?? `paper:${profile.profileKey}:${runStartedAt.slice(0, 16)}`;
   const executionAllowedBySystem = options.allowExecution ?? true;
   const existingRun = await env.DB.prepare("SELECT summary_json AS summaryJson FROM strategy_runs WHERE run_key = ?")
@@ -151,7 +153,9 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
       hasPosition: !!position && position.quantity > 0,
       maxNewTradePct: profile.parameters.maxNewTradePct,
       maxPositionPct: profile.parameters.maxPositionPct,
-      drawdownBlockPct: profile.parameters.drawdownBlockPct
+      drawdownBlockPct: profile.parameters.drawdownBlockPct,
+      investmentPolicy,
+      orderIntent: decision.action === "SELL" ? "long_sell" : "long_buy"
     });
     const risk =
       executionGateReasons.length > 0

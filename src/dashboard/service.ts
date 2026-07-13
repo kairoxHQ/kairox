@@ -10,9 +10,10 @@ import { getProfileComparison, listPortfolioProfiles } from "../portfolio/profil
 import { getIntelligenceOverview } from "../intelligence/service.ts";
 import { summarizeScheduledRun } from "../scheduler/service.ts";
 import { getAllProfileHoldingQuotes, getMarketTickerQuotes, type HoldingQuote, type NormalizedQuote } from "../market/quotes.ts";
+import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -137,7 +138,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getIntelligenceOverview(db),
       getMarketTickerQuotes(db),
       getAllProfileHoldingQuotes(db),
-      listPortfolioProfiles(db)
+      listPortfolioProfiles(db),
+      getInvestmentPolicy(db, portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -147,6 +149,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
   return {
     selectedPortfolioId: portfolioId,
     accountProfiles,
+    investmentPolicy,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -212,10 +215,12 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
   const data = await getDashboardData(db, portfolioId) as {
     selectedPortfolioId: string;
     accountProfiles: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
+    investmentPolicy: InvestmentPolicy | null;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
       cashUsd: number;
+      positionsValueUsd: number;
       todayGainLossUsd?: number;
       totalReturnUsd: number;
       priceReturnUsd: number;
@@ -254,10 +259,12 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
 export function renderDashboardHtml(data: {
   selectedPortfolioId?: string;
   accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
+  investmentPolicy?: InvestmentPolicy | null;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
     cashUsd: number;
+    positionsValueUsd?: number;
     todayGainLossUsd?: number;
     totalReturnUsd: number;
     priceReturnUsd: number;
@@ -397,6 +404,7 @@ export function renderDashboardHtml(data: {
   <main class="page-shell">
     ${section("market-ticker", "Market Ticker", `<div class="ticker-strip" data-market-ticker>${(data.marketTicker?.instruments ?? []).map(tickerItem).join("")}</div>`)}
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -662,6 +670,30 @@ function renderAccountSelector(
       <div class="muted">${selected ? "Selected account" : "Open account dashboard"}</div>
     </a>`;
   }).join("")}</div>`;
+}
+
+function renderSimulationStatus(
+  policy: InvestmentPolicy | null | undefined,
+  performance: { cashUsd: number; positionsValueUsd?: number; startingBalanceUsd?: number }
+): string {
+  if (!policy) {
+    return '<span class="pill">No investment policy configured</span>';
+  }
+  return `<div class="grid">
+    ${miniMetric("Simulation", "Active")}
+    ${miniMetric("Risk profile", policy.riskProfile)}
+    ${miniMetric("Starting capital", money(performance.startingBalanceUsd ?? 0))}
+    ${miniMetric("Current cash", money(performance.cashUsd))}
+    ${miniMetric("Current invested", money(performance.positionsValueUsd ?? 0))}
+    ${miniMetric("Max drawdown", pct(policy.maxDrawdownPct))}
+    ${miniMetric("Minimum cash", pct(policy.minCashAllocationPct))}
+    ${miniMetric("Simulation began", formatTimestampElement(policy.simulationBeganAt))}
+    <div class="mini-card">
+      <div class="mini-head"><strong>${escapeHtml(policy.riskProfile)}</strong><span class="pill">Paper</span></div>
+      <div class="muted">${escapeHtml(policy.primaryObjective)}</div>
+      <div class="muted">Single position ${escapeHtml(pct(policy.maxSinglePositionPct))} · Sector ${escapeHtml(pct(policy.maxSectorAllocationPct))}</div>
+    </div>
+  </div>`;
 }
 
 function row(left: string, right: string): string {
