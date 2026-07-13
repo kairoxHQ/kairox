@@ -4,6 +4,13 @@ import { getPortfolio } from "./portfolio/service.ts";
 import { getDashboardData, renderDashboard } from "./dashboard/service.ts";
 import { getDiagnostics, getOpportunities, getPerformance, getTrades, runAllPaperProfiles } from "./paper/service.ts";
 import { getProfileComparison, listPortfolioProfiles } from "./portfolio/profiles.ts";
+import {
+  getIntelligenceCategories,
+  getIntelligenceEvents,
+  getIntelligenceOverview,
+  getIntelligenceToday,
+  getMarketStory
+} from "./intelligence/service.ts";
 import { runScheduledPaperStrategy, getScheduledRuns } from "./scheduler/service.ts";
 import { getSettings, setAutomationPaused } from "./settings/service.ts";
 import { checkDatabase } from "./shared/db.ts";
@@ -44,6 +51,11 @@ export default {
       "/opportunities",
       "/profiles",
       "/comparison",
+      "/intelligence",
+      "/intelligence/today",
+      "/intelligence/events",
+      "/intelligence/categories",
+      "/market-story",
       "/trades",
       "/performance",
       "/dashboard",
@@ -166,6 +178,26 @@ export default {
 
       if (url.pathname === "/comparison") {
         return json(await getProfileComparison(env.DB));
+      }
+
+      if (url.pathname === "/intelligence") {
+        return json(await getIntelligenceOverview(env.DB));
+      }
+
+      if (url.pathname === "/intelligence/today") {
+        return json(await getIntelligenceToday(env.DB));
+      }
+
+      if (url.pathname === "/intelligence/events") {
+        return json(await getIntelligenceEvents(env.DB));
+      }
+
+      if (url.pathname === "/intelligence/categories") {
+        return json(await getIntelligenceCategories(env.DB));
+      }
+
+      if (url.pathname === "/market-story") {
+        return json(await getMarketStory(env.DB));
       }
 
       if (url.pathname === "/trades") {

@@ -7,9 +7,10 @@ import { sanitizeForUser } from "../shared/messages.ts";
 import { listEnabledWatchlistAssets } from "../market/assets.ts";
 import { getOpportunities } from "../paper/service.ts";
 import { getProfileComparison } from "../portfolio/profiles.ts";
+import { getIntelligenceOverview } from "../intelligence/service.ts";
 
 export async function getDashboardData(db: D1Database): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db),
@@ -129,7 +130,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
            ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
         )
       ),
-      getProfileComparison(db)
+      getProfileComparison(db),
+      getIntelligenceOverview(db)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -167,7 +169,8 @@ export async function getDashboardData(db: D1Database): Promise<unknown> {
     })),
     opportunities: opportunityData.opportunities
     ,
-    profileComparison
+    profileComparison,
+    intelligence
   };
 }
 
@@ -220,6 +223,7 @@ export async function renderDashboard(db: D1Database): Promise<Response> {
     assetUniverse: Array<{ symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }>;
     opportunities: Array<DashboardOpportunity>;
     profileComparison: DashboardComparison;
+    intelligence: DashboardIntelligence;
   };
   const html = renderDashboardHtml(data);
 
@@ -256,6 +260,7 @@ export function renderDashboardHtml(data: {
   assetUniverse?: Array<{ symbol: string; assetType: string; enabled: boolean; tradable: boolean; priceUsd: number | null; freshness: string; status: string; currentPositionValueUsd: number }>;
   opportunities?: Array<DashboardOpportunity>;
   profileComparison?: DashboardComparison;
+  intelligence?: DashboardIntelligence;
 }): string {
   const latestDecision = data.journal?.[0];
   const latestRecommendation = data.recommendations[0];
@@ -345,6 +350,7 @@ export function renderDashboardHtml(data: {
     </section>
     ${section("asset-universe", "Asset Universe", renderFilters() + `<div class="asset-grid">${(data.assetUniverse ?? []).map(assetCard).join("")}</div>`)}
     ${section("profiles", "Simulation Profiles", `<div class="asset-grid">${(data.profileComparison?.profiles ?? []).map(profileCard).join("")}</div>`)}
+    ${section("intelligence", "Intelligence", renderIntelligence(data.intelligence))}
     ${section("opportunities", "Opportunities", renderFilters() + `<div class="card-list">${(data.opportunities ?? []).map(opportunityCard).join("")}</div>`)}
     <section class="two-col">
       ${section("trades", "Latest Trades", data.trades.map((t) => tradeCard(t)).join(""))}
@@ -375,6 +381,29 @@ interface DashboardComparison {
     actualEquityUsd: number;
     normalizedIndex: number;
     normalizedReturnPct: number;
+  }>;
+}
+
+interface DashboardIntelligence {
+  story: {
+    title: string;
+    overallOutlook: string;
+    keyEvents: Array<{ title: string; category: string; evidenceScore: number; sampleData: boolean }>;
+    importantThemes: string[];
+    potentialRisks: string[];
+    opportunitiesBeingMonitored: string[];
+    noRecommendations: boolean;
+    sampleDataNotice?: string;
+  };
+  categories: { categories: Array<{ name: string; enabled: boolean }> };
+  recentEvents: Array<{
+    title: string;
+    category: string;
+    evidenceScore: number;
+    affectedSymbols: string[];
+    affectedAssetClasses: string[];
+    sampleData: boolean;
+    summary: string;
   }>;
 }
 
@@ -510,6 +539,33 @@ function profileCard(profile: DashboardComparison["profiles"][number]): string {
     <div class="muted">Normalized ${escapeHtml(profile.normalizedIndex.toFixed(2))} (${escapeHtml(pct(profile.normalizedReturnPct))})</div>
     <div class="muted">Start ${escapeHtml(money(profile.comparisonStartEquityUsd))} · ${escapeHtml(formatDateTime(profile.comparisonStartTimestamp))}</div>
     <div class="muted">${escapeHtml(profile.philosophy)}</div>
+  </div>`;
+}
+
+function renderIntelligence(intelligence?: DashboardIntelligence): string {
+  if (!intelligence) {
+    return '<span class="pill">No intelligence records yet</span>';
+  }
+  const story = intelligence.story;
+  return `<div class="card-list">
+    <div class="mini-card">
+      <div class="mini-head"><strong>${escapeHtml(story.title)}</strong><span class="pill">${escapeHtml(story.overallOutlook)}</span></div>
+      <div class="muted">${escapeHtml(story.noRecommendations ? "No buy/sell recommendations. Intelligence only." : "Intelligence summary.")}</div>
+      ${story.sampleDataNotice ? `<div class="muted">${escapeHtml(story.sampleDataNotice)}</div>` : ""}
+      <div class="muted">Themes: ${escapeHtml(story.importantThemes.join(", ") || "None")}</div>
+      <div class="muted">Watching: ${escapeHtml(story.opportunitiesBeingMonitored.join(", ") || "None")}</div>
+    </div>
+    <div class="asset-grid">${intelligence.recentEvents.slice(0, 6).map(intelligenceCard).join("")}</div>
+  </div>`;
+}
+
+function intelligenceCard(event: DashboardIntelligence["recentEvents"][number]): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(event.title)}</strong><span class="pill">${escapeHtml(event.category)}</span></div>
+    <div class="metric-sm">${escapeHtml((event.evidenceScore * 100).toFixed(1))}% evidence</div>
+    <div class="muted">Affected: ${escapeHtml([...event.affectedSymbols, ...event.affectedAssetClasses].join(", ") || "None listed")}</div>
+    <div>${escapeHtml(sanitizeForUser(event.summary, "Intelligence summary unavailable."))}</div>
+    ${event.sampleData ? '<div class="muted">Sample fixture, not current news.</div>' : ""}
   </div>`;
 }
 
