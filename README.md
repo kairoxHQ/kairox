@@ -4,6 +4,19 @@ Kairox is a Cloudflare Workers-based personal paper-trading agent foundation. Th
 
 Canonical repository: `kairoxHQ/kairox`
 
+## Project Philosophy
+
+Kairox is guided by the belief that individual investors deserve clear, evidence-driven investment research built from public information, transparent reasoning, and disciplined risk management. See [The Kairox Manifesto](MANIFESTO.md).
+
+## Project Documentation
+
+- [The Kairox Manifesto](MANIFESTO.md)
+- [Architecture](ARCHITECTURE.md)
+- [Deployment](DEPLOYMENT.md)
+- [Domain Migration](DOMAIN_MIGRATION.md)
+- [Roadmap](ROADMAP.md)
+- [Principles](PRINCIPLES.md)
+
 ## Current Status
 
 - Cloudflare Worker written in TypeScript.
