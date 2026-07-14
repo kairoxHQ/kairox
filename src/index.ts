@@ -49,6 +49,7 @@ import { RecommendationProposalService } from "./recommendations/proposalService
 import { MarketDataService } from "./market/service.ts";
 import { StrategyEngine } from "./strategy/engine.ts";
 import { ForwardTestService, runScheduledForwardTests } from "./forward/forwardTest.ts";
+import { DailyManagementCycleService, runScheduledDailyManagementCycles } from "./management/dailyCycle.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -600,6 +601,28 @@ export default {
         return json({ reviews: await listDailyReviews(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira") });
       }
 
+      if (url.pathname === "/daily-management-cycles") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json({ cycles: await new DailyManagementCycleService(env.DB).list(portfolioId), latest: await new DailyManagementCycleService(env.DB).latest(portfolioId) });
+      }
+
+      if (url.pathname === "/daily-management-cycles/run") {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const auth = await authorize(request, env);
+        if (auth) {
+          return auth;
+        }
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const refresh = url.searchParams.get("refresh") === "true";
+        const result = await new DailyManagementCycleService(env.DB).run(portfolioId, "manual", new Date(), {
+          refresh,
+          refreshReason: refresh ? await actionReason(request, "Manual protected refresh.") : undefined
+        });
+        return dailyManagementCycleActionResponse(request, portfolioId, result);
+      }
+
       if (url.pathname === "/recommendation-proposals") {
         return json({ proposals: await new RecommendationProposalService(env.DB).list(await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira") });
       }
@@ -667,6 +690,7 @@ export default {
     ctx.waitUntil(Promise.all([
       runScheduledPaperStrategy(env, controller.cron, scheduledAt),
       runScheduledDailyReviews(env, scheduledAt),
+      runScheduledDailyManagementCycles(env, scheduledAt),
       runScheduledForwardTests(env, scheduledAt)
     ]));
   }
@@ -735,6 +759,17 @@ function dailyReviewActionResponse(request: Request, portfolioId: string, payloa
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#daily-review` }
+    });
+  }
+  return json(payload);
+}
+
+function dailyManagementCycleActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#daily-management` }
     });
   }
   return json(payload);

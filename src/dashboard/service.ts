@@ -18,9 +18,10 @@ import { listDailyReviews, type DailyPortfolioReview } from "../reviews/dailyRev
 import { RecommendationProposalService, type RecommendationProposal } from "../recommendations/proposalService.ts";
 import { StrategyEngine, type StrategyRun } from "../strategy/engine.ts";
 import { ForwardTestService, type ForwardMetricsSummary } from "../forward/forwardTest.ts";
+import { DailyManagementCycleService, type DailyManagementCycle } from "../management/dailyCycle.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -150,7 +151,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getLatestAllocationProposal(db, portfolioId),
       getLatestPaperOrderBatch(db, portfolioId),
       new StrategyEngine(db).latest(portfolioId),
-      new ForwardTestService(db).summary(portfolioId)
+      new ForwardTestService(db).summary(portfolioId),
+      new DailyManagementCycleService(db).list(portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -168,6 +170,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     paperOrderBatch,
     paperExecution,
     dailyReviews,
+    dailyManagementCycles,
     recommendationProposals,
     strategyRun,
     forwardTest,
@@ -241,6 +244,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     paperOrderBatch: PaperOrderBatch | null;
     paperExecution: PaperExecutionRecord | null;
     dailyReviews: DailyPortfolioReview[];
+    dailyManagementCycles: DailyManagementCycle[];
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     forwardTest: ForwardMetricsSummary;
@@ -292,6 +296,7 @@ export function renderDashboardHtml(data: {
   paperOrderBatch?: PaperOrderBatch | null;
   paperExecution?: PaperExecutionRecord | null;
   dailyReviews?: DailyPortfolioReview[];
+  dailyManagementCycles?: DailyManagementCycle[];
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   forwardTest?: ForwardMetricsSummary;
@@ -432,7 +437,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -443,6 +448,7 @@ export function renderDashboardHtml(data: {
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("daily-management", "Daily Management", renderDailyManagement(data.dailyManagementCycles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
@@ -613,6 +619,25 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Daily review failed." }));
             alert(payload.message || payload.error || "Daily review failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-daily-management]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-daily-management") || "portfolio_ira";
+          const confirmed = confirm("Run a protected paper management cycle now? This updates valuation and recommendations only; it will not stage orders, create fills, move cash, or contact a live brokerage.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected management cycle.");
+          if (!secret) return;
+          const response = await fetch("/daily-management-cycles/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Daily management cycle failed." }));
+            alert(payload.message || payload.error || "Daily management cycle failed.");
             return;
           }
           location.reload();
@@ -873,6 +898,51 @@ function renderDailyReview(reviews: DailyPortfolioReview[], proposals: Recommend
     ${renderRecommendationProposal(latestProposal)}
     ${warnings}
     <div class="card-list">${reviews.slice(0, 6).map((review) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(review.marketDate)} ${escapeHtml(review.recommendation)}</strong><span class="pill">${escapeHtml(review.dataFreshnessStatus)}</span></div><div class="muted">${escapeHtml(signedMoney(review.dailyChangeUsd))} daily · ${escapeHtml(pct(review.totalReturnPct))} since inception · ${formatTimestampElement(review.generatedAt)}</div></div>`).join("")}</div>`;
+}
+
+function renderDailyManagement(cycles: DailyManagementCycle[], portfolioId: string): string {
+  const latest = cycles[0];
+  const action = `<div class="filters"><button class="filter" type="button" data-run-daily-management="${escapeHtml(portfolioId)}">Run Daily Management Cycle</button><a class="filter" href="/daily-management-cycles?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><span class="pill">Paper only</span><span class="pill">No orders or fills</span></div>`;
+  if (!latest) {
+    return `${action}<span class="pill">No daily management cycle yet</span>`;
+  }
+  const driftRows = [
+    row("Equity", `${pct(latest.currentAllocation.equityPct)} target ${pct(latest.targetAllocation.equityPct)} drift ${signedPct(latest.allocationDrift.equityPct)}`),
+    row("Bonds", `${pct(latest.currentAllocation.bondPct)} target ${pct(latest.targetAllocation.bondPct)} drift ${signedPct(latest.allocationDrift.bondPct)}`),
+    row("Cash", `${pct(latest.currentAllocation.cashPct)} target ${pct(latest.targetAllocation.cashPct)} drift ${signedPct(latest.allocationDrift.cashPct)}`),
+    row("Max drift", pct(latest.allocationDrift.maxAbsoluteDriftPct))
+  ].join("");
+  const warningItems = [...latest.policyFindings, ...latest.riskFindings, ...latest.unresolvedItems];
+  const warnings = warningItems.length
+    ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml(warningItems.join(" "))}</div></div>`
+    : `<span class="pill">No management warnings</span>`;
+  const proposal = latest.createdProposalId
+    ? `<a class="filter" href="#daily-review">Draft proposal ${escapeHtml(latest.createdProposalId)}</a>`
+    : `<span class="pill">No draft proposal generated</span>`;
+  return `${action}<div class="filters">${proposal}</div>
+    <div class="grid">
+      ${miniMetric("Last cycle", latest.cycleDate)}
+      ${miniMetric("Outcome", latest.outcome)}
+      ${miniMetric("Account value", money(latest.portfolioValueUsd))}
+      ${miniMetric("Daily change", `${signedMoney(latest.dailyChangeUsd)} (${pct(latest.dailyChangePct)})`)}
+      ${miniMetric("Since start", `${signedMoney(latest.returnSinceStartUsd)} (${pct(latest.returnSinceStartPct)})`)}
+      ${miniMetric("Data", latest.marketDataStatus)}
+      ${miniMetric("Policy", latest.policyCompliant ? "Compliant" : "Review")}
+      ${miniMetric("Data timestamp", latest.dataTimestamp ? formatTimestampElement(latest.dataTimestamp) : "Unavailable")}
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Allocation drift</strong>${driftRows}</div>
+      <div class="mini-card"><strong>Risk and drawdown</strong>
+        ${row("Current drawdown", pct(latest.drawdownMetrics.currentDrawdownPct))}
+        ${row("Maximum drawdown", pct(latest.drawdownMetrics.maximumDrawdownPct))}
+        ${row("Unrealized", `${signedMoney(latest.unrealizedGainLossUsd)} (${pct(latest.unrealizedGainLossPct)})`)}
+        ${row("Cash", `${money(latest.cashUsd)} (${pct(latest.currentAllocation.cashPct)})`)}
+      </div>
+    </div>
+    <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(latest.outcome)}</strong><span class="pill">${escapeHtml(latest.status)}</span></div><div>${escapeHtml(sanitizeForUser(latest.recommendationExplanation, "Daily management explanation unavailable."))}</div><div class="muted">Completed ${latest.completedAt ? formatTimestampElement(latest.completedAt) : "Unavailable"}.</div></div>
+    ${warnings}
+    <div class="mini-card"><strong>Data sources</strong>${latest.providerSummary.length ? latest.providerSummary.map((item) => row(item.symbol, `${item.status} · ${item.provider} · ${item.timestamp ? formatTimestampElement(item.timestamp) : "Unavailable"}`)).join("") : '<span class="pill">No holdings required pricing</span>'}</div>
+    <div class="card-list">${cycles.slice(0, 6).map((cycle) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(cycle.cycleDate)} ${escapeHtml(cycle.outcome)}</strong><span class="pill">${escapeHtml(cycle.marketDataStatus)}</span></div><div class="muted">${escapeHtml(signedMoney(cycle.dailyChangeUsd))} daily · max drift ${escapeHtml(pct(cycle.allocationDrift.maxAbsoluteDriftPct))} · ${cycle.completedAt ? formatTimestampElement(cycle.completedAt) : "Incomplete"}</div></div>`).join("")}</div>`;
 }
 
 function dailyReviewIneligibleReason(review: DailyPortfolioReview): string {
@@ -1267,6 +1337,11 @@ function maybeMoney(value: number | null | undefined): string {
 
 function pct(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function signedPct(value: number): string {
+  const prefix = value > 0 ? "+" : "";
+  return `${prefix}${pct(value)}`;
 }
 
 function maybePct(value: number | null | undefined): string {
