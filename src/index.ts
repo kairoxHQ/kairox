@@ -46,6 +46,7 @@ import {
 import { executePaperOrderBatch, getPaperExecutionByBatchId } from "./orders/execution.ts";
 import { DailyPortfolioReviewService, listDailyReviews, runScheduledDailyReviews } from "./reviews/dailyReview.ts";
 import { RecommendationProposalService } from "./recommendations/proposalService.ts";
+import { MarketDataService } from "./market/service.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -143,7 +144,14 @@ export default {
     }
 
     const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run"]);
-    const protectedGetRoutes = new Set(["/diagnostics"]);
+    const protectedGetRoutes = new Set([
+      "/diagnostics",
+      "/market-data/provider-health",
+      "/market-data/cache",
+      "/market-data/anomalies",
+      "/market-data/quote-status",
+      "/market-data/historical-coverage"
+    ]);
     if (stateChangingRoutes.has(url.pathname) && request.method !== "POST") {
       return json({ error: "Method not allowed" }, 405);
     }
@@ -252,6 +260,27 @@ export default {
 
       if (url.pathname === "/market") {
         return json(await getMarket(env.DB));
+      }
+
+      if (url.pathname === "/market-data/quote-status") {
+        const symbols = (url.searchParams.get("symbols") ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+        return json({ quotes: await new MarketDataService(env.DB).getQuotes(symbols, "dashboard") });
+      }
+
+      if (url.pathname === "/market-data/provider-health") {
+        return json({ providers: await new MarketDataService(env.DB).getProviderHealth() });
+      }
+
+      if (url.pathname === "/market-data/cache") {
+        return json({ cache: await new MarketDataService(env.DB).getCacheStatus(url.searchParams.get("symbol") ?? undefined) });
+      }
+
+      if (url.pathname === "/market-data/anomalies") {
+        return json({ anomalies: await new MarketDataService(env.DB).getRecentAnomalies() });
+      }
+
+      if (url.pathname === "/market-data/historical-coverage") {
+        return json({ coverage: await getHistoricalCoverage(env.DB, url.searchParams.get("symbol") ?? undefined) });
       }
 
       if (url.pathname === "/market-ticker") {
@@ -687,6 +716,16 @@ async function approveProposalOrConflict(db: D1Database, proposalId: string) {
     }
     throw error;
   }
+}
+
+async function getHistoricalCoverage(db: D1Database, symbol?: string) {
+  const base = `SELECT symbol, provider, MIN(trading_date) AS startDate, MAX(trading_date) AS endDate, COUNT(*) AS bars
+    FROM historical_price_bars`;
+  const query = symbol
+    ? db.prepare(`${base} WHERE symbol = ? GROUP BY symbol, provider ORDER BY symbol ASC, provider ASC`).bind(symbol.toUpperCase())
+    : db.prepare(`${base} GROUP BY symbol, provider ORDER BY symbol ASC, provider ASC`);
+  const result = await query.all();
+  return result.results ?? [];
 }
 
 async function stagePaperOrdersOrConflict(db: D1Database, proposalId: string) {

@@ -1,4 +1,4 @@
-import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
+import { MarketDataService, quoteToMarketDataset } from "../market/service.ts";
 import { PerformanceAnalyticsService, type PerformanceAnalyticsSummary } from "../analytics/performance.ts";
 import { completeDailySnapshot, ensureDailyStartSnapshot } from "../portfolio/dailySnapshots.ts";
 import { recordEquityHistory } from "../portfolio/performance.ts";
@@ -65,6 +65,7 @@ export interface DailyPortfolioReview {
   triggeredRules: string[];
   relevantMetrics: Record<string, number | string | boolean | null>;
   marketDataTimestamp: string | null;
+  marketDataSnapshotId: string | null;
   generatedAt: string;
   ruleEngineVersion: string;
   summaryExplanation: string;
@@ -166,7 +167,9 @@ export class DailyPortfolioReviewService {
       }
 
       const positionsBefore = await this.getPositions(portfolioId);
-      const refreshed = await this.refreshHeldPrices(positionsBefore, now);
+      const reviewSymbols = [...new Set([...positionsBefore.map((position) => position.symbol), "SPY", "BND"])];
+      const marketSnapshot = await new MarketDataService(this.db).createSnapshot(reviewSymbols, "daily_review", now);
+      const refreshed = await this.refreshHeldPrices(positionsBefore, marketSnapshot);
       await this.updatePositionsFromPrices(portfolioId, refreshed, now);
       const valuation = await this.updateValuationArtifacts(portfolioId, now);
       await this.recordEvent(null, portfolioId, marketDate, "valuation_updated", "Daily valuation and snapshots updated.", { totalAccountValueUsd: valuation.totalAccountValueUsd }, now);
@@ -177,7 +180,7 @@ export class DailyPortfolioReviewService {
         this.getPositions(portfolioId)
       ]);
       const allocation = calculateAllocation(valuation, positionsAfter);
-      const benchmarks = await this.calculateBenchmarks(portfolio, valuation, positionsAfter, now);
+      const benchmarks = await this.calculateBenchmarks(portfolio, valuation, positionsAfter, marketSnapshot);
       await this.recordEvent(null, portfolioId, marketDate, "benchmark_comparison_completed", "Daily benchmark comparison completed.", { benchmarks: benchmarks.map((benchmark) => benchmark.name) }, now);
 
       const policyWarnings = evaluatePolicyWarnings(policy, allocation, analytics);
@@ -209,6 +212,7 @@ export class DailyPortfolioReviewService {
         dataFreshnessStatus,
         decision,
         contributors,
+        marketDataSnapshotId: marketSnapshot.id,
         now
       });
 
@@ -254,14 +258,14 @@ export class DailyPortfolioReviewService {
     );
   }
 
-  private async refreshHeldPrices(positions: PositionRow[], now: Date): Promise<Map<string, MarketDataset>> {
-    const provider = new YahooFinanceMarketDataProvider();
+  private async refreshHeldPrices(positions: PositionRow[], snapshot: Awaited<ReturnType<MarketDataService["createSnapshot"]>>): Promise<Map<string, MarketDataset>> {
     const refreshed = new Map<string, MarketDataset>();
     for (const symbol of [...new Set(positions.map((position) => position.symbol))]) {
       try {
-        const data = await provider.getMarketData(symbol);
-        if (data.validated && data.priceUsd > 0) {
-          await this.recordMarketSnapshot(data, now);
+        const quote = snapshot.quotes.get(symbol);
+        const data = quote ? quoteToMarketDataset(quote) : null;
+        if (data && data.validated && data.priceUsd > 0) {
+          await this.recordMarketSnapshot(data, new Date(snapshot.createdAt));
           refreshed.set(symbol, data);
         }
       } catch {
@@ -311,9 +315,10 @@ export class DailyPortfolioReviewService {
     return valuation;
   }
 
-  private async calculateBenchmarks(portfolio: PortfolioRow, valuation: PortfolioValuation, positions: PositionRow[], now: Date): Promise<DailyReviewBenchmark[]> {
+  private async calculateBenchmarks(portfolio: PortfolioRow, valuation: PortfolioValuation, positions: PositionRow[], snapshot: Awaited<ReturnType<MarketDataService["createSnapshot"]>>): Promise<DailyReviewBenchmark[]> {
     const starting = portfolio.startingBalanceUsd;
-    const [spy, bnd] = await Promise.all([this.latestPrice("SPY"), this.latestPrice("BND")]);
+    const spy = priceRowFromSnapshot(snapshot, "SPY");
+    const bnd = priceRowFromSnapshot(snapshot, "BND");
     const cash = benchmark("Bank/cash baseline", starting, starting, "complete", "Cash baseline assumes no interest unless cash-yield data is available.", ["cash"]);
     const spyBenchmark = priceBenchmark("S&P 500 benchmark", starting, spy, "SPY");
     const balanced = balancedBenchmark(starting, this.config.balancedBenchmarkWeights, { SPY: spy, BND: bnd });
@@ -341,8 +346,8 @@ export class DailyPortfolioReviewService {
         largest_negative_contributor_json, policy_compliant, policy_warnings_json,
         data_freshness_status, recommendation, supporting_reasons_json, confidence_score,
         triggered_rules_json, relevant_metrics_json, market_data_timestamp, generated_at,
-        rule_engine_version, summary_explanation
-      ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        rule_engine_version, summary_explanation, market_data_snapshot_id
+      ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       review.id,
       review.portfolioId,
@@ -373,7 +378,8 @@ export class DailyPortfolioReviewService {
       review.marketDataTimestamp,
       review.generatedAt,
       review.ruleEngineVersion,
-      review.summaryExplanation
+      review.summaryExplanation,
+      review.marketDataSnapshotId
     ).run();
   }
 
@@ -579,6 +585,7 @@ function buildReviewRecord(input: {
   dataFreshnessStatus: "fresh" | "stale" | "unavailable";
   decision: ReturnType<typeof decideDailyReview>;
   contributors: { positive: Contributor | null; negative: Contributor | null };
+  marketDataSnapshotId: string | null;
   now: Date;
 }): DailyPortfolioReview {
   const totalReturnUsd = input.analytics.allTimeReturn.amountUsd;
@@ -621,6 +628,7 @@ function buildReviewRecord(input: {
       totalReturnUsd
     },
     marketDataTimestamp,
+    marketDataSnapshotId: input.marketDataSnapshotId,
     generatedAt: input.now.toISOString(),
     ruleEngineVersion: RULE_ENGINE_VERSION,
     summaryExplanation
@@ -672,6 +680,19 @@ function priceBenchmark(name: string, starting: number, price: MarketPriceRow | 
     return { name, valueUsd: null, returnUsd: null, returnPct: null, dataStatus: "unavailable", disclosure: "No trustworthy benchmark price is available; value was not fabricated.", symbols: [symbol] };
   }
   return benchmark(name, starting, starting, "incomplete", "Starting benchmark price history is not complete yet; value remains at starting capital until historical baseline is available.", [symbol]);
+}
+
+function priceRowFromSnapshot(snapshot: Awaited<ReturnType<MarketDataService["createSnapshot"]>>, symbol: string): MarketPriceRow | null {
+  const quote = snapshot.quotes.get(symbol);
+  if (!quote || !quote.lastPrice || !quote.providerTimestamp || !quote.validation.valid) {
+    return null;
+  }
+  return {
+    symbol,
+    priceUsd: quote.lastPrice,
+    priceAsOf: quote.providerTimestamp,
+    createdAt: quote.receivedTimestamp
+  };
 }
 
 function balancedBenchmark(starting: number, weights: Record<string, number>, prices: Record<string, MarketPriceRow | null>): DailyReviewBenchmark {
@@ -752,6 +773,7 @@ interface DailyReviewRow {
   triggered_rules_json: string;
   relevant_metrics_json: string;
   market_data_timestamp: string | null;
+  market_data_snapshot_id: string | null;
   generated_at: string;
   rule_engine_version: string;
   summary_explanation: string;
@@ -787,6 +809,7 @@ function mapReviewRow(row: DailyReviewRow): DailyPortfolioReview {
     triggeredRules: parseJson(row.triggered_rules_json, []),
     relevantMetrics: parseJson(row.relevant_metrics_json, {}),
     marketDataTimestamp: row.market_data_timestamp,
+    marketDataSnapshotId: row.market_data_snapshot_id ?? null,
     generatedAt: row.generated_at,
     ruleEngineVersion: row.rule_engine_version,
     summaryExplanation: row.summary_explanation

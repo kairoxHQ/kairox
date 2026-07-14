@@ -1,4 +1,4 @@
-import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
+import { MarketDataService } from "../market/service.ts";
 import { completeDailySnapshot, ensureDailyStartSnapshot } from "../portfolio/dailySnapshots.ts";
 import { recordEquityHistory } from "../portfolio/performance.ts";
 import { getPortfolioValuation, recordValuationSnapshot } from "../portfolio/valuation.ts";
@@ -703,21 +703,16 @@ async function getAssetMetadata(db: D1Database, symbols: string[]): Promise<Asse
 }
 
 async function getLatestPrices(db: D1Database, symbols: string[], now: Date): Promise<LatestPrice[]> {
-  const provider = new YahooFinanceMarketDataProvider();
   const prices: LatestPrice[] = [];
-  for (const symbol of [...new Set(symbols)]) {
-    try {
-      const live = await provider.getMarketData(symbol);
-      if (live.validated && live.priceUsd > 0 && isFreshPrice(live.asOf, now.getTime())) {
-        prices.push({ symbol, priceUsd: live.priceUsd, priceTimestamp: live.asOf });
-        continue;
-      }
-    } catch {
-      // Fall through to last validated D1 snapshot.
+  const snapshot = await new MarketDataService(db).createSnapshot(symbols, "paper_execution", now);
+  for (const [symbol, quote] of snapshot.quotes) {
+    if (quote.validation.valid && quote.lastPrice && quote.providerTimestamp && isFreshPrice(quote.providerTimestamp, now.getTime())) {
+      prices.push({ symbol, priceUsd: quote.lastPrice, priceTimestamp: quote.providerTimestamp });
     }
-    const row = await db.prepare("SELECT symbol, price_usd AS priceUsd, price_as_of AS priceTimestamp FROM market_snapshots WHERE symbol = ? AND validation_status = 'validated' AND price_usd > 0 ORDER BY created_at DESC LIMIT 1").bind(symbol).first<LatestPrice>();
-    if (row) {
-      prices.push(row);
+  }
+  for (const symbol of [...new Set(symbols)]) {
+    if (prices.some((price) => price.symbol === symbol)) {
+      continue;
     }
   }
   return prices;

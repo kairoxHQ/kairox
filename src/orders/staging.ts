@@ -1,5 +1,5 @@
 import { getAllocationProposalById, markAllocationProposalRevisionRequired, type AllocationProposal } from "../allocation/proposals.ts";
-import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
+import { MarketDataService } from "../market/service.ts";
 import { getInvestmentPolicy, validateInvestmentPolicy, type InvestmentPolicyValidationResult } from "../policies/investmentPolicy.ts";
 import { listRows } from "../shared/db.ts";
 import type { AssetClass } from "../shared/types.ts";
@@ -189,7 +189,7 @@ export async function stagePaperOrdersForProposal(
     getInvestmentPolicy(db, proposal.portfolioId),
     getPositionSummaries(db, proposal.portfolioId),
     getAssetMetadata(db, proposal.lines.map((line) => line.symbol)),
-    getLatestPrices(db, proposal.lines.filter((line) => !line.isCashReserve).map((line) => line.symbol), now.toISOString())
+    getLatestPrices(db, proposal.lines.filter((line) => !line.isCashReserve).map((line) => line.symbol), now)
   ]);
 
   if (!portfolio) {
@@ -526,7 +526,7 @@ export async function refreshPaperOrderBatchPrices(db: D1Database, batchId: stri
     getInvestmentPolicy(db, proposal.portfolioId),
     getPositionSummaries(db, proposal.portfolioId),
     getAssetMetadata(db, proposal.lines.map((line) => line.symbol)),
-    getLatestPrices(db, proposal.lines.filter((line) => !line.isCashReserve).map((line) => line.symbol), now.toISOString())
+    getLatestPrices(db, proposal.lines.filter((line) => !line.isCashReserve).map((line) => line.symbol), now)
   ]);
   if (!portfolio) {
     throw new Error("Portfolio not found.");
@@ -803,12 +803,20 @@ async function getAssetMetadata(db: D1Database, symbols: string[]): Promise<Asse
   );
 }
 
-async function getLatestPrices(db: D1Database, symbols: string[], nowIso: string): Promise<LatestPrice[]> {
+async function getLatestPrices(db: D1Database, symbols: string[], now: Date): Promise<LatestPrice[]> {
   const uniqueSymbols = [...new Set(symbols)];
   const prices: LatestPrice[] = [];
-  const provider = new YahooFinanceMarketDataProvider();
-  const nowMs = new Date(nowIso).getTime();
+  const snapshot = await new MarketDataService(db).createSnapshot(uniqueSymbols, "order_staging", now);
+  const nowMs = now.getTime();
+  for (const [symbol, quote] of snapshot.quotes) {
+    if (quote.validation.valid && quote.lastPrice && quote.providerTimestamp && isFreshPrice(quote.providerTimestamp, nowMs)) {
+      prices.push({ symbol, priceUsd: quote.lastPrice, priceTimestamp: quote.providerTimestamp });
+    }
+  }
   for (const symbol of uniqueSymbols) {
+    if (prices.some((price) => price.symbol === symbol)) {
+      continue;
+    }
     const row = await db
       .prepare(
         `SELECT symbol, price_usd AS priceUsd, price_as_of AS priceTimestamp
@@ -823,17 +831,8 @@ async function getLatestPrices(db: D1Database, symbols: string[], nowIso: string
       prices.push(row);
       continue;
     }
-    try {
-      const live = await provider.getMarketData(symbol);
-      if (live.validated && live.priceUsd > 0) {
-        prices.push({ symbol, priceUsd: live.priceUsd, priceTimestamp: live.asOf });
-      } else if (row) {
-        prices.push(row);
-      }
-    } catch {
-      if (row) {
-        prices.push(row);
-      }
+    if (row) {
+      prices.push(row);
     }
   }
   return prices;

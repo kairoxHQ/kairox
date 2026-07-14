@@ -3,6 +3,7 @@ import { recordJourneyEvent } from "../journey/service.ts";
 import { listRows } from "../shared/db.ts";
 import { addMoney, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 import type { AssetClass } from "../shared/types.ts";
+import { MarketDataService } from "../market/service.ts";
 
 export type ReviewProposalStatus =
   | "Draft"
@@ -54,6 +55,7 @@ export interface RecommendationProposal {
   rationale: string;
   confidenceScore: number;
   marketDataTimestamp: string | null;
+  marketDataSnapshotId: string | null;
   generatedAt: string;
   expiresAt: string;
   regenerationReason: string | null;
@@ -152,6 +154,7 @@ interface ProposalRow {
   rationale: string;
   confidenceScore: number;
   marketDataTimestamp: string | null;
+  marketDataSnapshotId: string | null;
   generatedAt: string;
   expiresAt: string;
   regenerationReason: string | null;
@@ -233,7 +236,8 @@ export class RecommendationProposalService {
       return this.noAction(review, "No active investment policy is configured for this portfolio.", now);
     }
 
-    const prices = await this.getPrices(positions.map((position) => position.symbol), now);
+    const marketSnapshot = await new MarketDataService(this.db).createSnapshot(positions.map((position) => position.symbol), "proposal", now);
+    const prices = this.getPricesFromSnapshot(marketSnapshot, now);
     const plan = buildRecommendationProposalPlan({
       review,
       portfolio,
@@ -245,6 +249,7 @@ export class RecommendationProposalService {
       regenerateReason: options.reason ?? null,
       config: this.config
     });
+    plan.proposal.marketDataSnapshotId = marketSnapshot.id;
 
     if (plan.noActionReason) {
       return this.noAction(review, plan.noActionReason, now);
@@ -280,6 +285,7 @@ export class RecommendationProposalService {
           risk_score_after AS riskScoreAfter, diversification_score_before AS diversificationScoreBefore,
           diversification_score_after AS diversificationScoreAfter, estimated_turnover_pct AS estimatedTurnoverPct,
           rationale, confidence_score AS confidenceScore, market_data_timestamp AS marketDataTimestamp,
+          market_data_snapshot_id AS marketDataSnapshotId,
           generated_at AS generatedAt, expires_at AS expiresAt, regeneration_reason AS regenerationReason,
           no_action_reason AS noActionReason
          FROM recommendation_proposals
@@ -364,22 +370,11 @@ export class RecommendationProposalService {
     );
   }
 
-  private async getPrices(symbols: string[], now: Date): Promise<Map<string, PriceRow>> {
-    if (symbols.length === 0) {
-      return new Map();
-    }
-    const unique = [...new Set(symbols)];
+  private getPricesFromSnapshot(snapshot: Awaited<ReturnType<MarketDataService["createSnapshot"]>>, now: Date): Map<string, PriceRow> {
     const rows: PriceRow[] = [];
-    for (const symbol of unique) {
-      const row = await this.db.prepare(
-        `SELECT symbol, price_usd AS priceUsd, price_as_of AS priceTimestamp, created_at AS createdAt
-         FROM market_snapshots
-         WHERE symbol = ? AND validation_status = 'validated' AND price_usd > 0
-         ORDER BY created_at DESC
-         LIMIT 1`
-      ).bind(symbol).first<PriceRow>();
-      if (row && isFresh(row.priceTimestamp, now, this.config.stalePriceMs)) {
-        rows.push(row);
+    for (const [symbol, quote] of snapshot.quotes) {
+      if (quote.validation.valid && quote.lastPrice && quote.providerTimestamp && isFresh(quote.providerTimestamp, now, this.config.stalePriceMs)) {
+        rows.push({ symbol, priceUsd: quote.lastPrice, priceTimestamp: quote.providerTimestamp, createdAt: quote.receivedTimestamp });
       }
     }
     return new Map(rows.map((row) => [row.symbol, row]));
@@ -399,6 +394,7 @@ export class RecommendationProposalService {
         risk_score_after AS riskScoreAfter, diversification_score_before AS diversificationScoreBefore,
         diversification_score_after AS diversificationScoreAfter, estimated_turnover_pct AS estimatedTurnoverPct,
         rationale, confidence_score AS confidenceScore, market_data_timestamp AS marketDataTimestamp,
+        market_data_snapshot_id AS marketDataSnapshotId,
         generated_at AS generatedAt, expires_at AS expiresAt, regeneration_reason AS regenerationReason,
         no_action_reason AS noActionReason
        FROM recommendation_proposals
@@ -423,9 +419,9 @@ export class RecommendationProposalService {
         proposed_sells_json, estimated_trade_amount_usd, estimated_remaining_cash_usd,
         policy_validation_json, risk_score_before, risk_score_after,
         diversification_score_before, diversification_score_after, estimated_turnover_pct,
-        rationale, confidence_score, market_data_timestamp, generated_at, expires_at,
+        rationale, confidence_score, market_data_timestamp, market_data_snapshot_id, generated_at, expires_at,
         regeneration_reason, no_action_reason
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       proposal.id,
       proposal.portfolioId,
@@ -451,6 +447,7 @@ export class RecommendationProposalService {
       proposal.rationale,
       proposal.confidenceScore,
       proposal.marketDataTimestamp,
+      proposal.marketDataSnapshotId,
       proposal.generatedAt,
       proposal.expiresAt,
       proposal.regenerationReason,
@@ -536,6 +533,7 @@ export class RecommendationProposalService {
       rationale: row.rationale,
       confidenceScore: row.confidenceScore,
       marketDataTimestamp: row.marketDataTimestamp,
+      marketDataSnapshotId: row.marketDataSnapshotId,
       generatedAt: row.generatedAt,
       expiresAt: row.expiresAt,
       regenerationReason: row.regenerationReason,
@@ -761,6 +759,7 @@ export function buildRecommendationProposalPlan(input: {
     rationale: `${input.review.recommendation}: ${input.review.summaryExplanation}`,
     confidenceScore: input.review.confidenceScore,
     marketDataTimestamp: latestTimestamp(tradeLines.map((line) => line.marketDataTimestamp)),
+    marketDataSnapshotId: null,
     generatedAt,
     expiresAt,
     regenerationReason: input.regenerateReason,
@@ -865,6 +864,7 @@ function emptyProposal(input: {
     rationale: reason,
     confidenceScore: input.review.confidenceScore,
     marketDataTimestamp: input.review.marketDataTimestamp,
+    marketDataSnapshotId: null,
     generatedAt: nowIso,
     expiresAt: new Date(input.now.getTime() + DEFAULT_RECOMMENDATION_PROPOSAL_CONFIG.proposalExpirationHours * 60 * 60 * 1000).toISOString(),
     regenerationReason: input.regenerateReason,

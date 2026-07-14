@@ -1,6 +1,6 @@
-import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
 import { canExecuteAt } from "../market/hours.ts";
 import { listEnabledWatchlistAssets, type AssetRegistryRecord } from "../market/assets.ts";
+import { MarketDataService, quoteToMarketDataset } from "../market/service.ts";
 import {
   getCachedMarketData,
   getLastKnownGoodMarketData,
@@ -77,14 +77,14 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     return { idempotent: true, ...JSON.parse(existingRun.summaryJson) };
   }
 
-  const provider = new YahooFinanceMarketDataProvider();
+  const marketDataService = new MarketDataService(env.DB);
   const assets = await listEnabledWatchlistAssets(env.DB, portfolioId);
   const evaluated: RankedOpportunity[] = [];
   let openedNewPositionThisRun = false;
 
   for (const asset of assets) {
     const symbol = asset.symbol;
-    const marketData = await getMarketData(env.DB, provider, asset, now);
+    const marketData = await getMarketData(env.DB, marketDataService, asset, now);
     await recordMarketSnapshot(env.DB, marketData);
     await upsertMarketDataStatus(env.DB, marketStatusFromDataset(marketData, new Date().toISOString()));
 
@@ -421,7 +421,7 @@ async function getOpenPositions(db: D1Database, portfolioId: string): Promise<Po
 
 async function getMarketData(
   db: D1Database,
-  provider: YahooFinanceMarketDataProvider,
+  marketDataService: MarketDataService,
   asset: AssetRegistryRecord,
   now: Date
 ): Promise<MarketDataset> {
@@ -431,9 +431,10 @@ async function getMarketData(
     return cached;
   }
 
-  const live = await provider.getMarketDataForAsset(asset);
-  if (live.validated) {
-    return live;
+  const live = quoteToMarketDataset(await marketDataService.getQuote(asset.providerSymbol, "proposal", now));
+  const normalizedLive = { ...live, symbol: asset.symbol, assetClass: asset.assetType };
+  if (normalizedLive.validated) {
+    return normalizedLive;
   }
 
   const lastKnownGood = await getLastKnownGoodMarketData(db, symbol, now);
@@ -441,15 +442,15 @@ async function getMarketData(
     return {
       ...lastKnownGood,
       userMessage: `${symbol} live data is temporarily unavailable; using a recent validated snapshot.`,
-      technicalError: live.technicalError ?? live.error,
+      technicalError: normalizedLive.technicalError ?? normalizedLive.error,
       error: `${symbol} live data is temporarily unavailable; using a recent validated snapshot.`
     };
   }
 
   return {
-    ...live,
-    userMessage: live.userMessage ?? userMessageForMarketData(symbol, live.error),
-    error: live.userMessage ?? userMessageForMarketData(symbol, live.error)
+    ...normalizedLive,
+    userMessage: normalizedLive.userMessage ?? userMessageForMarketData(symbol, normalizedLive.error),
+    error: normalizedLive.userMessage ?? userMessageForMarketData(symbol, normalizedLive.error)
   };
 }
 

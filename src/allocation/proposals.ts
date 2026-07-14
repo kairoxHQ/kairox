@@ -1,7 +1,7 @@
 import { getInvestmentPolicy, validateInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { listRows } from "../shared/db.ts";
 import type { AssetClass } from "../shared/types.ts";
-import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
+import { MarketDataService } from "../market/service.ts";
 
 export type ProposalStatus = "draft" | "ready_for_review" | "approved" | "rejected" | "expired" | "executed";
 
@@ -33,6 +33,7 @@ export interface AllocationProposal {
   status: ProposalStatus;
   generatedAt: string;
   marketDataTimestamp: string | null;
+  marketDataSnapshotId: string | null;
   totalAccountValueUsd: number;
   availableCashUsd: number;
   totalProposedInvestmentUsd: number;
@@ -92,6 +93,7 @@ interface ProposalRow {
   status: ProposalStatus;
   generatedAt: string;
   marketDataTimestamp: string | null;
+  marketDataSnapshotId: string | null;
   totalAccountValueUsd: number;
   availableCashUsd: number;
   totalProposedInvestmentUsd: number;
@@ -194,7 +196,8 @@ export async function generateAllocationProposal(db: D1Database, portfolioId: st
 
   const symbols = assets.map((asset) => asset.symbol).filter((symbol) => symbol !== "CASH");
   const generatedAt = now.toISOString();
-  const prices = await getLatestPrices(db, symbols, generatedAt);
+  const marketSnapshot = await new MarketDataService(db).createSnapshot(symbols, "proposal", now);
+  const prices = pricesFromSnapshot(marketSnapshot);
   const proposal = buildAllocationProposal({
     portfolioId,
     version: versionRow?.nextVersion ?? 1,
@@ -207,6 +210,7 @@ export async function generateAllocationProposal(db: D1Database, portfolioId: st
     currentPositions: positions,
     existingProposedOrdersUsd: existingOrders?.openOrdersUsd ?? 0
   });
+  proposal.marketDataSnapshotId = marketSnapshot.id;
   await expireOpenProposals(db, portfolioId);
   await storeProposal(db, proposal);
   return proposal;
@@ -323,6 +327,7 @@ export function buildAllocationProposal(input: ProposalBuildInput): AllocationPr
     status: proposalComplete ? "ready_for_review" : "draft",
     generatedAt: input.generatedAt,
     marketDataTimestamp,
+    marketDataSnapshotId: null,
     totalAccountValueUsd: roundMoney(input.totalAccountValueUsd),
     availableCashUsd: roundMoney(input.availableCashUsd),
     totalProposedInvestmentUsd,
@@ -351,7 +356,8 @@ export async function getLatestAllocationProposal(db: D1Database, portfolioId: s
   const row = await db
     .prepare(
       `SELECT id, portfolio_id AS portfolioId, version, status, generated_at AS generatedAt,
-        market_data_timestamp AS marketDataTimestamp, total_account_value_usd AS totalAccountValueUsd,
+        market_data_timestamp AS marketDataTimestamp, market_data_snapshot_id AS marketDataSnapshotId,
+        total_account_value_usd AS totalAccountValueUsd,
         available_cash_usd AS availableCashUsd, total_proposed_investment_usd AS totalProposedInvestmentUsd,
         remaining_cash_usd AS remainingCashUsd, cash_pct AS cashPct, equity_pct AS equityPct,
         bond_pct AS bondPct, income_pct AS incomePct, diversification_score AS diversificationScore,
@@ -374,7 +380,8 @@ export async function listAllocationProposals(db: D1Database, portfolioId: strin
     db
       .prepare(
         `SELECT id, portfolio_id AS portfolioId, version, status, generated_at AS generatedAt,
-          market_data_timestamp AS marketDataTimestamp, total_account_value_usd AS totalAccountValueUsd,
+          market_data_timestamp AS marketDataTimestamp, market_data_snapshot_id AS marketDataSnapshotId,
+          total_account_value_usd AS totalAccountValueUsd,
           available_cash_usd AS availableCashUsd, total_proposed_investment_usd AS totalProposedInvestmentUsd,
           remaining_cash_usd AS remainingCashUsd, cash_pct AS cashPct, equity_pct AS equityPct,
           bond_pct AS bondPct, income_pct AS incomePct, diversification_score AS diversificationScore,
@@ -444,12 +451,12 @@ async function storeProposal(db: D1Database, proposal: AllocationProposal): Prom
   await db
     .prepare(
       `INSERT INTO allocation_proposals (
-        id, portfolio_id, version, status, generated_at, market_data_timestamp,
+        id, portfolio_id, version, status, generated_at, market_data_timestamp, market_data_snapshot_id,
         total_account_value_usd, available_cash_usd, total_proposed_investment_usd,
         remaining_cash_usd, cash_pct, equity_pct, bond_pct, income_pct,
         diversification_score, risk_score, policy_compliant, approval_allowed,
         rationale, warnings_json, policy_validation_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       proposal.id,
@@ -458,6 +465,7 @@ async function storeProposal(db: D1Database, proposal: AllocationProposal): Prom
       proposal.status,
       proposal.generatedAt,
       proposal.marketDataTimestamp,
+      proposal.marketDataSnapshotId ?? null,
       proposal.totalAccountValueUsd,
       proposal.availableCashUsd,
       proposal.totalProposedInvestmentUsd,
@@ -549,6 +557,7 @@ async function hydrateProposal(db: D1Database, row: ProposalRow): Promise<Alloca
     status: row.status,
     generatedAt: row.generatedAt,
     marketDataTimestamp: row.marketDataTimestamp,
+    marketDataSnapshotId: row.marketDataSnapshotId,
     totalAccountValueUsd: row.totalAccountValueUsd,
     availableCashUsd: row.availableCashUsd,
     totalProposedInvestmentUsd: row.totalProposedInvestmentUsd,
@@ -596,7 +605,8 @@ async function getProposalRowById(db: D1Database, proposalIdValue: string): Prom
   return db
     .prepare(
       `SELECT id, portfolio_id AS portfolioId, version, status, generated_at AS generatedAt,
-        market_data_timestamp AS marketDataTimestamp, total_account_value_usd AS totalAccountValueUsd,
+        market_data_timestamp AS marketDataTimestamp, market_data_snapshot_id AS marketDataSnapshotId,
+        total_account_value_usd AS totalAccountValueUsd,
         available_cash_usd AS availableCashUsd, total_proposed_investment_usd AS totalProposedInvestmentUsd,
         remaining_cash_usd AS remainingCashUsd, cash_pct AS cashPct, equity_pct AS equityPct,
         bond_pct AS bondPct, income_pct AS incomePct, diversification_score AS diversificationScore,
@@ -658,7 +668,11 @@ async function getProposalAssets(db: D1Database, portfolioId: string): Promise<P
 
 async function getLatestPrices(db: D1Database, symbols: string[], nowIso: string): Promise<Record<string, ProposalPrice | undefined>> {
   const prices: Record<string, ProposalPrice | undefined> = {};
-  const provider = new YahooFinanceMarketDataProvider();
+  const snapshot = await new MarketDataService(db).createSnapshot(symbols, "proposal", new Date(nowIso));
+  Object.assign(prices, pricesFromSnapshot(snapshot));
+  if (Object.keys(prices).length === symbols.length) {
+    return prices;
+  }
   for (const symbol of symbols) {
     const row = await db
       .prepare(
@@ -674,11 +688,16 @@ async function getLatestPrices(db: D1Database, symbols: string[], nowIso: string
       prices[symbol] = row;
       continue;
     }
-    try {
-      const live = await provider.getMarketData(symbol);
-      prices[symbol] = live.validated && live.priceUsd > 0 ? { priceUsd: live.priceUsd, priceTimestamp: live.asOf } : row ?? undefined;
-    } catch {
-      prices[symbol] = row ?? undefined;
+    prices[symbol] = row ?? undefined;
+  }
+  return prices;
+}
+
+function pricesFromSnapshot(snapshot: Awaited<ReturnType<MarketDataService["createSnapshot"]>>): Record<string, ProposalPrice | undefined> {
+  const prices: Record<string, ProposalPrice | undefined> = {};
+  for (const [symbol, quote] of snapshot.quotes) {
+    if (quote.validation.valid && quote.lastPrice && quote.providerTimestamp) {
+      prices[symbol] = { priceUsd: quote.lastPrice, priceTimestamp: quote.providerTimestamp };
     }
   }
   return prices;
