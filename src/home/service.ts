@@ -304,7 +304,7 @@ export function renderHomeHtml(data: HomeData): string {
       main { padding-top: 22px; }
       .conversation, .summary { border-radius: 18px; }
       .ask { align-items: stretch; flex-direction: column; }
-      .ask input { font-size: 0.95rem; }
+      .ask input { font-size: 0.82rem; padding-inline: 10px; }
       .ask button { width: 100%; }
       .actions { grid-template-columns: 1fr; }
     }
