@@ -86,6 +86,15 @@ interface PriceRow {
   createdAt: string;
 }
 
+interface TrustedQuoteRow {
+  symbol: string;
+  normalizedQuoteJson: string;
+  qualityStatus: string;
+  providerTimestamp: string | null;
+  retrievalTimestamp: string;
+  expiresAt: string;
+}
+
 export class PortfolioNotFoundError extends Error {
   readonly portfolioId: string;
 
@@ -117,7 +126,7 @@ export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PO
       )
       .bind(portfolioId)
   );
-  const latestPrices = await latestPricesBySymbol(db);
+  const latestPrices = await latestPricesBySymbol(db, now);
   const trades = await db
     .prepare("SELECT COALESCE(SUM(fees_usd), 0) AS fees FROM trades WHERE portfolio_id = ?")
     .bind(portfolioId)
@@ -259,7 +268,7 @@ function combineStatuses(statuses: ValuationDataStatus[]): ValuationDataStatus {
   return "live";
 }
 
-async function latestPricesBySymbol(db: D1Database): Promise<Map<string, PriceRow>> {
+async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<Map<string, PriceRow>> {
   const rows = await listRows<PriceRow>(
     db.prepare(
       `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf,
@@ -273,18 +282,72 @@ async function latestPricesBySymbol(db: D1Database): Promise<Map<string, PriceRo
        ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
     )
   );
-  return new Map(rows.map((row) => [row.symbol, row]));
+  const bySymbol = new Map(rows.map((row) => [row.symbol, row]));
+  const trustedRows = await listRows<TrustedQuoteRow>(
+    db.prepare(
+      `SELECT symbol, normalized_quote_json AS normalizedQuoteJson, quality_status AS qualityStatus,
+        provider_timestamp AS providerTimestamp, retrieval_timestamp AS retrievalTimestamp, expires_at AS expiresAt
+       FROM trusted_quote_cache
+       WHERE expires_at >= ?`
+    ).bind(now.toISOString())
+  );
+  for (const row of trustedRows) {
+    const quote = parseTrustedQuote(row.normalizedQuoteJson);
+    const price = quote?.lastPrice;
+    if (!quote || !Number.isFinite(price) || (price ?? 0) <= 0) {
+      continue;
+    }
+    const candidate: PriceRow = {
+      symbol: row.symbol,
+      priceUsd: price as number,
+      priceAsOf: quote.providerTimestamp ?? row.providerTimestamp ?? quote.receivedTimestamp ?? row.retrievalTimestamp,
+      validationStatus: quote.dataQualityStatus ?? row.qualityStatus,
+      createdAt: row.retrievalTimestamp
+    };
+    const existing = bySymbol.get(row.symbol);
+    if (!existing || isFresherPrice(candidate, existing)) {
+      bySymbol.set(row.symbol, candidate);
+    }
+  }
+  return bySymbol;
+}
+
+function isFresherPrice(candidate: PriceRow, existing: PriceRow): boolean {
+  const candidateMarketTime = new Date(candidate.priceAsOf).getTime();
+  const existingMarketTime = new Date(existing.priceAsOf).getTime();
+  if (Number.isFinite(candidateMarketTime) && Number.isFinite(existingMarketTime) && candidateMarketTime !== existingMarketTime) {
+    return candidateMarketTime > existingMarketTime;
+  }
+  return new Date(candidate.createdAt).getTime() >= new Date(existing.createdAt).getTime();
 }
 
 function classifyPriceStatus(row: PriceRow, now: Date): ValuationDataStatus {
   const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(row.createdAt).getTime()) / 1000));
-  if (row.validationStatus !== "validated") {
+  if (/missing|failure|unavailable|conflicting|anomalous/i.test(row.validationStatus)) {
     return "unavailable";
+  }
+  if (/stale/i.test(row.validationStatus)) {
+    return "stale";
+  }
+  if (/delayed|previous close/i.test(row.validationStatus)) {
+    return "delayed";
   }
   if (row.symbol.endsWith("-USD")) {
     return ageSeconds <= 5 * 60 ? "live" : ageSeconds <= 30 * 60 ? "delayed" : "stale";
   }
   return ageSeconds <= 30 * 60 ? "delayed" : ageSeconds <= 4 * 24 * 60 * 60 ? "stale" : "unavailable";
+}
+
+function parseTrustedQuote(value: string): { lastPrice?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string } | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as { lastPrice?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string };
+  } catch {
+    return null;
+  }
 }
 
 function latestTimestamp(values: string[]): string | null {

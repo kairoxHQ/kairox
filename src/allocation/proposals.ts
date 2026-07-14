@@ -366,7 +366,7 @@ export async function getLatestAllocationProposal(db: D1Database, portfolioId: s
         approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason,
         COALESCE(revision_required, 0) AS revisionRequired, revision_reason AS revisionReason
        FROM allocation_proposals
-       WHERE portfolio_id = ?
+       WHERE portfolio_id = ? AND status IN ('draft', 'ready_for_review', 'approved')
        ORDER BY version DESC
        LIMIT 1`
     )

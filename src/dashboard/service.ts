@@ -1,5 +1,6 @@
 import { getBenchmarks } from "../market/benchmarks.ts";
 import { calculatePerformance } from "../portfolio/performance.ts";
+import { getPortfolioValuation } from "../portfolio/valuation.ts";
 import { getSettings } from "../settings/service.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { getMarketDataStatuses } from "../market/status.ts";
@@ -25,23 +26,12 @@ import { PortfolioBriefingService, type PortfolioBriefing } from "../briefings/p
 import { VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink, type PortfolioIntelligenceSummary } from "../intelligence/verifiedPipeline.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings] =
+  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
+      getPortfolioValuation(db, portfolioId),
       getBenchmarks(db),
-      listRows(
-        db
-          .prepare(
-            `SELECT symbol, asset_class AS assetClass, quantity,
-              avg_entry_price_usd AS avgEntryPriceUsd, current_price_usd AS currentPriceUsd,
-              market_value_usd AS marketValueUsd, updated_at AS updatedAt
-             FROM positions
-             WHERE portfolio_id = ? AND quantity > 0
-             ORDER BY market_value_usd DESC`
-          )
-          .bind(portfolioId)
-      ),
       listRows(
         db
           .prepare(
@@ -166,7 +156,16 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
   const dailyReviews = await listDailyReviews(db, portfolioId);
   const recommendationProposals = await new RecommendationProposalService(db).list(portfolioId);
-  const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
+  const positions = valuation.positions
+    .map((position) => ({
+      symbol: position.symbol,
+      assetClass: position.assetClass,
+      quantity: position.quantity,
+      marketValueUsd: position.currentPositionValueUsd,
+      updatedAt: position.priceTimestamp ?? valuation.valuationTimestamp
+    }))
+    .sort((left, right) => right.marketValueUsd - left.marketValueUsd || left.symbol.localeCompare(right.symbol));
+  const positionsBySymbol = new Map(positions.map((position) => [position.symbol, position.marketValueUsd]));
   const statusBySymbol = new Map((marketStatuses as Array<{ symbol: string }>).map((status) => [status.symbol, status]));
   const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
 
@@ -1273,6 +1272,16 @@ function renderForwardTest(summary: ForwardMetricsSummary | undefined, portfolio
   const buyHold = summary.portfolios.initial_allocation_buy_hold;
   const sp500 = summary.portfolios.sp500_benchmark;
   const balanced = summary.portfolios.conservative_balanced_benchmark;
+  if (summary.evidenceStage.daysTested === 0 || !managed?.latestValueUsd) {
+    return `${action}
+      <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(summary.evidenceStage.stage)}</strong><span class="pill">Awaiting first valuation</span></div><div class="muted">${escapeHtml(summary.evidenceStage.description)}</div></div>
+      <div class="mini-card"><strong>Forward-test status</strong><div>Forward-test configuration is present, but comparison values will appear after the first protected forward-test update stores valuation records for the same market date.</div><div class="muted">${escapeHtml(summary.unavailableMetrics.join(" ") || "No forward-test valuation records exist yet.")}</div></div>
+      <div class="mini-card"><strong>Operational Reliability</strong>
+        ${row("Daily reviews completed", String(summary.operationalReliability.dailyReviewsCompleted))}
+        ${row("Reviews skipped", String(summary.operationalReliability.dailyReviewsSkipped))}
+        ${row("Duplicate actions prevented", String(summary.operationalReliability.duplicateActionsPrevented))}
+      </div>`;
+  }
   return `${action}
     <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(summary.evidenceStage.stage)}</strong><span class="pill">${escapeHtml(summary.evidenceStage.confidenceLabel)}</span></div><div class="muted">${escapeHtml(summary.evidenceStage.description)}</div></div>
     <div class="grid">
@@ -1327,6 +1336,13 @@ function renderBenchmarkComparison(summary: BenchmarkComparisonSummary | undefin
   const action = `<div class="filters"><button class="filter" type="button" data-run-benchmark-comparison="${escapeHtml(portfolioId)}">Run Benchmark Update</button><a class="filter" href="/benchmark-comparison?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="${escapeHtml(summary?.monthlyReport.previewUrl ?? `/benchmark-comparison/monthly-report?portfolioId=${encodeURIComponent(portfolioId)}&format=html`)}">Printable report</a><a class="filter" href="${escapeHtml(summary?.monthlyReport.csvUrl ?? `/benchmark-comparison/history.csv?portfolioId=${encodeURIComponent(portfolioId)}`)}">CSV history</a><span class="pill">Paper simulation</span><span class="pill">No trades</span></div>`;
   if (!summary || summary.configurations.length === 0) {
     return `${action}<span class="pill">Benchmark comparison not initialized yet</span>`;
+  }
+  if (summary.evidence.days === 0 || summary.benchmarks.every((benchmark) => benchmark.currentValueUsd === null)) {
+    const initialConfigs = summary.configurations.map((config) => row(config.benchmarkName, `${money(config.startingCapitalUsd)} from ${config.startDate} - ${config.rebalanceRule} - ${config.dataProvider}`)).join("");
+    return `${action}
+      <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(summary.evidence.label)} evidence</strong><span class="pill">Awaiting first benchmark valuation</span></div><div>${escapeHtml(summary.proofSummary)}</div><div class="muted">${escapeHtml(summary.evidence.description)}</div></div>
+      <div class="mini-card"><strong>Benchmark definitions</strong>${initialConfigs}</div>
+      <div class="mini-card"><strong>Data-quality status</strong><div class="muted">${escapeHtml(summary.warnings.join(" ") || "Benchmark values will appear after the first trusted valuation update.")}</div></div>`;
   }
   const cards = summary.benchmarks.map((benchmark) => `<div class="mini-card">
     <div class="mini-head"><strong>${escapeHtml(shortBenchmarkName(benchmark.benchmarkName))}</strong><span class="pill">${escapeHtml(benchmark.aheadBehind)}</span></div>

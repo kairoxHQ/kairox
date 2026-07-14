@@ -81,6 +81,30 @@ test("stale or missing market data uses last valid position price and marks stat
   assert.equal(stale.dataStatus, "stale");
 });
 
+test("portfolio valuation uses trusted quote cache when market timestamp is fresher than stored position prices", async () => {
+  const now = new Date("2026-07-14T15:00:00.000Z");
+  const quote = {
+    symbol: "BND",
+    lastPrice: 72.72,
+    providerTimestamp: "2026-07-14T14:56:53.000Z",
+    receivedTimestamp: "2026-07-14T14:56:55.000Z",
+    dataQualityStatus: "Delayed",
+    warnings: []
+  };
+  const db = fakeValuationDb({
+    trustedQuoteJson: JSON.stringify(quote),
+    now
+  });
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now);
+
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 72.72);
+  assert.equal(valuation.positions[0].currentPositionValueUsd, 145.44);
+  assert.equal(valuation.positions[0].dataStatus, "delayed");
+  assert.equal(valuation.portfolioValueUsd, 145.44);
+  assert.equal(valuation.totalAccountValueUsd, 245.44);
+});
+
 test("daily snapshot migration is idempotent and stores opening and closing fields", () => {
   const sql = readFileSync("migrations/0012_journey_valuation_milestones.sql", "utf8");
 
@@ -90,6 +114,75 @@ test("daily snapshot migration is idempotent and stores opening and closing fiel
   assert.match(sql, /ending_total_account_value_usd/);
   assert.match(sql, /max_daily_drawdown_pct/);
 });
+
+function fakeValuationDb(input: { trustedQuoteJson: string; now: Date }): D1Database {
+  return {
+    prepare(sql: string) {
+      return {
+        bind(...params: unknown[]) {
+          return statementFor(sql, params, input);
+        },
+        ...statementFor(sql, [], input)
+      };
+    }
+  } as unknown as D1Database;
+}
+
+function statementFor(sql: string, _params: unknown[], input: { trustedQuoteJson: string; now: Date }) {
+  return {
+    async first() {
+      if (/FROM portfolios WHERE id/i.test(sql)) {
+        return { id: "portfolio_ira", cashUsd: 100, startingBalanceUsd: 240 };
+      }
+      if (/SUM\(fees_usd\)/i.test(sql)) {
+        return { fees: 0 };
+      }
+      if (/FROM account_daily_snapshots/i.test(sql)) {
+        return { startingTotalAccountValueUsd: 240 };
+      }
+      return null;
+    },
+    async all() {
+      if (/FROM positions/i.test(sql)) {
+        return {
+          results: [{
+            id: "pos_bnd",
+            symbol: "BND",
+            assetClass: "bond_fund",
+            quantity: 2,
+            avgEntryPriceUsd: 70,
+            currentPriceUsd: 72.5,
+            marketValueUsd: 145
+          }]
+        };
+      }
+      if (/FROM market_snapshots/i.test(sql)) {
+        return {
+          results: [{
+            symbol: "BND",
+            priceUsd: 72.5,
+            priceAsOf: "2026-07-13T20:00:01.000Z",
+            validationStatus: "validated",
+            createdAt: "2026-07-14T15:03:58.000Z"
+          }]
+        };
+      }
+      if (/FROM trusted_quote_cache/i.test(sql)) {
+        return {
+          results: [{
+            symbol: "BND",
+            normalizedQuoteJson: input.trustedQuoteJson,
+            qualityStatus: "Delayed",
+            providerTimestamp: "2026-07-14T14:56:53.000Z",
+            retrievalTimestamp: input.now.toISOString(),
+            expiresAt: new Date(input.now.getTime() + 30 * 60 * 1000).toISOString()
+          }]
+        };
+      }
+      return { results: [] };
+    }
+  };
+}
 
 test("trade result helper handles empty, open, and closed trade rows", () => {
   assert.deepEqual(calculateTradeResults([]), []);

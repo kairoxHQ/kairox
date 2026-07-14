@@ -1,4 +1,5 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { getPortfolioValuation } from "./valuation.ts";
 
 export interface PerformanceMetrics {
   startingBalanceUsd: number;
@@ -32,13 +33,6 @@ interface PortfolioRow {
   startingBalanceUsd: number;
 }
 
-interface PositionRow {
-  quantity: number;
-  avgEntryPriceUsd: number;
-  currentPriceUsd: number;
-  marketValueUsd: number;
-}
-
 export async function calculatePerformance(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<PerformanceMetrics> {
   const portfolio = await db
     .prepare("SELECT cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd FROM portfolios WHERE id = ?")
@@ -48,16 +42,7 @@ export async function calculatePerformance(db: D1Database, portfolioId = TIM_POR
     throw new Error("Paper portfolio is not initialized.");
   }
 
-  const positions = await listRows<PositionRow>(
-    db
-      .prepare(
-        `SELECT quantity, avg_entry_price_usd AS avgEntryPriceUsd,
-          current_price_usd AS currentPriceUsd, market_value_usd AS marketValueUsd
-         FROM positions
-         WHERE portfolio_id = ? AND quantity > 0`
-      )
-      .bind(portfolioId)
-  );
+  const valuation = await getPortfolioValuation(db, portfolioId);
   const trades = await db
     .prepare("SELECT COUNT(*) AS count, COALESCE(SUM(fees_usd), 0) AS fees FROM trades WHERE portfolio_id = ?")
     .bind(portfolioId)
@@ -71,13 +56,10 @@ export async function calculatePerformance(db: D1Database, portfolioId = TIM_POR
     .bind(portfolioId)
     .first<{ income: number }>();
 
-  const positionsValueUsd = positions.reduce((sum, position) => sum + position.marketValueUsd, 0);
-  const unrealizedProfitLossUsd = positions.reduce(
-    (sum, position) => sum + position.quantity * (position.currentPriceUsd - position.avgEntryPriceUsd),
-    0
-  );
+  const positionsValueUsd = valuation.portfolioValueUsd;
+  const unrealizedProfitLossUsd = valuation.unrealizedProfitLossUsd;
   const dividendIncomeUsd = dividends?.income ?? 0;
-  const totalValueUsd = portfolio.cashUsd + positionsValueUsd;
+  const totalValueUsd = valuation.totalAccountValueUsd;
   const totalReturnUsd = totalValueUsd + dividendIncomeUsd - portfolio.startingBalanceUsd;
   const realizedProfitLossUsd = totalReturnUsd - unrealizedProfitLossUsd - dividendIncomeUsd;
   const priceReturnUsd = totalReturnUsd - dividendIncomeUsd;

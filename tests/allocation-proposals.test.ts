@@ -139,6 +139,11 @@ test("proposal version history is append-only by portfolio version", () => {
   assert.doesNotMatch(serviceSource, /INSERT OR REPLACE INTO allocation_proposals/);
 });
 
+test("dashboard latest proposal selector ignores rejected, expired, and executed history", () => {
+  assert.match(serviceSource, /status IN \('draft', 'ready_for_review', 'approved'\)/);
+  assert.doesNotMatch(serviceSource, /WHERE portfolio_id = \?\s+ORDER BY version DESC\s+LIMIT 1/);
+});
+
 test("proposal workflow does not create orders or trades", () => {
   assert.doesNotMatch(migration, /INSERT\s+(OR\s+IGNORE\s+)?INTO\s+orders/i);
   assert.doesNotMatch(migration, /INSERT\s+(OR\s+IGNORE\s+)?INTO\s+trades/i);

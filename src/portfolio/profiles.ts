@@ -94,23 +94,6 @@ export async function getPortfolioProfile(db: D1Database, portfolioId = TIM_PORT
 
 export async function getProfileComparison(db: D1Database): Promise<unknown> {
   const profiles = await listPortfolioProfiles(db);
-  const rows = await listRows<{
-    portfolioId: string;
-    cashUsd: number;
-    startingBalanceUsd: number;
-    positionsValueUsd: number;
-  }>(
-    db.prepare(
-      `SELECT p.id AS portfolioId, p.cash_usd AS cashUsd,
-        p.starting_balance_usd AS startingBalanceUsd,
-        COALESCE(SUM(pos.market_value_usd), 0) AS positionsValueUsd
-       FROM portfolios p
-       LEFT JOIN positions pos ON pos.portfolio_id = p.id AND pos.quantity > 0
-       WHERE p.id IN (${profiles.map(() => "?").join(",")})
-       GROUP BY p.id`
-    ).bind(...profiles.map((profile) => profile.portfolioId))
-  );
-  const byPortfolio = new Map(rows.map((row) => [row.portfolioId, row]));
   const metrics = await Promise.all(profiles.map((profile) => getProfileReadinessMetrics(db, profile.portfolioId)));
   const metricsByPortfolio = new Map(metrics.map((metric) => [metric.portfolioId, metric]));
 
@@ -121,16 +104,15 @@ export async function getProfileComparison(db: D1Database): Promise<unknown> {
       explanation: "Profiles are compared from their shared comparison_start_timestamp, not from Tim Balanced lifetime history."
     },
     profiles: profiles.map((profile) => {
-      const row = byPortfolio.get(profile.portfolioId);
       const readiness = metricsByPortfolio.get(profile.portfolioId);
-      const actualEquityUsd = (row?.cashUsd ?? 0) + (row?.positionsValueUsd ?? 0);
+      const actualEquityUsd = readiness?.totalValueUsd ?? 0;
       const normalizedIndex =
         profile.comparisonStartEquityUsd > 0 ? (actualEquityUsd / profile.comparisonStartEquityUsd) * profile.normalizedStartIndex : profile.normalizedStartIndex;
       return {
         ...profile,
         actualEquityUsd: round(actualEquityUsd),
-        cashUsd: round(row?.cashUsd ?? 0),
-        cashPct: round(actualEquityUsd > 0 ? (row?.cashUsd ?? 0) / actualEquityUsd : 0),
+        cashUsd: round(readiness?.cashUsd ?? 0),
+        cashPct: round(actualEquityUsd > 0 ? (readiness?.cashUsd ?? 0) / actualEquityUsd : 0),
         openPositions: readiness?.openPositions ?? 0,
         latestDecision: readiness?.latestDecision ?? "None",
         latestDecisionReason: readiness?.latestDecisionReason ?? "No decisions recorded yet.",
@@ -195,6 +177,8 @@ async function getProfileReadinessMetrics(db: D1Database, portfolioId: string) {
     latestDecision: latestDecision?.decision ?? "None",
     latestDecisionReason: latestDecision?.explanation ?? "No decisions recorded yet.",
     totalReturnPct: performance.totalReturnPct,
+    cashUsd: performance.cashUsd,
+    totalValueUsd: performance.totalValueUsd,
     maxDrawdownPct: performance.maxDrawdownPct,
     volatilityPct: calculateSimpleVolatility(equityHistory.map((row) => row.totalValueUsd)),
     tradeCount: performance.tradeCount,
