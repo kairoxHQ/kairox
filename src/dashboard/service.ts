@@ -784,7 +784,11 @@ function renderDailyReview(reviews: DailyPortfolioReview[], proposals: Recommend
   }
   const latestProposal = proposals.find((proposal) => proposal.sourceDailyReviewId === latest.id) ?? proposals[0] ?? null;
   const eligible = ["Rebalance Suggested", "Risk Reduction Suggested", "Opportunity Identified"].includes(latest.recommendation) && latest.status === "completed" && latest.dataFreshnessStatus === "fresh";
-  const proposalAction = eligible
+  const hasActiveReviewProposal = latestProposal?.sourceDailyReviewId === latest.id
+    && ["Draft", "Ready for Review", "Approved", "Orders Staged"].includes(latestProposal.status);
+  const proposalAction = hasActiveReviewProposal
+    ? `<span class="pill">Active draft proposal already exists</span>`
+    : eligible
     ? `<button class="filter" type="button" data-create-review-proposal="${escapeHtml(latest.id)}">Create Draft Proposal</button>`
     : `<span class="pill">${escapeHtml(dailyReviewIneligibleReason(latest))}</span>`;
   const benchmarkRows = latest.benchmarks.map((benchmark) => row(
