@@ -13,6 +13,7 @@ import { getAllProfileHoldingQuotes, getMarketTickerQuotes, type HoldingQuote, t
 import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { getLatestAllocationProposal, type AllocationProposal } from "../allocation/proposals.ts";
 import { getLatestPaperOrderBatch, type PaperOrderBatch } from "../orders/staging.ts";
+import { getPaperExecutionByBatchId, type PaperExecutionRecord } from "../orders/execution.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch] =
@@ -146,6 +147,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getLatestPaperOrderBatch(db, portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
+  const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
   const statusBySymbol = new Map((marketStatuses as Array<{ symbol: string }>).map((status) => [status.symbol, status]));
   const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
@@ -156,6 +158,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     investmentPolicy,
     allocationProposal,
     paperOrderBatch,
+    paperExecution,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -224,6 +227,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     investmentPolicy: InvestmentPolicy | null;
     allocationProposal: AllocationProposal | null;
     paperOrderBatch: PaperOrderBatch | null;
+    paperExecution: PaperExecutionRecord | null;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -270,6 +274,7 @@ export function renderDashboardHtml(data: {
   investmentPolicy?: InvestmentPolicy | null;
   allocationProposal?: AllocationProposal | null;
   paperOrderBatch?: PaperOrderBatch | null;
+  paperExecution?: PaperExecutionRecord | null;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -416,7 +421,7 @@ export function renderDashboardHtml(data: {
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
-    ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal))}
+    ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -549,6 +554,28 @@ export function renderDashboardHtml(data: {
         }, delay);
       }
       document.addEventListener("visibilitychange", scheduleQuotes);
+      document.querySelectorAll("[data-execute-paper-batch]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const batchId = button.getAttribute("data-execute-paper-batch");
+          const estimated = button.getAttribute("data-estimated-cost") || "the estimated total";
+          const remaining = button.getAttribute("data-remaining-cash") || "the expected cash balance";
+          if (!batchId) return;
+          const confirmed = confirm("Execute simulated paper orders only? This is not a live brokerage execution. Estimated cost: " + estimated + ". Expected remaining cash: " + remaining + ".");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to execute this simulated paper batch.");
+          if (!secret) return;
+          const response = await fetch("/paper-order-batches/" + encodeURIComponent(batchId) + "/execute", {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Paper execution failed." }));
+            alert(payload.message || payload.error || "Paper execution failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
       scheduleQuotes();
     })();
   </script>
@@ -737,7 +764,11 @@ function renderAllocationProposal(proposal: AllocationProposal | null | undefine
     <div class="muted">${escapeHtml(proposal.rationale)} Generated ${formatTimestampElement(proposal.generatedAt)}.</div>`;
 }
 
-function renderPaperOrderBatch(batch: PaperOrderBatch | null | undefined, proposal: AllocationProposal | null | undefined): string {
+function renderPaperOrderBatch(
+  batch: PaperOrderBatch | null | undefined,
+  proposal: AllocationProposal | null | undefined,
+  execution: PaperExecutionRecord | null | undefined
+): string {
   if (!batch) {
     const stageAction = proposal?.status === "approved"
       ? `<form method="post" action="/paper-order-batches/stage?proposalId=${encodeURIComponent(proposal.id)}"><button class="filter" type="submit">Stage paper orders</button></form>`
@@ -750,6 +781,7 @@ function renderPaperOrderBatch(batch: PaperOrderBatch | null | undefined, propos
   ];
   return `<div class="filters">
       <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/ready"><button class="filter" type="submit" ${batch.validationStatus === "passed" ? "" : "disabled"}>Mark Ready to Execute</button></form>
+      <button class="filter" type="button" data-execute-paper-batch="${escapeHtml(batch.id)}" data-estimated-cost="${escapeHtml(money(batch.totalEstimatedPurchaseUsd))}" data-remaining-cash="${escapeHtml(money(batch.estimatedRemainingCashUsd))}" ${batch.status === "Ready to Execute" ? "" : "disabled"}>Execute Paper Orders</button>
       <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/reject"><button class="filter" type="submit">Reject order batch</button></form>
       <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/cancel"><button class="filter" type="submit">Cancel order batch</button></form>
       <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/refresh"><button class="filter" type="submit">Refresh prices and revalidate</button></form>
@@ -766,8 +798,31 @@ function renderPaperOrderBatch(batch: PaperOrderBatch | null | undefined, propos
       ${miniMetric("Created", formatTimestampElement(batch.createdAt))}
     </div>
     <div class="card-list">${batch.orders.map(orderLineCard).join("")}</div>
+    ${execution ? renderPaperExecution(execution) : ""}
     ${warnings.length ? `<div class="mini-card"><strong>Review notes</strong><div class="muted">${escapeHtml(warnings.join(" "))}</div></div>` : ""}
     <div class="muted">Staged orders are pending review only. Cash, holdings, valuation, and transactions are unchanged until a separate paper execution workflow runs.</div>`;
+}
+
+function renderPaperExecution(execution: PaperExecutionRecord): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>Execution Result</strong><span class="pill">Paper simulated ${escapeHtml(execution.status)}</span></div>
+    <div class="grid">
+      ${miniMetric("Filled orders", String(execution.orderCount))}
+      ${miniMetric("Total invested", money(execution.totalNetAmountUsd))}
+      ${miniMetric("Remaining cash", money(execution.cashAfterUsd))}
+      ${miniMetric("Slippage", pct(execution.slippagePct))}
+      ${miniMetric("Execution time", execution.completedAt ? formatTimestampElement(execution.completedAt) : "Pending")}
+    </div>
+    <div class="card-list">${execution.fills.map((fill) => `<div class="mini-card">
+      <div class="mini-head"><strong>${escapeHtml(fill.symbol)}</strong><span class="pill">Filled</span></div>
+      <div class="row"><span>Quantity</span><span>${escapeHtml(formatQuantity(fill.quantity, fill.symbol, fill.assetClass))}</span></div>
+      <div class="row"><span>Reference price</span><span>${escapeHtml(money(fill.referencePriceUsd))}</span></div>
+      <div class="row"><span>Fill price</span><span>${escapeHtml(money(fill.fillPriceUsd))}</span></div>
+      <div class="row"><span>Net amount</span><span>${escapeHtml(money(fill.netAmountUsd))}</span></div>
+      <div class="row"><span>Simulated slippage</span><span>${escapeHtml(money(fill.slippageAmountUsd))} (${escapeHtml(pct(fill.slippagePct))})</span></div>
+      <div class="muted">Paper simulated fill. Not a live brokerage execution.</div>
+    </div>`).join("")}</div>
+  </div>`;
 }
 
 function orderLineCard(order: PaperOrderBatch["orders"][number]): string {

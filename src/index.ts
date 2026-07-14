@@ -43,6 +43,7 @@ import {
   rejectPaperOrderBatch,
   stagePaperOrdersForProposal
 } from "./orders/staging.ts";
+import { executePaperOrderBatch, getPaperExecutionByBatchId } from "./orders/execution.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -383,6 +384,30 @@ export default {
         }
         const batch = await refreshPaperOrderBatchPrices(env.DB, refreshBatchMatch[1]);
         return paperOrderActionResponse(request, batch.portfolioId, batch);
+      }
+
+      const executeBatchMatch = url.pathname.match(/^\/paper-order-batches\/([A-Za-z0-9_-]+)\/execute$/);
+      if (executeBatchMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const auth = await authorize(request, env);
+        if (auth) {
+          return auth;
+        }
+        const result = await executePaperOrderBatch(env.DB, executeBatchMatch[1]);
+        if (!result.execution) {
+          throw new RequestError(409, result.validation.reasons.join(" ") || "Paper execution validation failed.");
+        }
+        return json(result);
+      }
+
+      const executionMatch = url.pathname.match(/^\/paper-order-batches\/([A-Za-z0-9_-]+)\/execution$/);
+      if (executionMatch) {
+        if (request.method !== "GET") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        return json({ execution: await getPaperExecutionByBatchId(env.DB, executionMatch[1]) });
       }
 
       if (url.pathname.startsWith("/api/analytics")) {
