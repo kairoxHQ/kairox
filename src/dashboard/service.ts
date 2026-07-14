@@ -14,6 +14,7 @@ import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investme
 import { getLatestAllocationProposal, type AllocationProposal } from "../allocation/proposals.ts";
 import { getLatestPaperOrderBatch, type PaperOrderBatch } from "../orders/staging.ts";
 import { getPaperExecutionByBatchId, type PaperExecutionRecord } from "../orders/execution.ts";
+import { listDailyReviews, type DailyPortfolioReview } from "../reviews/dailyReview.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch] =
@@ -148,6 +149,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
+  const dailyReviews = await listDailyReviews(db, portfolioId);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
   const statusBySymbol = new Map((marketStatuses as Array<{ symbol: string }>).map((status) => [status.symbol, status]));
   const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
@@ -159,6 +161,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     allocationProposal,
     paperOrderBatch,
     paperExecution,
+    dailyReviews,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -228,6 +231,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     allocationProposal: AllocationProposal | null;
     paperOrderBatch: PaperOrderBatch | null;
     paperExecution: PaperExecutionRecord | null;
+    dailyReviews: DailyPortfolioReview[];
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -275,6 +279,7 @@ export function renderDashboardHtml(data: {
   allocationProposal?: AllocationProposal | null;
   paperOrderBatch?: PaperOrderBatch | null;
   paperExecution?: PaperExecutionRecord | null;
+  dailyReviews?: DailyPortfolioReview[];
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -412,7 +417,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -422,6 +427,7 @@ export function renderDashboardHtml(data: {
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
+    ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -576,6 +582,25 @@ export function renderDashboardHtml(data: {
           location.reload();
         });
       });
+      document.querySelectorAll("[data-run-daily-review]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-daily-review") || "portfolio_ira";
+          const confirmed = confirm("Run a simulated daily portfolio review now? This refreshes prices and snapshots, but does not create orders, trades, or fills.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected review.");
+          if (!secret) return;
+          const response = await fetch("/daily-reviews/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Daily review failed." }));
+            alert(payload.message || payload.error || "Daily review failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
       scheduleQuotes();
     })();
   </script>
@@ -709,6 +734,77 @@ function renderAccountSelector(
       <div class="muted">${selected ? "Selected account" : "Open account dashboard"}</div>
     </a>`;
   }).join("")}</div>`;
+}
+
+function renderDailyReview(reviews: DailyPortfolioReview[], portfolioId: string): string {
+  const latest = reviews[0];
+  const action = `<div class="filters"><button class="filter" type="button" data-run-daily-review="${escapeHtml(portfolioId)}">Run Daily Review Now</button></div>`;
+  if (!latest) {
+    return `${action}<span class="pill">No daily review yet</span>`;
+  }
+  const benchmarkRows = latest.benchmarks.map((benchmark) => row(
+    benchmark.name,
+    benchmark.valueUsd === null ? `${benchmark.dataStatus}: ${benchmark.disclosure}` : `${money(benchmark.valueUsd)} (${pct(benchmark.returnPct ?? 0)})`
+  )).join("");
+  const warnings = latest.policyWarnings.length
+    ? `<div class="mini-card"><strong>Policy warnings</strong><div class="muted">${escapeHtml(latest.policyWarnings.join(" "))}</div></div>`
+    : `<span class="pill">Policy compliant</span>`;
+  return `${action}
+    <div class="grid">
+      ${miniMetric("Portfolio value", money(latest.portfolioValueUsd))}
+      ${miniMetric("Daily gain/loss", `${signedMoney(latest.dailyChangeUsd)} (${pct(latest.dailyChangePct)})`)}
+      ${miniMetric("Since inception", `${signedMoney(latest.totalReturnUsd)} (${pct(latest.totalReturnPct)})`)}
+      ${miniMetric("Recommendation", latest.recommendation)}
+      ${miniMetric("Risk score", pct(latest.riskScore))}
+      ${miniMetric("Diversification", pct(latest.diversificationScore))}
+      ${miniMetric("Cash", `${money(latest.cashUsd)} (${pct(latest.allocation.cashPct)})`)}
+      ${miniMetric("Data", latest.dataFreshnessStatus)}
+    </div>
+    ${renderDailyReviewChart(reviews)}
+    <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(latest.recommendation)}</strong><span class="pill">${escapeHtml(confidenceLabel(latest.confidenceScore))}</span></div><div>${escapeHtml(sanitizeForUser(latest.summaryExplanation, "Daily review summary unavailable."))}</div><div class="muted">Market data ${formatTimestampElement(latest.marketDataTimestamp ?? undefined)}. Generated ${formatTimestampElement(latest.generatedAt)}.</div></div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Benchmark comparison</strong>${benchmarkRows}</div>
+      <div class="mini-card"><strong>Allocation</strong>
+        ${row("Equity", pct(latest.allocation.equityPct))}
+        ${row("Bonds", pct(latest.allocation.bondPct))}
+        ${row("Cash", pct(latest.allocation.cashPct))}
+        ${row("Current drawdown", pct(latest.currentDrawdownPct))}
+      </div>
+    </div>
+    ${warnings}
+    <div class="card-list">${reviews.slice(0, 6).map((review) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(review.marketDate)} ${escapeHtml(review.recommendation)}</strong><span class="pill">${escapeHtml(review.dataFreshnessStatus)}</span></div><div class="muted">${escapeHtml(signedMoney(review.dailyChangeUsd))} daily · ${escapeHtml(pct(review.totalReturnPct))} since inception · ${formatTimestampElement(review.generatedAt)}</div></div>`).join("")}</div>`;
+}
+
+function renderDailyReviewChart(reviews: DailyPortfolioReview[]): string {
+  const points = [...reviews].reverse();
+  if (points.length < 1) {
+    return `<div class="mini-card"><strong>Performance Comparison</strong><div class="muted">Chart will appear after daily reviews are recorded.</div></div>`;
+  }
+  const width = 640;
+  const height = 160;
+  const series = [
+    { name: "IRA paper portfolio", values: points.map((point) => point.portfolioValueUsd), stroke: "#246bfe" },
+    { name: "Cash baseline", values: points.map((point) => point.benchmarks.find((benchmark) => benchmark.name === "Bank/cash baseline")?.valueUsd ?? point.portfolioValueUsd), stroke: "#64748b" },
+    { name: "S&P 500 benchmark", values: points.map((point) => point.benchmarks.find((benchmark) => benchmark.name === "S&P 500 benchmark")?.valueUsd ?? null), stroke: "#12633a" },
+    { name: "Conservative balanced benchmark", values: points.map((point) => point.benchmarks.find((benchmark) => benchmark.name === "Conservative balanced benchmark")?.valueUsd ?? null), stroke: "#7a5400" },
+    { name: "Buy-and-hold initial allocation", values: points.map((point) => point.benchmarks.find((benchmark) => benchmark.name === "Buy-and-hold initial allocation")?.valueUsd ?? null), stroke: "#9f2f22" }
+  ];
+  const values = series.flatMap((item) => item.values).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const lineFor = (valuesForSeries: Array<number | null>) => valuesForSeries
+    .map((value, index) => {
+      if (value === null) {
+        return "";
+      }
+      const x = points.length === 1 ? 0 : (index / (points.length - 1)) * width;
+      const y = height - ((value - min) / range) * (height - 20) - 10;
+      return `${round(x)},${round(y)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="mini-card"><strong>Performance Comparison</strong><svg class="history" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily review benchmark comparison"><line class="axis" x1="0" y1="${height - 8}" x2="${width}" y2="${height - 8}"></line>${series.map((item) => `<polyline fill="none" stroke="${item.stroke}" stroke-width="3" points="${lineFor(item.values)}"></polyline>`).join("")}</svg><div class="muted">${series.map((item) => item.name).join(" · ")}</div></div>`;
 }
 
 function renderSimulationStatus(

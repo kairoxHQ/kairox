@@ -44,6 +44,7 @@ import {
   stagePaperOrdersForProposal
 } from "./orders/staging.ts";
 import { executePaperOrderBatch, getPaperExecutionByBatchId } from "./orders/execution.ts";
+import { DailyPortfolioReviewService, listDailyReviews, runScheduledDailyReviews } from "./reviews/dailyReview.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -131,14 +132,15 @@ export default {
       "/journey",
       "/scheduled-runs",
       "/summaries",
-      "/settings"
+      "/settings",
+      "/daily-reviews"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run"]);
     const protectedGetRoutes = new Set(["/diagnostics"]);
     if (stateChangingRoutes.has(url.pathname) && request.method !== "POST") {
       return json({ error: "Method not allowed" }, 405);
@@ -172,6 +174,12 @@ export default {
 
       if (url.pathname === "/settings/resume") {
         return json(await setAutomationPaused(env.DB, false));
+      }
+
+      if (url.pathname === "/daily-reviews/run") {
+        const service = new DailyPortfolioReviewService(env.DB);
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return dailyReviewActionResponse(request, portfolioId, await service.run(portfolioId, "manual"));
       }
 
       if (url.pathname === "/health") {
@@ -458,6 +466,10 @@ export default {
         return json(await getScheduledRuns(env.DB));
       }
 
+      if (url.pathname === "/daily-reviews") {
+        return json({ reviews: await listDailyReviews(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira") });
+      }
+
       if (url.pathname === "/summaries") {
         return json(await getSummaries(env.DB));
       }
@@ -501,7 +513,11 @@ export default {
   },
 
   scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(runScheduledPaperStrategy(env, controller.cron, new Date(controller.scheduledTime).toISOString()));
+    const scheduledAt = new Date(controller.scheduledTime).toISOString();
+    ctx.waitUntil(Promise.all([
+      runScheduledPaperStrategy(env, controller.cron, scheduledAt),
+      runScheduledDailyReviews(env, scheduledAt)
+    ]));
   }
 } satisfies ExportedHandler<Env>;
 
@@ -557,6 +573,17 @@ function paperOrderActionResponse(request: Request, portfolioId: string, payload
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#paper-order-batch` }
+    });
+  }
+  return json(payload);
+}
+
+function dailyReviewActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#daily-review` }
     });
   }
   return json(payload);
