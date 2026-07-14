@@ -26,9 +26,10 @@ import { PortfolioBriefingService, type PortfolioBriefing } from "../briefings/p
 import { VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink, type PortfolioIntelligenceSummary } from "../intelligence/verifiedPipeline.ts";
 import { DailyPortfolioOrchestrator, type DailyOrchestrationRun } from "../orchestration/dailyPortfolioOrchestrator.ts";
 import { StrategyEvaluationLabService, type StrategyLabSummary } from "../lab/strategyEvaluationLab.ts";
+import { PortfolioResearchEngine, type ResearchCenterSummary, type SecurityResearchProfile } from "../research/engine.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration] =
+  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, researchCenter, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -149,6 +150,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getLatestPaperOrderBatch(db, portfolioId),
       new StrategyEngine(db).latest(portfolioId),
       new StrategyEvaluationLabService(db).summary(portfolioId),
+      new PortfolioResearchEngine(db).summary(portfolioId),
       new ForwardTestService(db).summary(portfolioId),
       new DailyManagementCycleService(db).list(portfolioId),
       new BenchmarkComparisonService(db).summary(portfolioId),
@@ -188,6 +190,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     recommendationProposals,
     strategyRun,
     strategyLab,
+    researchCenter,
     forwardTest,
     benchmarkComparison,
     settings,
@@ -268,6 +271,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     strategyLab: StrategyLabSummary;
+    researchCenter: ResearchCenterSummary;
     forwardTest: ForwardMetricsSummary;
     benchmarkComparison: BenchmarkComparisonSummary;
     settings: { automationPaused: boolean };
@@ -326,6 +330,7 @@ export function renderDashboardHtml(data: {
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   strategyLab?: StrategyLabSummary;
+  researchCenter?: ResearchCenterSummary;
   forwardTest?: ForwardMetricsSummary;
   benchmarkComparison?: BenchmarkComparisonSummary;
   settings: { automationPaused: boolean };
@@ -469,7 +474,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#research-center">Research</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -485,6 +490,7 @@ export function renderDashboardHtml(data: {
     ${section("portfolio-decision", "Portfolio Decision", renderPortfolioDecision(data.portfolioDecisions ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("portfolio-briefing", "Daily Briefing", renderPortfolioBriefing(data.portfolioBriefings ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("market-intelligence", "Verified Market Intelligence", renderVerifiedIntelligence(data.verifiedIntelligence, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("research-center", "Research Center", renderResearchCenter(data.researchCenter, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-lab", "Strategy Evaluation Lab", renderStrategyLab(data.strategyLab, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
@@ -696,6 +702,25 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Daily orchestration failed." }));
             alert(payload.message || payload.error || "Daily orchestration failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-research]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-research") || "portfolio_ira";
+          const confirmed = confirm("Run the Kairox research engine now? This scores known securities and updates research history only. It will not create proposals, stage orders, execute trades, move cash, or contact a live brokerage.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected research refresh.");
+          if (!secret) return;
+          const response = await fetch("/research/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Research refresh failed." }));
+            alert(payload.message || payload.error || "Research refresh failed.");
             return;
           }
           location.reload();
@@ -1285,6 +1310,63 @@ function renderStrategyAnalysis(run: StrategyRun | null, portfolioId: string): s
       <div class="mini-card"><strong>Excluded investments</strong><div class="card-list">${exclusions.length ? exclusions.map((item) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(item.symbol)}</strong><span class="pill">Excluded</span></div><div class="muted">${escapeHtml(item.reason)}</div></div>`).join("") : '<span class="pill">No exclusions</span>'}</div></div>
     </div>
     <div class="mini-card"><strong>Suggested actions</strong><div class="card-list">${decisions.map(strategyDecisionCard).join("")}</div></div>`;
+}
+
+function renderResearchCenter(summary: ResearchCenterSummary | undefined, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-research="${escapeHtml(portfolioId)}">Run Research Refresh</button><a class="filter" href="/research?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="/research/rankings?by=overall">Rankings</a><span class="pill">Research only</span><span class="pill">No proposals</span><span class="pill">No trades</span></div>`;
+  if (!summary || summary.topRanked.length === 0) {
+    return `${action}<div class="mini-card"><strong>Research Center</strong><div class="muted">No research profiles have been generated yet. Run the protected research refresh to score every known security.</div></div>`;
+  }
+  const topRanked = summary.topRanked.slice(0, 10).map(researchCard).join("");
+  const movers = summary.biggestMovers.slice(0, 8).map((item) => row(item.symbol, `${item.scoreChange.toFixed(2)} - ${item.explanation}`)).join("");
+  const changes = summary.scoreChanges.slice(0, 8).map((item) => row(item.symbol, `${item.periodKey}: ${item.scoreChange.toFixed(2)} - ${item.explanation}`)).join("");
+  const watchlist = summary.watchlist.slice(0, 14).map((item) => row(item.symbol, `${item.status} - ${item.reason ?? "Research status updated."}`)).join("");
+  const owned = summary.owned.length ? summary.owned.map(researchCard).join("") : '<span class="pill">No owned securities scored yet</span>';
+  const candidateGroups = summary.candidates ? [
+    ["Top 10 candidates", summary.candidates.topCandidates],
+    ["Dividend ETFs", summary.candidates.topDividendEtfs],
+    ["Broad-market ETFs", summary.candidates.topBroadMarketEtfs],
+    ["Bond ETFs", summary.candidates.topBondEtfs],
+    ["Defensive", summary.candidates.topDefensivePositions],
+    ["Growth", summary.candidates.topGrowthPositions]
+  ].map(([label, items]) => `<div class="mini-card"><strong>${escapeHtml(String(label))}</strong>${(items as SecurityResearchProfile[]).slice(0, 5).map((profile) => row(profile.symbol, `${profile.overallKairoxScore.toFixed(2)} - ${profile.companyOrFund}`)).join("") || '<div class="muted">No candidates yet.</div>'}</div>`).join("") : '<div class="mini-card"><strong>Candidates</strong><div class="muted">Candidate lists appear after the first research refresh.</div></div>';
+  const history = summary.history.slice(0, 10).map((item) => row(`${item.symbol} ${item.periodType}`, `${item.periodKey}: ${item.overallKairoxScore.toFixed(2)} (${item.scoreChange.toFixed(2)})`)).join("");
+  return `${action}
+    <div class="grid">
+      ${miniMetric("Research profiles", String(summary.topRanked.length))}
+      ${miniMetric("Latest snapshot", summary.latestSnapshotId ?? "Unavailable")}
+      ${miniMetric("Watchlist items", String(summary.watchlist.length))}
+      ${miniMetric("Owned scored", String(summary.owned.length))}
+    </div>
+    <div class="asset-grid">${topRanked}</div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Biggest Movers</strong>${movers || '<div class="muted">No score movement yet.</div>'}</div>
+      <div class="mini-card"><strong>Score Changes</strong>${changes || '<div class="muted">No score history yet.</div>'}</div>
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Watchlist</strong>${watchlist || '<div class="muted">No watchlist states yet.</div>'}</div>
+      <div class="mini-card"><strong>Owned Securities</strong><div class="card-list">${owned}</div></div>
+    </div>
+    <div class="asset-grid">${candidateGroups}</div>
+    <div class="mini-card"><strong>Research History</strong>${history || '<div class="muted">No research history yet.</div>'}</div>
+    ${summary.warnings.length ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml(summary.warnings.join(" "))}</div></div>` : ""}`;
+}
+
+function researchCard(profile: SecurityResearchProfile): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(profile.symbol)}</strong><span class="pill">${profile.overallKairoxScore.toFixed(2)}</span></div>
+    <div class="muted">${escapeHtml(profile.companyOrFund)} - ${escapeHtml(profile.assetType)}</div>
+    ${row("Research", profile.scores.research.toFixed(2))}
+    ${row("Quality", profile.scores.quality.toFixed(2))}
+    ${row("Income", profile.scores.income.toFixed(2))}
+    ${row("Growth", profile.scores.growth.toFixed(2))}
+    ${row("Risk", profile.scores.risk.toFixed(2))}
+    ${row("Momentum", profile.scores.momentum.toFixed(2))}
+    <div class="muted">${escapeHtml(profile.explanation.rankReason)}</div>
+    <div class="muted">Strengths: ${escapeHtml(profile.explanation.strengths.join(", ") || "None above threshold")}</div>
+    <div class="muted">Risks: ${escapeHtml(profile.explanation.mainRisks.join(", ") || "No major research risk flagged")}</div>
+    <div class="muted">Scored ${formatTimestampElement(profile.lastScoredAt)}</div>
+  </div>`;
 }
 
 function strategyScoreCard(score: StrategyRun["securityScores"][number]): string {
