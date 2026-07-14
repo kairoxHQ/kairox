@@ -16,9 +16,10 @@ import { getLatestPaperOrderBatch, type PaperOrderBatch } from "../orders/stagin
 import { getPaperExecutionByBatchId, type PaperExecutionRecord } from "../orders/execution.ts";
 import { listDailyReviews, type DailyPortfolioReview } from "../reviews/dailyReview.ts";
 import { RecommendationProposalService, type RecommendationProposal } from "../recommendations/proposalService.ts";
+import { StrategyEngine, type StrategyRun } from "../strategy/engine.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -146,7 +147,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       listPortfolioProfiles(db),
       getInvestmentPolicy(db, portfolioId),
       getLatestAllocationProposal(db, portfolioId),
-      getLatestPaperOrderBatch(db, portfolioId)
+      getLatestPaperOrderBatch(db, portfolioId),
+      new StrategyEngine(db).latest(portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -165,6 +167,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     paperExecution,
     dailyReviews,
     recommendationProposals,
+    strategyRun,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -236,6 +239,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     paperExecution: PaperExecutionRecord | null;
     dailyReviews: DailyPortfolioReview[];
     recommendationProposals: RecommendationProposal[];
+    strategyRun: StrategyRun | null;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -285,6 +289,7 @@ export function renderDashboardHtml(data: {
   paperExecution?: PaperExecutionRecord | null;
   dailyReviews?: DailyPortfolioReview[];
   recommendationProposals?: RecommendationProposal[];
+  strategyRun?: StrategyRun | null;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -422,7 +427,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#strategy-analysis">Strategy</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -433,6 +438,7 @@ export function renderDashboardHtml(data: {
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -601,6 +607,25 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Daily review failed." }));
             alert(payload.message || payload.error || "Daily review failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-strategy-analysis]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-strategy-analysis") || "portfolio_ira";
+          const confirmed = confirm("Run deterministic strategy analysis now? This creates an analysis report only; it will not create proposals, orders, trades, fills, or cash changes.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected strategy analysis.");
+          if (!secret) return;
+          const response = await fetch("/strategy/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Strategy analysis failed." }));
+            alert(payload.message || payload.error || "Strategy analysis failed.");
             return;
           }
           location.reload();
@@ -835,6 +860,68 @@ function dailyReviewIneligibleReason(review: DailyPortfolioReview): string {
   return `${review.recommendation} is not proposal-eligible`;
 }
 
+function renderStrategyAnalysis(run: StrategyRun | null, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-strategy-analysis="${escapeHtml(portfolioId)}">Run Strategy Analysis</button><span class="pill">Analysis only</span><span class="pill">No automatic proposal</span><span class="pill">No orders</span><span class="pill">No execution</span></div>`;
+  if (!run) {
+    return `${action}<div class="mini-card"><strong>Conservative Retirement</strong><div class="muted">No strategy analysis has been recorded for this paper account yet.</div></div>`;
+  }
+  const topScores = run.securityScores.filter((score) => score.eligibility.allowed).slice(0, 6);
+  const exclusions = run.excludedCandidates.slice(0, 6);
+  const decisions = run.finalDecisions.slice(0, 8);
+  const ranges = Object.entries(run.strategy.allocationRanges).map(([category, range]) =>
+    row(category, `${pct(range.min)} - ${pct(range.max)} target ${pct(range.target)}`)
+  ).join("");
+  return `${action}
+    <div class="grid">
+      ${miniMetric("Strategy", `${run.strategy.strategyName} ${run.strategy.strategyVersion}`)}
+      ${miniMetric("Decision", run.currentDecision)}
+      ${miniMetric("Portfolio score", pct(run.portfolioScore))}
+      ${miniMetric("Risk score", pct(run.riskScore))}
+      ${miniMetric("Confidence", pct(run.confidenceScore))}
+      ${miniMetric("Snapshot", run.marketDataSnapshotId)}
+      ${miniMetric("Last analysis", formatTimestampElement(run.generatedAt))}
+      ${miniMetric("Engine", run.engineVersion)}
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Target allocation ranges</strong>${ranges}</div>
+      <div class="mini-card"><strong>Current allocation</strong>
+        ${row("Cash reserve", pct(run.portfolioAnalysis.cashPct))}
+        ${Object.entries(run.portfolioAnalysis.categoryAllocation).filter(([category]) => category !== "Cash reserve").map(([category, value]) => row(category, pct(value))).join("")}
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Ranked eligible investments</strong><div class="card-list">${topScores.length ? topScores.map(strategyScoreCard).join("") : '<span class="pill">No eligible candidates cleared data and policy checks</span>'}</div></div>
+      <div class="mini-card"><strong>Excluded investments</strong><div class="card-list">${exclusions.length ? exclusions.map((item) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(item.symbol)}</strong><span class="pill">Excluded</span></div><div class="muted">${escapeHtml(item.reason)}</div></div>`).join("") : '<span class="pill">No exclusions</span>'}</div></div>
+    </div>
+    <div class="mini-card"><strong>Suggested actions</strong><div class="card-list">${decisions.map(strategyDecisionCard).join("")}</div></div>`;
+}
+
+function strategyScoreCard(score: StrategyRun["securityScores"][number]): string {
+  const factors = score.factors.slice(0, 5).map((factor) => `${factor.factor}: ${factor.normalizedScore === null ? "missing" : factor.normalizedScore}`).join(" | ");
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(score.symbol)}</strong><span class="pill">${escapeHtml(score.assetCategory)}</span></div>
+    ${row("Score", pct(score.investmentScore / 100))}
+    ${row("Confidence", pct(score.confidenceScore))}
+    ${row("Data", score.quoteStatus)}
+    <div class="muted">Diagnostics: ${escapeHtml(factors)}</div>
+    ${score.missingFactors.length ? `<div class="muted">Missing: ${escapeHtml(score.missingFactors.join(", "))}</div>` : ""}
+  </div>`;
+}
+
+function strategyDecisionCard(decision: StrategyRun["finalDecisions"][number]): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(decision.action)} ${escapeHtml(decision.symbol)}</strong><span class="pill">${escapeHtml(decision.strategyVersion)}</span></div>
+    ${row("Current allocation", pct(decision.currentAllocation))}
+    ${row("Proposed allocation", pct(decision.proposedAllocation))}
+    ${row("Estimated change", signedMoney(decision.estimatedDollarChange))}
+    ${row("Score", pct(decision.investmentScore / 100))}
+    ${row("Confidence", pct(decision.confidenceScore))}
+    <div class="muted">Rules: ${escapeHtml(decision.triggeredRules.join(", ") || "None")}</div>
+    <div>${escapeHtml(sanitizeForUser(decision.explanation, "Strategy rationale unavailable."))}</div>
+    ${decision.opposingFactors.length ? `<div class="muted">Risks: ${escapeHtml(decision.opposingFactors.join(", "))}</div>` : ""}
+  </div>`;
+}
+
 function renderRecommendationProposal(proposal: RecommendationProposal | null): string {
   if (!proposal) {
     return `<div class="mini-card"><strong>Review Proposal</strong><div class="muted">No draft proposal has been created from this daily review.</div></div>`;
@@ -863,6 +950,7 @@ function renderRecommendationProposal(proposal: RecommendationProposal | null): 
       ${miniMetric("Policy", proposal.policyValidation.compliant ? "Compliant" : "Needs review")}
       ${miniMetric("Expires", formatTimestampElement(proposal.expiresAt))}
     </div>
+    <div class="muted">Source strategy run: ${escapeHtml(proposal.strategyRunId ?? "None linked")}</div>
     <div class="two-col">
       <div class="mini-card"><strong>Current allocation</strong>${allocationRows(proposal.currentAllocation)}</div>
       <div class="mini-card"><strong>Expected allocation</strong>${allocationRows(proposal.expectedAllocation)}</div>

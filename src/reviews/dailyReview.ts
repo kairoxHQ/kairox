@@ -66,6 +66,7 @@ export interface DailyPortfolioReview {
   relevantMetrics: Record<string, number | string | boolean | null>;
   marketDataTimestamp: string | null;
   marketDataSnapshotId: string | null;
+  strategyRunId: string | null;
   generatedAt: string;
   ruleEngineVersion: string;
   summaryExplanation: string;
@@ -629,6 +630,7 @@ function buildReviewRecord(input: {
     },
     marketDataTimestamp,
     marketDataSnapshotId: input.marketDataSnapshotId,
+    strategyRunId: null,
     generatedAt: input.now.toISOString(),
     ruleEngineVersion: RULE_ENGINE_VERSION,
     summaryExplanation
@@ -774,6 +776,7 @@ interface DailyReviewRow {
   relevant_metrics_json: string;
   market_data_timestamp: string | null;
   market_data_snapshot_id: string | null;
+  strategy_run_id: string | null;
   generated_at: string;
   rule_engine_version: string;
   summary_explanation: string;
@@ -810,6 +813,7 @@ function mapReviewRow(row: DailyReviewRow): DailyPortfolioReview {
     relevantMetrics: parseJson(row.relevant_metrics_json, {}),
     marketDataTimestamp: row.market_data_timestamp,
     marketDataSnapshotId: row.market_data_snapshot_id ?? null,
+    strategyRunId: row.strategy_run_id ?? null,
     generatedAt: row.generated_at,
     ruleEngineVersion: row.rule_engine_version,
     summaryExplanation: row.summary_explanation

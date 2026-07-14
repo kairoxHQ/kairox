@@ -160,6 +160,26 @@ export class MarketDataService {
     return { id, useCase, quotes: quoteMap, createdAt: now.toISOString() };
   }
 
+  async getSnapshot(snapshotId: string): Promise<MarketDataSnapshot | null> {
+    const snapshot = await this.db.prepare(
+      "SELECT id, use_case AS useCase, created_at AS createdAt FROM market_data_snapshots WHERE id = ?"
+    ).bind(snapshotId).first<{ id: string; useCase: MarketDataUseCase; createdAt: string }>();
+    if (!snapshot) {
+      return null;
+    }
+    const rows = await listRows<{ symbol: string; normalizedQuoteJson: string }>(
+      this.db.prepare("SELECT symbol, normalized_quote_json AS normalizedQuoteJson FROM market_data_snapshot_quotes WHERE snapshot_id = ?").bind(snapshotId)
+    );
+    const quotes = new Map<string, NormalizedQuote>();
+    for (const row of rows) {
+      const quote = parseJson<NormalizedQuote | null>(row.normalizedQuoteJson, null);
+      if (quote) {
+        quotes.set(row.symbol, quote);
+      }
+    }
+    return { id: snapshot.id, useCase: snapshot.useCase, quotes, createdAt: snapshot.createdAt };
+  }
+
   async getHistoricalPrices(symbol: string, startDate: string, endDate: string, now = new Date()): Promise<HistoricalPriceBar[]> {
     const normalized = normalizeSymbol(symbol);
     const data = await this.primary.getMarketData(normalized);

@@ -4,6 +4,7 @@ import { listRows } from "../shared/db.ts";
 import { addMoney, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 import type { AssetClass } from "../shared/types.ts";
 import { MarketDataService } from "../market/service.ts";
+import { StrategyEngine, type StrategyRun, type StrategyDecision } from "../strategy/engine.ts";
 
 export type ReviewProposalStatus =
   | "Draft"
@@ -56,6 +57,7 @@ export interface RecommendationProposal {
   confidenceScore: number;
   marketDataTimestamp: string | null;
   marketDataSnapshotId: string | null;
+  strategyRunId: string | null;
   generatedAt: string;
   expiresAt: string;
   regenerationReason: string | null;
@@ -104,6 +106,7 @@ interface DailyReviewRow {
   marketDataTimestamp: string | null;
   relevantMetricsJson: string;
   summaryExplanation: string;
+  strategyRunId: string | null;
 }
 
 interface PortfolioRow {
@@ -155,6 +158,7 @@ interface ProposalRow {
   confidenceScore: number;
   marketDataTimestamp: string | null;
   marketDataSnapshotId: string | null;
+  strategyRunId: string | null;
   generatedAt: string;
   expiresAt: string;
   regenerationReason: string | null;
@@ -223,10 +227,11 @@ export class RecommendationProposalService {
       await this.recordEvent(existing.id, review.portfolioId, review.id, "proposal_regenerated", "Recommendation proposal regenerated from daily review.", { previousVersion: existing.version }, now);
     }
 
-    const [portfolio, policy, positions, nextVersion] = await Promise.all([
+    const [portfolio, policy, positions, strategyRun, nextVersion] = await Promise.all([
       this.getPortfolio(review.portfolioId),
       getInvestmentPolicy(this.db, review.portfolioId),
       this.getPositions(review.portfolioId),
+      new StrategyEngine(this.db).latest(review.portfolioId),
       this.nextVersion(review.portfolioId, review.id)
     ]);
     if (!portfolio || portfolio.mode !== "paper") {
@@ -236,7 +241,10 @@ export class RecommendationProposalService {
       return this.noAction(review, "No active investment policy is configured for this portfolio.", now);
     }
 
-    const marketSnapshot = await new MarketDataService(this.db).createSnapshot(positions.map((position) => position.symbol), "proposal", now);
+    const strategyDecisionSymbols = (strategyRun?.dailyReviewId === review.id || strategyRun?.dailyReviewId === null)
+      ? strategyRun.finalDecisions.map((decision) => decision.symbol).filter((symbol) => symbol !== "PORTFOLIO")
+      : [];
+    const marketSnapshot = await new MarketDataService(this.db).createSnapshot([...positions.map((position) => position.symbol), ...strategyDecisionSymbols], "proposal", now);
     const prices = this.getPricesFromSnapshot(marketSnapshot, now);
     const plan = buildRecommendationProposalPlan({
       review,
@@ -244,12 +252,14 @@ export class RecommendationProposalService {
       policy,
       positions,
       prices,
+      strategyRun: strategyRun?.dailyReviewId === review.id || strategyRun?.dailyReviewId === null ? strategyRun : null,
       version: nextVersion,
       now,
       regenerateReason: options.reason ?? null,
       config: this.config
     });
     plan.proposal.marketDataSnapshotId = marketSnapshot.id;
+    plan.proposal.strategyRunId = strategyRun?.id ?? null;
 
     if (plan.noActionReason) {
       return this.noAction(review, plan.noActionReason, now);
@@ -285,7 +295,7 @@ export class RecommendationProposalService {
           risk_score_after AS riskScoreAfter, diversification_score_before AS diversificationScoreBefore,
           diversification_score_after AS diversificationScoreAfter, estimated_turnover_pct AS estimatedTurnoverPct,
           rationale, confidence_score AS confidenceScore, market_data_timestamp AS marketDataTimestamp,
-          market_data_snapshot_id AS marketDataSnapshotId,
+          market_data_snapshot_id AS marketDataSnapshotId, strategy_run_id AS strategyRunId,
           generated_at AS generatedAt, expires_at AS expiresAt, regeneration_reason AS regenerationReason,
           no_action_reason AS noActionReason
          FROM recommendation_proposals
@@ -340,7 +350,7 @@ export class RecommendationProposalService {
         data_freshness_status AS dataFreshnessStatus, confidence_score AS confidenceScore,
         risk_score AS riskScore, diversification_score AS diversificationScore,
         market_data_timestamp AS marketDataTimestamp, relevant_metrics_json AS relevantMetricsJson,
-        summary_explanation AS summaryExplanation
+        summary_explanation AS summaryExplanation, strategy_run_id AS strategyRunId
        FROM daily_portfolio_reviews
        WHERE id = ?`
     ).bind(reviewId).first<DailyReviewRow>();
@@ -394,7 +404,7 @@ export class RecommendationProposalService {
         risk_score_after AS riskScoreAfter, diversification_score_before AS diversificationScoreBefore,
         diversification_score_after AS diversificationScoreAfter, estimated_turnover_pct AS estimatedTurnoverPct,
         rationale, confidence_score AS confidenceScore, market_data_timestamp AS marketDataTimestamp,
-        market_data_snapshot_id AS marketDataSnapshotId,
+        market_data_snapshot_id AS marketDataSnapshotId, strategy_run_id AS strategyRunId,
         generated_at AS generatedAt, expires_at AS expiresAt, regeneration_reason AS regenerationReason,
         no_action_reason AS noActionReason
        FROM recommendation_proposals
@@ -419,9 +429,9 @@ export class RecommendationProposalService {
         proposed_sells_json, estimated_trade_amount_usd, estimated_remaining_cash_usd,
         policy_validation_json, risk_score_before, risk_score_after,
         diversification_score_before, diversification_score_after, estimated_turnover_pct,
-        rationale, confidence_score, market_data_timestamp, market_data_snapshot_id, generated_at, expires_at,
+        rationale, confidence_score, market_data_timestamp, market_data_snapshot_id, strategy_run_id, generated_at, expires_at,
         regeneration_reason, no_action_reason
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       proposal.id,
       proposal.portfolioId,
@@ -448,6 +458,7 @@ export class RecommendationProposalService {
       proposal.confidenceScore,
       proposal.marketDataTimestamp,
       proposal.marketDataSnapshotId,
+      proposal.strategyRunId,
       proposal.generatedAt,
       proposal.expiresAt,
       proposal.regenerationReason,
@@ -534,6 +545,7 @@ export class RecommendationProposalService {
       confidenceScore: row.confidenceScore,
       marketDataTimestamp: row.marketDataTimestamp,
       marketDataSnapshotId: row.marketDataSnapshotId,
+      strategyRunId: row.strategyRunId,
       generatedAt: row.generatedAt,
       expiresAt: row.expiresAt,
       regenerationReason: row.regenerationReason,
@@ -555,6 +567,7 @@ export class RecommendationProposalService {
         risk_score_after AS riskScoreAfter, diversification_score_before AS diversificationScoreBefore,
         diversification_score_after AS diversificationScoreAfter, estimated_turnover_pct AS estimatedTurnoverPct,
         rationale, confidence_score AS confidenceScore, market_data_timestamp AS marketDataTimestamp,
+        market_data_snapshot_id AS marketDataSnapshotId, strategy_run_id AS strategyRunId,
         generated_at AS generatedAt, expires_at AS expiresAt, regeneration_reason AS regenerationReason,
         no_action_reason AS noActionReason
        FROM recommendation_proposals
@@ -618,6 +631,7 @@ export function buildRecommendationProposalPlan(input: {
   policy: InvestmentPolicy;
   positions: PositionRow[];
   prices: Map<string, PriceRow>;
+  strategyRun?: StrategyRun | null;
   version: number;
   now: Date;
   regenerateReason: string | null;
@@ -629,6 +643,7 @@ export function buildRecommendationProposalPlan(input: {
   const tradeLines: ProposalTradeLine[] = [];
   const reasons: string[] = [];
   const nowIso = input.now.toISOString();
+  const positionBySymbol = new Map(input.positions.map((position) => [position.symbol, position]));
 
   for (const position of input.positions) {
     const price = input.prices.get(position.symbol);
@@ -638,69 +653,116 @@ export function buildRecommendationProposalPlan(input: {
   }
 
   const total = input.portfolio.totalAccountValueUsd > 0 ? input.portfolio.totalAccountValueUsd : 1;
-  const maxPositionValue = total * input.policy.maxSinglePositionPct;
-  const overLimit = input.positions.filter((position) => position.marketValueUsd > maxPositionValue).sort((left, right) => right.marketValueUsd - left.marketValueUsd);
-  for (const position of overLimit) {
-    const price = input.prices.get(position.symbol);
-    if (!price) {
-      continue;
+  if (input.strategyRun) {
+    for (const decision of input.strategyRun.finalDecisions.filter(isActionableStrategyDecision)) {
+      const price = input.prices.get(decision.symbol);
+      if (!price) {
+        return { proposal: emptyProposal(input, currentAllocation, `Missing or stale strategy price for ${decision.symbol}.`), noActionReason: `Missing or stale strategy price for ${decision.symbol}.` };
+      }
+      const existing = positionBySymbol.get(decision.symbol);
+      const amount = Math.abs(decision.estimatedDollarChange);
+      if (amount < input.config.minimumTradeValueUsd) {
+        continue;
+      }
+      const side = decision.estimatedDollarChange < 0 || decision.action === "Sell" || decision.action === "Trim" ? "Sell" : "Buy";
+      const assetClass = existing?.assetClass ?? assetClassFromStrategyDecision(decision);
+      const validation = validateInvestmentPolicy({
+        policy: input.policy,
+        action: side === "Buy" ? "BUY" : "SELL",
+        symbol: decision.symbol,
+        assetClass,
+        portfolioValueUsd: total,
+        cashUsd: input.portfolio.cashUsd,
+        currentPositionValueUsd: existing?.marketValueUsd ?? 0,
+        proposedTradeValueUsd: side === "Buy" ? amount : 0,
+        resultingSectorValueUsd: side === "Buy" ? (existing?.marketValueUsd ?? 0) + amount : Math.max(0, (existing?.marketValueUsd ?? 0) - amount)
+      });
+      if (!validation.allowed && side === "Buy") {
+        reasons.push(...validation.reasons);
+        continue;
+      }
+      tradeLines.push({
+        side,
+        symbol: decision.symbol,
+        securityName: input.strategyRun.securityScores.find((score) => score.symbol === decision.symbol)?.securityName ?? existing?.securityName ?? decision.symbol,
+        assetClass,
+        assetCategory: input.strategyRun.securityScores.find((score) => score.symbol === decision.symbol)?.assetCategory ?? (existing ? sectorFor(existing) : "Strategy candidate"),
+        estimatedQuantity: roundRatio(amount / price.priceUsd),
+        estimatedAmountUsd: roundMoney(amount),
+        referencePriceUsd: price.priceUsd,
+        marketDataTimestamp: price.priceTimestamp,
+        reason: `Strategy ${input.strategyRun.strategy.strategyName} ${input.strategyRun.strategy.strategyVersion}: ${decision.explanation}`,
+        confidenceScore: decision.confidenceScore,
+        policyValidation: validation
+      });
     }
-    const excess = position.marketValueUsd - maxPositionValue;
-    const amount = Math.min(position.marketValueUsd, Math.max(input.config.minimumTradeValueUsd, excess + 0.01));
-    if (amount < input.config.minimumTradeValueUsd) {
-      continue;
-    }
-    tradeLines.push({
-      side: "Sell",
-      symbol: position.symbol,
-      securityName: position.securityName ?? position.symbol,
-      assetClass: position.assetClass,
-      assetCategory: sectorFor(position),
-      estimatedQuantity: roundRatio(amount / price.priceUsd),
-      estimatedAmountUsd: roundMoney(amount),
-      referencePriceUsd: price.priceUsd,
-      marketDataTimestamp: price.priceTimestamp,
-      reason: "Reduce concentration back inside the investment policy single-position limit.",
-      confidenceScore: input.review.confidenceScore,
-      policyValidation: { allowed: true, reasons: [] }
-    });
   }
 
-  const cashExcess = input.portfolio.cashUsd - total * Math.max(input.policy.minCashAllocationPct, currentAllocation.cashPct - input.config.minimumAllocationDriftPct);
-  if ((input.review.recommendation === "Rebalance Suggested" || input.review.recommendation === "Opportunity Identified") && cashExcess >= input.config.minimumTradeValueUsd) {
-    const candidate = input.positions.find((position) => position.assetClass === "bond_fund") ?? input.positions[0];
-    if (candidate) {
-      const price = input.prices.get(candidate.symbol);
-      if (price) {
-        const amount = Math.min(cashExcess, total * input.config.maximumTurnoverPct);
-        const validation = validateInvestmentPolicy({
-          policy: input.policy,
-          action: "BUY",
-          symbol: candidate.symbol,
-          assetClass: candidate.assetClass,
-          portfolioValueUsd: total,
-          cashUsd: input.portfolio.cashUsd,
-          currentPositionValueUsd: candidate.marketValueUsd,
-          proposedTradeValueUsd: amount,
-          resultingSectorValueUsd: candidate.marketValueUsd + amount
-        });
-        if (validation.allowed) {
-          tradeLines.push({
-            side: "Buy",
+  if (!input.strategyRun) {
+    const maxPositionValue = total * input.policy.maxSinglePositionPct;
+    const overLimit = input.positions.filter((position) => position.marketValueUsd > maxPositionValue).sort((left, right) => right.marketValueUsd - left.marketValueUsd);
+    for (const position of overLimit) {
+      const price = input.prices.get(position.symbol);
+      if (!price) {
+        continue;
+      }
+      const excess = position.marketValueUsd - maxPositionValue;
+      const amount = Math.min(position.marketValueUsd, Math.max(input.config.minimumTradeValueUsd, excess + 0.01));
+      if (amount < input.config.minimumTradeValueUsd) {
+        continue;
+      }
+      tradeLines.push({
+        side: "Sell",
+        symbol: position.symbol,
+        securityName: position.securityName ?? position.symbol,
+        assetClass: position.assetClass,
+        assetCategory: sectorFor(position),
+        estimatedQuantity: roundRatio(amount / price.priceUsd),
+        estimatedAmountUsd: roundMoney(amount),
+        referencePriceUsd: price.priceUsd,
+        marketDataTimestamp: price.priceTimestamp,
+        reason: "Reduce concentration back inside the investment policy single-position limit.",
+        confidenceScore: input.review.confidenceScore,
+        policyValidation: { allowed: true, reasons: [] }
+      });
+    }
+
+    const cashExcess = input.portfolio.cashUsd - total * Math.max(input.policy.minCashAllocationPct, currentAllocation.cashPct - input.config.minimumAllocationDriftPct);
+    if ((input.review.recommendation === "Rebalance Suggested" || input.review.recommendation === "Opportunity Identified") && cashExcess >= input.config.minimumTradeValueUsd) {
+      const candidate = input.positions.find((position) => position.assetClass === "bond_fund") ?? input.positions[0];
+      if (candidate) {
+        const price = input.prices.get(candidate.symbol);
+        if (price) {
+          const amount = Math.min(cashExcess, total * input.config.maximumTurnoverPct);
+          const validation = validateInvestmentPolicy({
+            policy: input.policy,
+            action: "BUY",
             symbol: candidate.symbol,
-            securityName: candidate.securityName ?? candidate.symbol,
             assetClass: candidate.assetClass,
-            assetCategory: sectorFor(candidate),
-            estimatedQuantity: roundRatio(amount / price.priceUsd),
-            estimatedAmountUsd: roundMoney(amount),
-            referencePriceUsd: price.priceUsd,
-            marketDataTimestamp: price.priceTimestamp,
-            reason: "Deploy excess cash while preserving the required policy reserve.",
-            confidenceScore: Math.max(0.5, input.review.confidenceScore - 0.05),
-            policyValidation: validation
+            portfolioValueUsd: total,
+            cashUsd: input.portfolio.cashUsd,
+            currentPositionValueUsd: candidate.marketValueUsd,
+            proposedTradeValueUsd: amount,
+            resultingSectorValueUsd: candidate.marketValueUsd + amount
           });
-        } else {
-          reasons.push(...validation.reasons);
+          if (validation.allowed) {
+            tradeLines.push({
+              side: "Buy",
+              symbol: candidate.symbol,
+              securityName: candidate.securityName ?? candidate.symbol,
+              assetClass: candidate.assetClass,
+              assetCategory: sectorFor(candidate),
+              estimatedQuantity: roundRatio(amount / price.priceUsd),
+              estimatedAmountUsd: roundMoney(amount),
+              referencePriceUsd: price.priceUsd,
+              marketDataTimestamp: price.priceTimestamp,
+              reason: "Deploy excess cash while preserving the required policy reserve.",
+              confidenceScore: Math.max(0.5, input.review.confidenceScore - 0.05),
+              policyValidation: validation
+            });
+          } else {
+            reasons.push(...validation.reasons);
+          }
         }
       }
     }
@@ -760,6 +822,7 @@ export function buildRecommendationProposalPlan(input: {
     confidenceScore: input.review.confidenceScore,
     marketDataTimestamp: latestTimestamp(tradeLines.map((line) => line.marketDataTimestamp)),
     marketDataSnapshotId: null,
+    strategyRunId: input.strategyRun?.id ?? null,
     generatedAt,
     expiresAt,
     regenerationReason: input.regenerateReason,
@@ -865,6 +928,7 @@ function emptyProposal(input: {
     confidenceScore: input.review.confidenceScore,
     marketDataTimestamp: input.review.marketDataTimestamp,
     marketDataSnapshotId: null,
+    strategyRunId: null,
     generatedAt: nowIso,
     expiresAt: new Date(input.now.getTime() + DEFAULT_RECOMMENDATION_PROPOSAL_CONFIG.proposalExpirationHours * 60 * 60 * 1000).toISOString(),
     regenerationReason: input.regenerateReason,
@@ -881,6 +945,17 @@ function sectorFor(position: Pick<PositionRow, "assetClass" | "symbol">): string
     return "Dividend or low-volatility equity";
   }
   return position.assetClass === "stock" || position.assetClass === "etf" ? "U.S. broad-market equity" : position.assetClass;
+}
+
+function isActionableStrategyDecision(decision: StrategyDecision): boolean {
+  return ["Buy", "Add", "Trim", "Sell", "Rebalance"].includes(decision.action) && Math.abs(decision.estimatedDollarChange) > 0;
+}
+
+function assetClassFromStrategyDecision(decision: StrategyDecision): AssetClass {
+  if (/BND|SHY|IEF|TLT|TREAS|BOND/i.test(decision.symbol)) {
+    return "bond_fund";
+  }
+  return "etf";
 }
 
 function riskScoreAfter(before: number, postWarningCount: number, lines: ProposalTradeLine[]): number {

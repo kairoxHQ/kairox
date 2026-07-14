@@ -47,6 +47,7 @@ import { executePaperOrderBatch, getPaperExecutionByBatchId } from "./orders/exe
 import { DailyPortfolioReviewService, listDailyReviews, runScheduledDailyReviews } from "./reviews/dailyReview.ts";
 import { RecommendationProposalService } from "./recommendations/proposalService.ts";
 import { MarketDataService } from "./market/service.ts";
+import { StrategyEngine } from "./strategy/engine.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -136,14 +137,15 @@ export default {
       "/summaries",
       "/settings",
       "/daily-reviews",
-      "/recommendation-proposals"
+      "/recommendation-proposals",
+      "/strategy-runs"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -190,6 +192,16 @@ export default {
         const service = new DailyPortfolioReviewService(env.DB);
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         return dailyReviewActionResponse(request, portfolioId, await service.run(portfolioId, "manual"));
+      }
+
+      if (url.pathname === "/strategy/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const snapshotId = url.searchParams.get("snapshotId");
+        if (snapshotId && !/^[A-Za-z0-9_-]{1,180}$/.test(snapshotId)) {
+          throw new RequestError(400, "Invalid market-data snapshot identifier.");
+        }
+        const run = await new StrategyEngine(env.DB).run(portfolioId, { snapshotId });
+        return strategyActionResponse(request, portfolioId, run);
       }
 
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
@@ -578,6 +590,12 @@ export default {
         return json({ proposals: await new RecommendationProposalService(env.DB).list(await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira") });
       }
 
+      if (url.pathname === "/strategy-runs") {
+        const engine = new StrategyEngine(env.DB);
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json({ runs: await engine.list(portfolioId), latest: await engine.latest(portfolioId) });
+      }
+
       if (url.pathname === "/summaries") {
         return json(await getSummaries(env.DB));
       }
@@ -703,6 +721,17 @@ function recommendationProposalActionResponse(request: Request, portfolioId: str
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#daily-review` }
+    });
+  }
+  return json(payload);
+}
+
+function strategyActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#strategy-analysis` }
     });
   }
   return json(payload);
