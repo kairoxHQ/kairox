@@ -55,6 +55,7 @@ import { PortfolioDecisionService } from "./decisions/portfolioDecision.ts";
 import { PortfolioBriefingService } from "./briefings/portfolioBriefing.ts";
 import { VerifiedMarketIntelligenceService, runScheduledMarketIntelligence } from "./intelligence/verifiedPipeline.ts";
 import { DailyPortfolioOrchestrator, runScheduledDailyOrchestrations, type DailyOrchestrationTriggerType } from "./orchestration/dailyPortfolioOrchestrator.ts";
+import { StrategyEvaluationLabService } from "./lab/strategyEvaluationLab.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -155,14 +156,15 @@ export default {
       "/benchmark-comparison/history.csv",
       "/portfolio-decisions",
       "/portfolio-briefings",
-      "/portfolio-briefings/public-summary"
+      "/portfolio-briefings/public-summary",
+      "/strategy-lab"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/strategy-lab/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -219,6 +221,12 @@ export default {
         }
         const run = await new StrategyEngine(env.DB).run(portfolioId, { snapshotId });
         return strategyActionResponse(request, portfolioId, run);
+      }
+
+      if (url.pathname === "/strategy-lab/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const result = await new StrategyEvaluationLabService(env.DB).run(portfolioId);
+        return strategyLabActionResponse(request, portfolioId, result);
       }
 
       if (url.pathname === "/forward-test/run") {
@@ -735,6 +743,11 @@ export default {
         return json({ runs: await engine.list(portfolioId), latest: await engine.latest(portfolioId) });
       }
 
+      if (url.pathname === "/strategy-lab") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new StrategyEvaluationLabService(env.DB).summary(portfolioId));
+      }
+
       if (url.pathname === "/forward-test") {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         return json(await new ForwardTestService(env.DB).summary(portfolioId));
@@ -951,6 +964,17 @@ function strategyActionResponse(request: Request, portfolioId: string, payload: 
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#strategy-analysis` }
+    });
+  }
+  return json(payload);
+}
+
+function strategyLabActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#strategy-lab` }
     });
   }
   return json(payload);

@@ -25,9 +25,10 @@ import { PortfolioDecisionService, type PortfolioDecision } from "../decisions/p
 import { PortfolioBriefingService, type PortfolioBriefing } from "../briefings/portfolioBriefing.ts";
 import { VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink, type PortfolioIntelligenceSummary } from "../intelligence/verifiedPipeline.ts";
 import { DailyPortfolioOrchestrator, type DailyOrchestrationRun } from "../orchestration/dailyPortfolioOrchestrator.ts";
+import { StrategyEvaluationLabService, type StrategyLabSummary } from "../lab/strategyEvaluationLab.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration] =
+  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -147,6 +148,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getLatestAllocationProposal(db, portfolioId),
       getLatestPaperOrderBatch(db, portfolioId),
       new StrategyEngine(db).latest(portfolioId),
+      new StrategyEvaluationLabService(db).summary(portfolioId),
       new ForwardTestService(db).summary(portfolioId),
       new DailyManagementCycleService(db).list(portfolioId),
       new BenchmarkComparisonService(db).summary(portfolioId),
@@ -185,6 +187,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     dailyOrchestration,
     recommendationProposals,
     strategyRun,
+    strategyLab,
     forwardTest,
     benchmarkComparison,
     settings,
@@ -264,6 +267,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     dailyOrchestration: DailyOrchestrationRun | null;
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
+    strategyLab: StrategyLabSummary;
     forwardTest: ForwardMetricsSummary;
     benchmarkComparison: BenchmarkComparisonSummary;
     settings: { automationPaused: boolean };
@@ -321,6 +325,7 @@ export function renderDashboardHtml(data: {
   dailyOrchestration?: DailyOrchestrationRun | null;
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
+  strategyLab?: StrategyLabSummary;
   forwardTest?: ForwardMetricsSummary;
   benchmarkComparison?: BenchmarkComparisonSummary;
   settings: { automationPaused: boolean };
@@ -464,7 +469,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -481,6 +486,7 @@ export function renderDashboardHtml(data: {
     ${section("portfolio-briefing", "Daily Briefing", renderPortfolioBriefing(data.portfolioBriefings ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("market-intelligence", "Verified Market Intelligence", renderVerifiedIntelligence(data.verifiedIntelligence, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("strategy-lab", "Strategy Evaluation Lab", renderStrategyLab(data.strategyLab, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("benchmark-comparison", "Performance Comparison", renderBenchmarkComparison(data.benchmarkComparison, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
@@ -709,6 +715,25 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Strategy analysis failed." }));
             alert(payload.message || payload.error || "Strategy analysis failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-strategy-lab]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-strategy-lab") || "portfolio_ira";
+          const confirmed = confirm("Run the paper-only strategy evaluation lab now? This updates virtual lab portfolios and rankings only. It will not replace the active strategy, create proposals, stage orders, execute trades, move IRA cash, or contact a live brokerage.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected strategy lab update.");
+          if (!secret) return;
+          const response = await fetch("/strategy-lab/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Strategy lab update failed." }));
+            alert(payload.message || payload.error || "Strategy lab update failed.");
             return;
           }
           location.reload();
@@ -1288,6 +1313,51 @@ function strategyDecisionCard(decision: StrategyRun["finalDecisions"][number]): 
   </div>`;
 }
 
+function renderStrategyLab(summary: StrategyLabSummary | undefined, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-strategy-lab="${escapeHtml(portfolioId)}">Run Strategy Lab</button><a class="filter" href="/strategy-lab?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><span class="pill">Virtual portfolios</span><span class="pill">No active IRA changes</span><span class="pill">No live brokerage</span></div>`;
+  if (!summary || !summary.programId) {
+    const strategies = (summary?.strategies ?? []).map((strategy) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(strategy.strategyName)}</strong><span class="pill">${escapeHtml(strategy.strategyVersion)}</span></div><div class="muted">${escapeHtml(strategy.objective)}</div><div class="muted">Targets: ${escapeHtml(formatWeights(strategy.targetWeights))}</div></div>`).join("");
+    return `${action}<div class="mini-card"><strong>Strategy lab not initialized</strong><div class="muted">Run the protected lab update to create independent virtual strategy records using the same starting capital and market snapshot.</div></div><div class="asset-grid">${strategies}</div>`;
+  }
+  const cards = summary.latestValuations.map((valuation) => `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(valuation.strategyName)}</strong><span class="pill">${escapeHtml(valuation.dataQualityStatus)}</span></div>
+    ${row("Value", money(valuation.portfolioValueUsd))}
+    ${row("Return", pct(valuation.cumulativeReturn))}
+    ${row("Drawdown", pct(valuation.drawdown))}
+    ${row("Volatility", maybePct(valuation.volatility))}
+    ${row("Sharpe", formatNullableNumber(valuation.sharpeRatio))}
+    ${row("Sortino", formatNullableNumber(valuation.sortinoRatio))}
+    ${row("Win rate", maybePct(valuation.winRate))}
+    ${row("Turnover", pct(valuation.turnover))}
+    <div class="muted">Allocation: ${escapeHtml(formatWeights(valuation.allocation))}</div>
+    <div class="muted">Snapshot ${escapeHtml(valuation.marketDataSnapshotId ?? "Unavailable")} - ${escapeHtml(valuation.marketDate)}</div>
+  </div>`).join("");
+  const rankings = summary.rankings.map((ranking) => row(`#${ranking.rank} ${ranking.strategyName}`, `${maybePct(ranking.returnPct)} return - ${maybePct(ranking.drawdownPct)} drawdown - score ${ranking.score.toFixed(2)}`)).join("");
+  const monthly = summary.monthlyRankings.slice(0, 4).map((ranking) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(ranking.rankingMonth)}</strong><span class="pill">${escapeHtml(ranking.evidenceStatus)}</span></div>${ranking.rankings.slice(0, 5).map((item) => row(`#${item.rank} ${item.strategyName}`, `${maybePct(item.returnPct)} - score ${item.score.toFixed(2)}`)).join("")}</div>`).join("");
+  const outperformance = summary.outperformance.length
+    ? summary.outperformance.map((signal) => row(`${signal.strategyName} vs ${signal.comparedWith}`, `${pct(signal.excessReturnPct)} - ${signal.statisticallyMeaningful ? "Meaningful" : "Preliminary"} - ${signal.reason}`)).join("")
+    : '<div class="muted">No outperformance signal has been evaluated yet.</div>';
+  const audit = summary.auditEvents.map((event) => row(event.eventType, `${sanitizeForUser(event.message, "Audit event recorded.")} - ${formatTimestampElement(event.createdAt)}`)).join("");
+  return `${action}
+    <div class="grid">
+      ${miniMetric("Start capital", maybeMoney(summary.startingCapitalUsd))}
+      ${miniMetric("Start date", summary.startDate ?? "Unavailable")}
+      ${miniMetric("Strategies", String(summary.strategies.length))}
+      ${miniMetric("Switch recommendation", summary.recommendation.allowed ? summary.recommendation.recommendedStrategy ?? "Review" : "Blocked")}
+    </div>
+    <div class="mini-card"><strong>Switch Evidence Gate</strong><div>${escapeHtml(summary.recommendation.reason)}</div><div class="muted">Minimum ${summary.recommendation.evidenceThresholds.minimumValuationDays} valuation days - excess return ${pct(summary.recommendation.evidenceThresholds.minimumExcessReturnPct)} - Sharpe improvement ${summary.recommendation.evidenceThresholds.minimumSharpeImprovement.toFixed(2)} - drawdown penalty cap ${pct(summary.recommendation.evidenceThresholds.maximumDrawdownPenaltyPct)}</div></div>
+    <div class="grid">${cards || '<div class="mini-card"><strong>No lab valuations yet</strong><div class="muted">Run the protected lab update to record the first virtual comparison.</div></div>'}</div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Current Ranking</strong>${rankings || '<div class="muted">No rankings yet.</div>'}</div>
+      <div class="mini-card"><strong>Outperformance Signals</strong>${outperformance}</div>
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Monthly Rankings</strong>${monthly || '<div class="muted">Monthly rankings appear after the first lab run.</div>'}</div>
+      <div class="mini-card"><strong>Audit History</strong>${audit || '<div class="muted">No lab audit events yet.</div>'}</div>
+    </div>
+    ${summary.warnings.length ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml(summary.warnings.join(" "))}</div></div>` : ""}`;
+}
+
 function renderForwardTest(summary: ForwardMetricsSummary | undefined, portfolioId: string): string {
   const action = `<div class="filters"><button class="filter" type="button" data-run-forward-test="${escapeHtml(portfolioId)}">Run Forward-Test Update</button><a class="filter" href="/forward-test?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="/forward-test/monthly-report?portfolioId=${encodeURIComponent(portfolioId)}">Monthly Report</a><span class="pill">Paper simulation</span><span class="pill">No live brokerage</span></div>`;
   if (!summary || summary.programId === "forward_program_missing") {
@@ -1740,6 +1810,13 @@ function signedPct(value: number): string {
 
 function maybePct(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? pct(value) : "Unavailable";
+}
+
+function formatWeights(weights: Record<string, number>): string {
+  return Object.entries(weights)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([symbol, value]) => `${symbol} ${pct(value)}`)
+    .join(", ");
 }
 
 function round(value: number): number {
