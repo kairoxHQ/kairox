@@ -340,7 +340,7 @@ export function buildAllocationProposal(input: ProposalBuildInput): AllocationPr
     riskScore: roundRatio(0.32),
     policyCompliant,
     approvalAllowed: proposalComplete,
-    rationale: "Conservative first allocation proposal using category targets from the IRA mandate. No trades are placed by proposal generation or approval.",
+    rationale: "Conservative first allocation proposal using category targets from the account mandate. No trades are placed by proposal generation or approval.",
     warnings: [...new Set(warnings)],
     policyValidation: { compliant: policyCompliant, reasons: [...new Set(validationReasons)] },
     approvedAt: null,

@@ -44,6 +44,8 @@ test("valid conservative allocation respects IRA cash, position, and category li
   assert.equal(allocation.remainingCashUsd, 960);
   assert.equal(allocation.cashPct >= 0.1, true);
   assert.equal(allocation.lines.every((line) => line.targetAllocationPct <= 0.2), true);
+  assert.match(allocation.rationale, /account mandate/);
+  assert.doesNotMatch(allocation.rationale, /IRA/);
   assert.deepEqual(allocation.lines.map((line) => line.assetCategory), [
     "U.S. broad-market equity",
     "Dividend or low-volatility equity",
