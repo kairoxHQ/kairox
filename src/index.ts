@@ -53,6 +53,7 @@ import { DailyManagementCycleService, runScheduledDailyManagementCycles } from "
 import { BenchmarkComparisonService, runScheduledBenchmarkComparisons } from "./benchmarks/comparison.ts";
 import { PortfolioDecisionService } from "./decisions/portfolioDecision.ts";
 import { PortfolioBriefingService } from "./briefings/portfolioBriefing.ts";
+import { VerifiedMarketIntelligenceService, runScheduledMarketIntelligence } from "./intelligence/verifiedPipeline.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -124,6 +125,8 @@ export default {
       "/intelligence/today",
       "/intelligence/events",
       "/intelligence/categories",
+      "/market-intelligence",
+      "/market-intelligence/provider-health",
       "/market-story",
       "/trades",
       "/performance",
@@ -158,7 +161,7 @@ export default {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -250,6 +253,14 @@ export default {
         const type = briefingTypeFromUrl(url);
         const result = await new PortfolioBriefingService(env.DB).generate(portfolioId, { type, length: "standard", tone: "plain", regenerate: url.searchParams.get("regenerate") === "true", regenerationReason: url.searchParams.get("reason") });
         return portfolioBriefingActionResponse(request, portfolioId, result);
+      }
+
+      if (url.pathname === "/market-intelligence/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const service = new VerifiedMarketIntelligenceService(env.DB);
+        const ingestion = await service.ingest(portfolioId, "manual");
+        const summary = await service.createPortfolioSummary(portfolioId);
+        return marketIntelligenceActionResponse(request, portfolioId, { ingestion, summary });
       }
 
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
@@ -418,6 +429,16 @@ export default {
 
       if (url.pathname === "/intelligence/events") {
         return json(await getIntelligenceEvents(env.DB));
+      }
+
+      if (url.pathname === "/market-intelligence") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const service = new VerifiedMarketIntelligenceService(env.DB);
+        return json({ portfolioId, links: await service.listPortfolioIntelligence(portfolioId), summary: await service.latestSummary(portfolioId) });
+      }
+
+      if (url.pathname === "/market-intelligence/provider-health") {
+        return json({ providers: await new VerifiedMarketIntelligenceService(env.DB).providerHealth() });
       }
 
       if (url.pathname === "/intelligence/categories") {
@@ -784,7 +805,8 @@ export default {
       runScheduledDailyReviews(env, scheduledAt),
       runScheduledDailyManagementCycles(env, scheduledAt),
       runScheduledForwardTests(env, scheduledAt),
-      runScheduledBenchmarkComparisons(env, scheduledAt)
+      runScheduledBenchmarkComparisons(env, scheduledAt),
+      runScheduledMarketIntelligence(env, scheduledAt)
     ]));
   }
 } satisfies ExportedHandler<Env>;
@@ -929,6 +951,17 @@ function portfolioBriefingActionResponse(request: Request, portfolioId: string, 
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#portfolio-briefing` }
+    });
+  }
+  return json(payload);
+}
+
+function marketIntelligenceActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#market-intelligence` }
     });
   }
   return json(payload);

@@ -22,9 +22,10 @@ import { DailyManagementCycleService, type DailyManagementCycle } from "../manag
 import { BenchmarkComparisonService, type BenchmarkComparisonSummary } from "../benchmarks/comparison.ts";
 import { PortfolioDecisionService, type PortfolioDecision } from "../decisions/portfolioDecision.ts";
 import { PortfolioBriefingService, type PortfolioBriefing } from "../briefings/portfolioBriefing.ts";
+import { VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink, type PortfolioIntelligenceSummary } from "../intelligence/verifiedPipeline.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -147,6 +148,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       ),
       getProfileComparison(db),
       getIntelligenceOverview(db),
+      getVerifiedIntelligenceDashboard(db, portfolioId),
       getMarketTickerQuotes(db),
       getAllProfileHoldingQuotes(db),
       listPortfolioProfiles(db),
@@ -216,6 +218,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     ,
     profileComparison,
     intelligence,
+    verifiedIntelligence,
     marketTicker,
     profileHoldingQuotes
   };
@@ -287,6 +290,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     opportunities: Array<DashboardOpportunity>;
     profileComparison: DashboardComparison;
     intelligence: DashboardIntelligence;
+    verifiedIntelligence: DashboardVerifiedIntelligence;
     marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
     profileHoldingQuotes?: { profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>; generatedAt: string };
   };
@@ -342,6 +346,7 @@ export function renderDashboardHtml(data: {
   opportunities?: Array<DashboardOpportunity>;
   profileComparison?: DashboardComparison;
   intelligence?: DashboardIntelligence;
+  verifiedIntelligence?: DashboardVerifiedIntelligence;
   marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
   profileHoldingQuotes?: { profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>; generatedAt: string };
 }): string {
@@ -455,7 +460,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -469,6 +474,7 @@ export function renderDashboardHtml(data: {
     ${section("daily-management", "Daily Management", renderDailyManagement(data.dailyManagementCycles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("portfolio-decision", "Portfolio Decision", renderPortfolioDecision(data.portfolioDecisions ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("portfolio-briefing", "Daily Briefing", renderPortfolioBriefing(data.portfolioBriefings ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("market-intelligence", "Verified Market Intelligence", renderVerifiedIntelligence(data.verifiedIntelligence, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("benchmark-comparison", "Performance Comparison", renderBenchmarkComparison(data.benchmarkComparison, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
@@ -780,6 +786,25 @@ export function renderDashboardHtml(data: {
           location.reload();
         });
       });
+      document.querySelectorAll("[data-run-market-intelligence]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-market-intelligence") || "portfolio_ira";
+          const confirmed = confirm("Refresh verified market intelligence? This stores factual context only; it will not create recommendations, proposals, orders, trades, fills, positions, or cash movements.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected intelligence refresh.");
+          if (!secret) return;
+          const response = await fetch("/market-intelligence/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Market intelligence refresh failed." }));
+            alert(payload.message || payload.error || "Market intelligence refresh failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
       document.querySelectorAll("[data-benchmark-toggle]").forEach((input) => {
         input.addEventListener("change", () => {
           const key = input.getAttribute("data-benchmark-toggle");
@@ -927,6 +952,12 @@ interface DashboardIntelligence {
     sampleData: boolean;
     summary: string;
   }>;
+}
+
+interface DashboardVerifiedIntelligence {
+  links: PortfolioIntelligenceLink[];
+  summary: PortfolioIntelligenceSummary | null;
+  providerHealth: unknown[];
 }
 
 function metric(label: string, value: string): string {
@@ -1659,6 +1690,16 @@ function marketStatusRow(status: { symbol: string; source: string; fetchedAt: st
   return `<div class="row"><span>${escapeHtml(status.symbol)}</span><span>${badge(label, statusClass(label))} ${escapeHtml(statusMessage(label, status.userMessage))}<br><span class="muted">${escapeHtml(status.source)} - ${formatTimestampElement(status.fetchedAt, label === "Cached" ? "cached" : "updated")}</span></span></div>`;
 }
 
+async function getVerifiedIntelligenceDashboard(db: D1Database, portfolioId: string): Promise<DashboardVerifiedIntelligence> {
+  const service = new VerifiedMarketIntelligenceService(db);
+  const [links, summary, providerHealth] = await Promise.all([
+    service.listPortfolioIntelligence(portfolioId),
+    service.latestSummary(portfolioId),
+    service.providerHealth()
+  ]);
+  return { links, summary, providerHealth };
+}
+
 function statusLabel(status?: { isFresh: boolean; status: string; userMessage: string }): "Fresh" | "Cached" | "Stale" | "Unavailable" {
   if (!status) {
     return "Unavailable";
@@ -1873,6 +1914,33 @@ function renderIntelligence(intelligence?: DashboardIntelligence): string {
     </div>
     <div class="asset-grid">${intelligence.recentEvents.slice(0, 6).map(intelligenceCard).join("")}</div>
   </div>`;
+}
+
+function renderVerifiedIntelligence(intelligence: DashboardVerifiedIntelligence | undefined, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-market-intelligence="${escapeHtml(portfolioId)}">Run Intelligence Refresh</button><a class="filter" href="/market-intelligence?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="/market-intelligence/provider-health">Provider health</a><span class="pill">Facts only</span><span class="pill">No recommendations</span><span class="pill">No trades</span></div>`;
+  if (!intelligence || intelligence.links.length === 0) {
+    return `${action}<span class="pill">No verified portfolio-relevant intelligence stored yet</span>`;
+  }
+  const filters = ["Holdings", "Dividends", "Corporate actions", "Earnings", "Economic events", "Market-wide events", "Alerts"].map((label) => `<span class="pill">${escapeHtml(label)}</span>`).join("");
+  const summary = intelligence.summary
+    ? `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(intelligence.summary.verificationQuality)}</strong><span class="pill">${formatTimestampElement(intelligence.summary.intelligenceTimestamp)}</span></div><div class="muted">Affected holdings: ${escapeHtml(intelligence.summary.holdingsAffected.join(", ") || "None")}</div><div class="muted">Upcoming: ${escapeHtml(intelligence.summary.upcomingEvents.join(" | ") || "None verified")}</div><div class="muted">Gaps: ${escapeHtml(intelligence.summary.dataGaps.join(" | ") || "None")}</div></div>`
+    : `<div class="mini-card"><strong>Portfolio summary</strong><div class="muted">No portfolio intelligence summary has been created yet.</div></div>`;
+  const cards = intelligence.links.slice(0, 8).map((link) => {
+    const record = link.record;
+    return `<div class="mini-card">
+      <div class="mini-head"><strong>${escapeHtml(record.headline)}</strong><span class="pill">${escapeHtml(record.verificationStatus)}</span></div>
+      <div class="muted">${escapeHtml(record.eventType)} · ${escapeHtml(link.alertSeverity)} · materiality ${(record.materialityScore * 100).toFixed(0)}%</div>
+      <div>${escapeHtml(sanitizeForUser(record.verifiedSummary, "Verified summary unavailable."))}</div>
+      <div class="muted">Related: ${escapeHtml(link.relatedHoldings.join(", ") || record.relatedSymbols.join(", ") || "Portfolio context")} · Relevance ${escapeHtml(link.relevanceClassification)}</div>
+      <div class="muted">Attribution: ${escapeHtml(record.attribution.status)} · ${escapeHtml(record.attribution.explanation)}</div>
+      <div class="muted">Event ${escapeHtml(record.eventDate)} · Source ${record.sourceTimestamp ? formatTimestampElement(record.sourceTimestamp) : "Timestamp unavailable"}</div>
+    </div>`;
+  }).join("");
+  const health = intelligence.providerHealth.slice(0, 4).map((provider) => {
+    const row = provider as { provider_name?: string; providerName?: string; outage_status?: string; outageStatus?: string; data_freshness?: string; dataFreshness?: string; last_success_at?: string; lastSuccessAt?: string };
+    return `<div class="row"><span>${escapeHtml(row.provider_name ?? row.providerName ?? "Provider")}</span><span>${escapeHtml(row.outage_status ?? row.outageStatus ?? "unknown")} · ${escapeHtml(row.data_freshness ?? row.dataFreshness ?? "unknown")} · ${formatTimestampElement(row.last_success_at ?? row.lastSuccessAt ?? undefined)}</span></div>`;
+  }).join("");
+  return `${action}<div class="filters">${filters}</div>${summary}<div class="asset-grid">${cards}</div><div class="mini-card"><strong>Provider health</strong>${health || '<div class="muted">Provider health unavailable.</div>'}</div>`;
 }
 
 function intelligenceCard(event: DashboardIntelligence["recentEvents"][number]): string {

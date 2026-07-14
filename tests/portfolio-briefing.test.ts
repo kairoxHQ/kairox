@@ -154,6 +154,7 @@ function facts(overrides: Partial<PortfolioBriefingFacts> & { recommendation?: s
     dataLimitations: ["Position-level daily attribution is unavailable."],
     unavailableFacts: ["Position-level daily attribution is unavailable."],
     approvedComparisonStatements: ["Comparison period is short."],
+    verifiedIntelligenceFacts: [],
     disclosure: "This is a Kairox IRA paper simulation, not live brokerage activity or financial advice. No brokerage order was placed by this briefing.",
     ...overrides
   };

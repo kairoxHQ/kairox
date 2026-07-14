@@ -5,6 +5,7 @@ import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investme
 import { getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
+import { canUseAsBriefingFact, VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink } from "../intelligence/verifiedPipeline.ts";
 
 export type BriefingType = "daily_close" | "weekly_summary" | "monthly_report" | "risk_alert" | "rebalance_explanation" | "hold_explanation" | "data_unavailable" | "public_progress";
 export type BriefingLength = "compact" | "standard" | "detailed";
@@ -56,6 +57,7 @@ export interface PortfolioBriefingFacts {
   dataLimitations: string[];
   unavailableFacts: string[];
   approvedComparisonStatements: string[];
+  verifiedIntelligenceFacts: Array<{ headline: string; summary: string; symbols: string[]; verificationStatus: string; attributionStatus: string }>;
   disclosure: string;
 }
 
@@ -255,13 +257,14 @@ export class PortfolioBriefingService {
   }
 
   private async buildFacts(portfolioId: string, type: BriefingType, now: Date): Promise<PortfolioBriefingFacts> {
-    const [decision, cycle, valuation, positions, policy, benchmarkSummary] = await Promise.all([
+    const [decision, cycle, valuation, positions, policy, benchmarkSummary, intelligenceLinks] = await Promise.all([
       new PortfolioDecisionService(this.db).latest(portfolioId),
       this.latestCycle(portfolioId),
       getPortfolioValuation(this.db, portfolioId, now),
       this.positions(portfolioId),
       getInvestmentPolicy(this.db, portfolioId),
-      new BenchmarkComparisonService(this.db).summary(portfolioId)
+      new BenchmarkComparisonService(this.db).summary(portfolioId),
+      new VerifiedMarketIntelligenceService(this.db).listPortfolioIntelligence(portfolioId, 8).catch(() => [] as PortfolioIntelligenceLink[])
     ]);
     if (!decision) {
       throw new Error("No portfolio decision is available for briefing generation.");
@@ -272,8 +275,19 @@ export class PortfolioBriefingService {
     const policyFindings = cycle ? parseJson<string[]>(cycle.policyFindingsJson, []) : decision.policyCompliance.reasons;
     const riskFindings = cycle ? parseJson<string[]>(cycle.riskFindingsJson, []) : decision.triggeredRules;
     const benchmark = benchmarkContext(benchmarkSummary);
+    const verifiedIntelligenceFacts = intelligenceLinks
+      .filter((link) => canUseAsBriefingFact(link.record))
+      .slice(0, 4)
+      .map((link) => ({
+        headline: link.record.headline,
+        summary: link.record.verifiedSummary,
+        symbols: link.relatedHoldings.length ? link.relatedHoldings : link.record.relatedSymbols,
+        verificationStatus: link.record.verificationStatus,
+        attributionStatus: link.record.attribution.status
+      }));
     const unavailableFacts = [
       "Position-level daily attribution is unavailable until per-position daily contribution snapshots are stored.",
+      verifiedIntelligenceFacts.length === 0 ? "No primary-source or multi-source verified market-intelligence fact is available for attribution." : null,
       benchmarkSummary.history.length === 0 ? "Benchmark daily valuation history is not available yet." : null
     ].filter((item): item is string => Boolean(item));
     return {
@@ -316,6 +330,7 @@ export class PortfolioBriefingService {
       dataLimitations: unavailableFacts,
       unavailableFacts,
       approvedComparisonStatements: [benchmark.summary],
+      verifiedIntelligenceFacts,
       disclosure: PAPER_DISCLOSURE
     };
   }
@@ -454,10 +469,14 @@ export class DeterministicBriefingNarrativeProvider implements BriefingNarrative
     const attribution = facts.largestPositiveContributor || facts.largestNegativeContributor
       ? `${facts.largestPositiveContributor ?? "No positive contributor"} helped most, while ${facts.largestNegativeContributor ?? "no negative contributor"} was weakest.`
       : "The portfolio moved primarily because of price changes in the listed holdings. Kairox does not yet have enough verified information to attribute the move to a specific event.";
+    const verifiedIntelligence = facts.verifiedIntelligenceFacts.length
+      ? `Verified market context: ${facts.verifiedIntelligenceFacts.map((item) => `${item.headline} (${item.verificationStatus}; attribution ${item.attributionStatus})`).join(" ")}`
+      : "Verified market context: no primary-source or multi-source verified event is available to explain the portfolio move.";
     const compact = `${facts.publicAccountName} closed at ${money(facts.portfolioValueUsd)}, ${movement} today (${pct(facts.dailyChangePct)}), with ${money(facts.cashUsd)} in cash. Kairox recommendation remains ${facts.recommendation}; ${facts.decisionSummary} ${facts.disclosure}`;
     const paragraphs = [
       `${facts.publicAccountName} closed at ${money(facts.portfolioValueUsd)}, ${movement} today (${pct(facts.dailyChangePct)}). Return since the paper simulation began is ${money(facts.returnSinceStartUsd)} (${pct(facts.returnSinceStartPct)}), with ${money(facts.cashUsd)} in cash.`,
       attribution,
+      verifiedIntelligence,
       `Policy status: ${facts.policyStatus}. Current drawdown is ${pct(facts.currentDrawdownPct)}, and the maximum recorded drawdown is ${pct(facts.maximumDrawdownPct)}.`,
       `Kairox recommendation: ${facts.recommendation}. ${facts.decisionSummary}`,
       `Benchmark context: ${facts.benchmarkContext.summary}`,
@@ -495,10 +514,11 @@ export function validateBriefingNarrative(facts: PortfolioBriefingFacts, narrati
   if (!text.includes(facts.disclosure) || !/paper simulation/i.test(text)) errors.push("Paper-simulation disclosure is missing.");
   if (/(guarantee|guaranteed|will outperform|proven superiority|fiduciary|advisor)/i.test(text)) errors.push("Prohibited performance or advisory claim detected.");
   if (/(buy|sell|execute|order|trade)\s+(VTI|SCHD|BND|SPY|BTC)/i.test(text) && !/recommendation:\s*(Rebalance|Deploy excess cash|Increase cash|Add to existing position|Reduce existing position)/i.test(text)) errors.push("Unsupported actionable trade language detected.");
+  const allowedAcronyms = new Set(["ETF", "SEC", "CPI", "PCE", "GDP", "NYSE", "BLS", "BEA", "FOMC"]);
   for (const match of text.matchAll(/\b[A-Z]{2,5}(?:-[A-Z]{3})?\b/g)) {
     const symbol = match[0];
     const allowed = new Set([...facts.positions.map((position) => position.symbol), "IRA", "Kairox".toUpperCase(), "USD"]);
-    if (!allowed.has(symbol) && !["VTI", "BND", "SCHD", "SPY", "CD"].includes(symbol)) {
+    if (!allowed.has(symbol) && !allowedAcronyms.has(symbol) && !["VTI", "BND", "SCHD", "SPY", "CD"].includes(symbol)) {
       errors.push(`Unsupported symbol ${symbol} referenced.`);
       break;
     }
