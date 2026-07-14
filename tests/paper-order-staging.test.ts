@@ -11,6 +11,7 @@ const migration = [
   readFileSync("migrations/0024_backfill_paper_order_staging_metadata.sql", "utf8")
 ].join("\n");
 const serviceSource = readFileSync("src/orders/staging.ts", "utf8");
+const dashboardSource = readFileSync("src/dashboard/service.ts", "utf8");
 
 const policy: InvestmentPolicy = {
   id: "policy_portfolio_ira_conservative_retirement",
@@ -167,6 +168,7 @@ test("batch rejection, cancellation, and ready-to-execute are status-only action
   assert.match(serviceSource, /SET status = 'Cancelled'/);
   assert.match(serviceSource, /"Ready to Execute"/);
   assert.match(serviceSource, /batch_marked_ready_to_execute/);
+  assert.match(dashboardSource, /batch\.status === "Pending Review" && batch\.validationStatus === "passed"/);
 });
 
 test("staging does not mutate cash, positions, execution orders, or trades", () => {

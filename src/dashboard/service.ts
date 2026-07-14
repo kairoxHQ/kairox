@@ -1169,8 +1169,9 @@ function renderPaperOrderBatch(
     ...batch.validationReport.warnings,
     ...(batch.validationReport.reasons.length ? batch.validationReport.reasons : [])
   ];
+  const canMarkReady = batch.status === "Pending Review" && batch.validationStatus === "passed";
   return `<div class="filters">
-      <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/ready"><button class="filter" type="submit" ${batch.validationStatus === "passed" ? "" : "disabled"}>Mark Ready to Execute</button></form>
+      <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/ready"><button class="filter" type="submit" ${canMarkReady ? "" : "disabled"}>Mark Ready to Execute</button></form>
       <button class="filter" type="button" data-execute-paper-batch="${escapeHtml(batch.id)}" data-estimated-cost="${escapeHtml(money(batch.totalEstimatedPurchaseUsd))}" data-remaining-cash="${escapeHtml(money(batch.estimatedRemainingCashUsd))}" ${batch.status === "Ready to Execute" ? "" : "disabled"}>Execute Paper Orders</button>
       <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/reject"><button class="filter" type="submit">Reject order batch</button></form>
       <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/cancel"><button class="filter" type="submit">Cancel order batch</button></form>
