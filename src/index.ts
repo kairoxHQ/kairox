@@ -48,6 +48,7 @@ import { DailyPortfolioReviewService, listDailyReviews, runScheduledDailyReviews
 import { RecommendationProposalService } from "./recommendations/proposalService.ts";
 import { MarketDataService } from "./market/service.ts";
 import { StrategyEngine } from "./strategy/engine.ts";
+import { ForwardTestService, runScheduledForwardTests } from "./forward/forwardTest.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -138,14 +139,16 @@ export default {
       "/settings",
       "/daily-reviews",
       "/recommendation-proposals",
-      "/strategy-runs"
+      "/strategy-runs",
+      "/forward-test",
+      "/forward-test/monthly-report"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -202,6 +205,17 @@ export default {
         }
         const run = await new StrategyEngine(env.DB).run(portfolioId, { snapshotId });
         return strategyActionResponse(request, portfolioId, run);
+      }
+
+      if (url.pathname === "/forward-test/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const result = await new ForwardTestService(env.DB).run(portfolioId, "manual");
+        return forwardTestActionResponse(request, portfolioId, result);
+      }
+
+      if (url.pathname === "/forward-test/monthly-report/create") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new ForwardTestService(env.DB).monthlyReport(portfolioId, url.searchParams.get("month") ?? undefined, url.searchParams.get("reason")));
       }
 
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
@@ -596,6 +610,16 @@ export default {
         return json({ runs: await engine.list(portfolioId), latest: await engine.latest(portfolioId) });
       }
 
+      if (url.pathname === "/forward-test") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new ForwardTestService(env.DB).summary(portfolioId));
+      }
+
+      if (url.pathname === "/forward-test/monthly-report") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new ForwardTestService(env.DB).monthlyReportPreview(portfolioId, url.searchParams.get("month") ?? undefined));
+      }
+
       if (url.pathname === "/summaries") {
         return json(await getSummaries(env.DB));
       }
@@ -642,7 +666,8 @@ export default {
     const scheduledAt = new Date(controller.scheduledTime).toISOString();
     ctx.waitUntil(Promise.all([
       runScheduledPaperStrategy(env, controller.cron, scheduledAt),
-      runScheduledDailyReviews(env, scheduledAt)
+      runScheduledDailyReviews(env, scheduledAt),
+      runScheduledForwardTests(env, scheduledAt)
     ]));
   }
 } satisfies ExportedHandler<Env>;
@@ -732,6 +757,17 @@ function strategyActionResponse(request: Request, portfolioId: string, payload: 
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#strategy-analysis` }
+    });
+  }
+  return json(payload);
+}
+
+function forwardTestActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#forward-test` }
     });
   }
   return json(payload);

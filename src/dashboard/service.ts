@@ -17,9 +17,10 @@ import { getPaperExecutionByBatchId, type PaperExecutionRecord } from "../orders
 import { listDailyReviews, type DailyPortfolioReview } from "../reviews/dailyReview.ts";
 import { RecommendationProposalService, type RecommendationProposal } from "../recommendations/proposalService.ts";
 import { StrategyEngine, type StrategyRun } from "../strategy/engine.ts";
+import { ForwardTestService, type ForwardMetricsSummary } from "../forward/forwardTest.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -148,7 +149,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getInvestmentPolicy(db, portfolioId),
       getLatestAllocationProposal(db, portfolioId),
       getLatestPaperOrderBatch(db, portfolioId),
-      new StrategyEngine(db).latest(portfolioId)
+      new StrategyEngine(db).latest(portfolioId),
+      new ForwardTestService(db).summary(portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -168,6 +170,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     dailyReviews,
     recommendationProposals,
     strategyRun,
+    forwardTest,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -240,6 +243,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     dailyReviews: DailyPortfolioReview[];
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
+    forwardTest: ForwardMetricsSummary;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -290,6 +294,7 @@ export function renderDashboardHtml(data: {
   dailyReviews?: DailyPortfolioReview[];
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
+  forwardTest?: ForwardMetricsSummary;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -427,7 +432,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#strategy-analysis">Strategy</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -439,6 +444,7 @@ export function renderDashboardHtml(data: {
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -626,6 +632,25 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Strategy analysis failed." }));
             alert(payload.message || payload.error || "Strategy analysis failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-forward-test]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-forward-test") || "portfolio_ira";
+          const confirmed = confirm("Run a protected forward-test update? This records comparison valuations and decision evaluation only; it will not create proposals, orders, trades, fills, or cash changes.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected forward-test update.");
+          if (!secret) return;
+          const response = await fetch("/forward-test/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Forward-test update failed." }));
+            alert(payload.message || payload.error || "Forward-test update failed.");
             return;
           }
           location.reload();
@@ -922,6 +947,66 @@ function strategyDecisionCard(decision: StrategyRun["finalDecisions"][number]): 
   </div>`;
 }
 
+function renderForwardTest(summary: ForwardMetricsSummary | undefined, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-forward-test="${escapeHtml(portfolioId)}">Run Forward-Test Update</button><a class="filter" href="/forward-test?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="/forward-test/monthly-report?portfolioId=${encodeURIComponent(portfolioId)}">Monthly Report</a><span class="pill">Paper simulation</span><span class="pill">No live brokerage</span></div>`;
+  if (!summary || summary.programId === "forward_program_missing") {
+    return `${action}<span class="pill">Forward test not initialized yet</span>`;
+  }
+  const managed = summary.portfolios.kairox_managed;
+  const cash = summary.portfolios.cash_baseline;
+  const buyHold = summary.portfolios.initial_allocation_buy_hold;
+  const sp500 = summary.portfolios.sp500_benchmark;
+  const balanced = summary.portfolios.conservative_balanced_benchmark;
+  return `${action}
+    <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(summary.evidenceStage.stage)}</strong><span class="pill">${escapeHtml(summary.evidenceStage.confidenceLabel)}</span></div><div class="muted">${escapeHtml(summary.evidenceStage.description)}</div></div>
+    <div class="grid">
+      ${miniMetric("Days tested", String(summary.evidenceStage.daysTested))}
+      ${miniMetric("Kairox value", maybeMoney(managed?.latestValueUsd))}
+      ${miniMetric("Cash baseline", maybeMoney(cash?.latestValueUsd))}
+      ${miniMetric("Buy-and-hold", maybeMoney(buyHold?.latestValueUsd))}
+      ${miniMetric("S&P 500", maybeMoney(sp500?.latestValueUsd))}
+      ${miniMetric("Conservative benchmark", maybeMoney(balanced?.latestValueUsd))}
+      ${miniMetric("Since inception", maybePct(managed?.sinceInceptionReturn))}
+      ${miniMetric("Max drawdown", maybePct(managed?.maximumDrawdown))}
+      ${miniMetric("Excess vs cash", maybePct(cash?.excessReturnVsKairox))}
+      ${miniMetric("Volatility", maybePct(managed?.volatility))}
+      ${miniMetric("Strategy decisions", String(summary.decisionQuality.strategyVersions.reduce((sum, item) => sum + item.completedDecisions, 0)))}
+      ${miniMetric("Executed trades", String(summary.decisionQuality.strategyVersions.reduce((sum, item) => sum + item.executedDecisions, 0)))}
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Comparison values</strong>
+        ${forwardMetricRow("Kairox Managed Simulation", managed)}
+        ${forwardMetricRow("Initial Allocation Buy-and-Hold", buyHold)}
+        ${forwardMetricRow("Cash Baseline", cash)}
+        ${forwardMetricRow("S&P 500 Benchmark", sp500)}
+        ${forwardMetricRow("Conservative Balanced Benchmark", balanced)}
+      </div>
+      <div class="mini-card"><strong>Decision Quality</strong>${renderDecisionQuality(summary)}</div>
+    </div>
+    <div class="mini-card"><strong>Explain Results</strong><div>${escapeHtml(summary.explanation)}</div>${summary.unavailableMetrics.length ? `<div class="muted">Unavailable: ${escapeHtml(summary.unavailableMetrics.join(" "))}</div>` : ""}</div>
+    <div class="mini-card"><strong>Operational Reliability</strong>
+      ${row("Daily reviews completed", String(summary.operationalReliability.dailyReviewsCompleted))}
+      ${row("Reviews skipped", String(summary.operationalReliability.dailyReviewsSkipped))}
+      ${row("Market-data failures", String(summary.operationalReliability.marketDataFailures))}
+      ${row("Stale-data blocks", String(summary.operationalReliability.staleDataBlocks))}
+      ${row("Duplicate actions prevented", String(summary.operationalReliability.duplicateActionsPrevented))}
+    </div>`;
+}
+
+function forwardMetricRow(label: string, metrics?: ForwardMetricsSummary["portfolios"][string]): string {
+  if (!metrics) return row(label, "Unavailable");
+  return row(label, `${maybeMoney(metrics.latestValueUsd)} | return ${maybePct(metrics.sinceInceptionReturn)} | drawdown ${maybePct(metrics.maximumDrawdown)}`);
+}
+
+function renderDecisionQuality(summary: ForwardMetricsSummary): string {
+  const recent = summary.decisionQuality.recentMatured.length
+    ? summary.decisionQuality.recentMatured.slice(0, 5).map((item) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(item.symbol)} ${escapeHtml(item.recommendedAction)}</strong><span class="pill">${escapeHtml(item.outcomeClassification)}</span></div><div class="muted">Horizon ${escapeHtml(String(item.horizonDays))} days | excess ${maybePct(item.excessReturn)}</div></div>`).join("")
+    : '<span class="pill">No matured recommendation windows yet</span>';
+  const confidence = summary.decisionQuality.confidenceCalibration.map((bucket) => row(`Confidence ${bucket.bucket}`, `${bucket.count} decisions | hit rate ${maybePct(bucket.hitRate)}`)).join("");
+  const score = summary.decisionQuality.scoreCalibration.map((bucket) => row(`Score ${bucket.bucket}`, `${bucket.count} decisions | hit rate ${maybePct(bucket.hitRate)}`)).join("");
+  return `<div class="card-list">${recent}</div><div class="mini-card"><strong>Confidence calibration</strong>${confidence}</div><div class="mini-card"><strong>Score calibration</strong>${score}</div>`;
+}
+
 function renderRecommendationProposal(proposal: RecommendationProposal | null): string {
   if (!proposal) {
     return `<div class="mini-card"><strong>Review Proposal</strong><div class="muted">No draft proposal has been created from this daily review.</div></div>`;
@@ -1173,8 +1258,16 @@ function signedMoney(value: number): string {
   return `${prefix}${money(value)}`;
 }
 
+function maybeMoney(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? money(value) : "Unavailable";
+}
+
 function pct(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function maybePct(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? pct(value) : "Unavailable";
 }
 
 function round(value: number): number {
