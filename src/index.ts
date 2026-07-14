@@ -52,6 +52,7 @@ import { ForwardTestService, runScheduledForwardTests } from "./forward/forwardT
 import { DailyManagementCycleService, runScheduledDailyManagementCycles } from "./management/dailyCycle.ts";
 import { BenchmarkComparisonService, runScheduledBenchmarkComparisons } from "./benchmarks/comparison.ts";
 import { PortfolioDecisionService } from "./decisions/portfolioDecision.ts";
+import { PortfolioBriefingService } from "./briefings/portfolioBriefing.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -148,14 +149,16 @@ export default {
       "/benchmark-comparison",
       "/benchmark-comparison/monthly-report",
       "/benchmark-comparison/history.csv",
-      "/portfolio-decisions"
+      "/portfolio-decisions",
+      "/portfolio-briefings",
+      "/portfolio-briefings/public-summary"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -240,6 +243,13 @@ export default {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         const result = await new PortfolioDecisionService(env.DB).evaluate(portfolioId);
         return portfolioDecisionActionResponse(request, portfolioId, result);
+      }
+
+      if (url.pathname === "/portfolio-briefings/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const type = briefingTypeFromUrl(url);
+        const result = await new PortfolioBriefingService(env.DB).generate(portfolioId, { type, length: "standard", tone: "plain", regenerate: url.searchParams.get("regenerate") === "true", regenerationReason: url.searchParams.get("reason") });
+        return portfolioBriefingActionResponse(request, portfolioId, result);
       }
 
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
@@ -714,6 +724,17 @@ export default {
         return json({ latest: await service.latest(portfolioId), decisions: await service.list(portfolioId) });
       }
 
+      if (url.pathname === "/portfolio-briefings") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const service = new PortfolioBriefingService(env.DB);
+        return json({ latest: await service.latest(portfolioId), briefings: await service.list(portfolioId) });
+      }
+
+      if (url.pathname === "/portfolio-briefings/public-summary") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new PortfolioBriefingService(env.DB).publicSummary(portfolioId));
+      }
+
       if (url.pathname === "/summaries") {
         return json(await getSummaries(env.DB));
       }
@@ -900,6 +921,26 @@ function portfolioDecisionActionResponse(request: Request, portfolioId: string, 
     });
   }
   return json(payload);
+}
+
+function portfolioBriefingActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#portfolio-briefing` }
+    });
+  }
+  return json(payload);
+}
+
+function briefingTypeFromUrl(url: URL) {
+  const value = url.searchParams.get("type") ?? "daily_close";
+  const allowed = new Set(["daily_close", "weekly_summary", "monthly_report", "risk_alert", "rebalance_explanation", "hold_explanation", "data_unavailable", "public_progress"]);
+  if (!allowed.has(value)) {
+    throw new RequestError(400, "Invalid briefing type.");
+  }
+  return value as "daily_close" | "weekly_summary" | "monthly_report" | "risk_alert" | "rebalance_explanation" | "hold_explanation" | "data_unavailable" | "public_progress";
 }
 
 async function approveProposalOrConflict(db: D1Database, proposalId: string) {

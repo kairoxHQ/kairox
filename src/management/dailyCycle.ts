@@ -7,6 +7,7 @@ import { accountDate, getPortfolioValuation, type PortfolioValuation } from "../
 import { RecommendationProposalService } from "../recommendations/proposalService.ts";
 import { DailyPortfolioReviewService, getDailyReview, shouldRunScheduledDailyReview, type DailyPortfolioReview } from "../reviews/dailyReview.ts";
 import { PortfolioDecisionService } from "../decisions/portfolioDecision.ts";
+import { PortfolioBriefingService } from "../briefings/portfolioBriefing.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { addMoney, roundRatio } from "../shared/money.ts";
 import type { AssetClass, Env } from "../shared/types.ts";
@@ -294,7 +295,8 @@ export class DailyManagementCycleService {
       });
 
       await this.persistCycle(cycle, options.refresh === true);
-      await new PortfolioDecisionService(this.db).evaluateCycle(cycle.id, now);
+      const decisionResult = await new PortfolioDecisionService(this.db).evaluateCycle(cycle.id, now);
+      await new PortfolioBriefingService(this.db).generate(cycle.portfolioId, { type: decisionResult.decision.primaryRecommendation === "Risk intervention" ? "risk_alert" : "daily_close", now });
       await this.recordMeaningfulJourney(cycle, policy);
       await this.recordEvent(cycle.id, portfolioId, cycleDate, "cycle_completed", "Daily paper management cycle completed.", { outcome: cycle.outcome, createdProposalId }, now);
       return { cycle, skipped: false, idempotent: false, reason: null };
