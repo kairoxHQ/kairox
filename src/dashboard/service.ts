@@ -27,9 +27,10 @@ import { VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink, type
 import { DailyPortfolioOrchestrator, type DailyOrchestrationRun } from "../orchestration/dailyPortfolioOrchestrator.ts";
 import { StrategyEvaluationLabService, type StrategyLabSummary } from "../lab/strategyEvaluationLab.ts";
 import { PortfolioResearchEngine, type ResearchCenterSummary, type SecurityResearchProfile } from "../research/engine.ts";
+import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from "../events/eventBus.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, researchCenter, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration] =
+  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, researchCenter, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration, eventTimeline, eventObservability] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -156,7 +157,9 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       new BenchmarkComparisonService(db).summary(portfolioId),
       new PortfolioDecisionService(db).list(portfolioId),
       new PortfolioBriefingService(db).list(portfolioId),
-      new DailyPortfolioOrchestrator(db).latest(portfolioId)
+      new DailyPortfolioOrchestrator(db).latest(portfolioId),
+      new EventBus(db).timeline(portfolioId, 24),
+      new EventBus(db).observability()
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -187,6 +190,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     portfolioDecisions,
     portfolioBriefings,
     dailyOrchestration,
+    eventTimeline,
+    eventObservability,
     recommendationProposals,
     strategyRun,
     strategyLab,
@@ -268,6 +273,8 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     portfolioDecisions: PortfolioDecision[];
     portfolioBriefings: PortfolioBriefing[];
     dailyOrchestration: DailyOrchestrationRun | null;
+    eventTimeline: EventTimelineItem[];
+    eventObservability: EventObservabilitySummary[];
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     strategyLab: StrategyLabSummary;
@@ -327,6 +334,8 @@ export function renderDashboardHtml(data: {
   portfolioDecisions?: PortfolioDecision[];
   portfolioBriefings?: PortfolioBriefing[];
   dailyOrchestration?: DailyOrchestrationRun | null;
+  eventTimeline?: EventTimelineItem[];
+  eventObservability?: EventObservabilitySummary[];
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   strategyLab?: StrategyLabSummary;
@@ -474,7 +483,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#research-center">Research</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#research-center">Research</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#event-timeline">Events</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -483,6 +492,7 @@ export function renderDashboardHtml(data: {
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     ${section("portfolio-operations", "Portfolio Operations", renderPortfolioOperations(data.dailyOrchestration ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("event-timeline", "Event Timeline", renderEventTimeline(data.eventTimeline ?? [], data.eventObservability ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
@@ -1715,6 +1725,28 @@ function renderPortfolioOperations(run: DailyOrchestrationRun | null, portfolioI
       </div>
     </div>
     ${warnings.length ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml([...new Set(warnings)].join(" "))}</div></div>` : `<span class="pill">Reconciliation passed</span>`}`;
+}
+
+function renderEventTimeline(events: EventTimelineItem[], observability: EventObservabilitySummary[], portfolioId: string): string {
+  const action = `<div class="filters"><a class="filter" href="/events?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="/events/observability">Observability</a><a class="filter" href="/events/dead-letters">Dead letters</a><span class="pill">Immutable history</span><span class="pill">Replay supported</span><span class="pill">No trading side effects</span></div>`;
+  const summary = observability.length
+    ? `<div class="grid">${observability.slice(0, 4).map((item) => miniMetric(item.eventType, `${item.publishedCount} published / ${item.deadLetterCount} dead`)).join("")}</div>`
+    : `<div class="mini-card"><strong>Event observability</strong><div class="muted">No domain events have been published yet.</div></div>`;
+  if (events.length === 0) {
+    return `${action}${summary}<div class="mini-card"><strong>Recent events</strong><div class="muted">The event timeline will populate as portfolio valuation, daily management, decisions, briefings, research, strategy lab, benchmarks, journey events, and market intelligence publish domain events.</div></div>`;
+  }
+  const cards = events.map((event) => {
+    const payloadKeys = Object.keys(event.payload ?? {}).slice(0, 5).join(", ") || "No payload fields";
+    return `<div class="mini-card">
+      <div class="mini-head"><strong>${escapeHtml(event.eventType)}</strong>${badge(event.deliveryStatus, event.deliveryStatus === "dead_lettered" ? "status-unavailable" : event.deliveryStatus === "retry_scheduled" ? "status-cached" : "status-live")}</div>
+      <div class="muted">${formatTimestampElement(event.occurredAt)} &middot; v${escapeHtml(String(event.eventVersion))}</div>
+      <div class="row"><span>Source</span><span>${escapeHtml(event.sourceService)}</span></div>
+      <div class="row"><span>Correlation</span><span>${escapeHtml(event.correlationId)}</span></div>
+      <div class="row"><span>Attempts</span><span>${escapeHtml(String(event.deliveryAttempts))}</span></div>
+      <div class="muted">Payload: ${escapeHtml(payloadKeys)}</div>
+    </div>`;
+  }).join("");
+  return `${action}${summary}<div class="card-list">${cards}</div>`;
 }
 
 function renderSimulationStatus(

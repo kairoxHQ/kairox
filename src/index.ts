@@ -57,6 +57,7 @@ import { VerifiedMarketIntelligenceService, runScheduledMarketIntelligence } fro
 import { DailyPortfolioOrchestrator, runScheduledDailyOrchestrations, type DailyOrchestrationTriggerType } from "./orchestration/dailyPortfolioOrchestrator.ts";
 import { StrategyEvaluationLabService } from "./lab/strategyEvaluationLab.ts";
 import { PortfolioResearchEngine, runScheduledResearch, type ResearchRankBy } from "./research/engine.ts";
+import { EventBus } from "./events/eventBus.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -162,14 +163,17 @@ export default {
       "/research",
       "/research/securities",
       "/research/rankings",
-      "/research/candidates"
+      "/research/candidates",
+      "/events",
+      "/events/observability",
+      "/events/dead-letters"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/strategy-lab/run", "/research/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/strategy-lab/run", "/research/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run", "/events/process", "/events/replay"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -304,6 +308,23 @@ export default {
         const ingestion = await service.ingest(portfolioId, "manual");
         const summary = await service.createPortfolioSummary(portfolioId);
         return marketIntelligenceActionResponse(request, portfolioId, { ingestion, summary });
+      }
+
+      if (url.pathname === "/events/process") {
+        const limit = safeLimit(url.searchParams.get("limit"), 50, 200);
+        return json(await new EventBus(env.DB).processPending(limit));
+      }
+
+      if (url.pathname === "/events/replay") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url);
+        const result = await new EventBus(env.DB).replay({
+          eventType: url.searchParams.get("eventType"),
+          portfolioId,
+          fromTimestamp: url.searchParams.get("from"),
+          toTimestamp: url.searchParams.get("to"),
+          requestedBy: "protected_endpoint"
+        });
+        return json(result);
       }
 
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
@@ -780,6 +801,20 @@ export default {
         return json({ candidates: summary.candidates });
       }
 
+      if (url.pathname === "/events") {
+        return json({
+          events: await new EventBus(env.DB).timeline(await requestedExistingPortfolioId(env.DB, url) ?? undefined, safeLimit(url.searchParams.get("limit"), 40, 100))
+        });
+      }
+
+      if (url.pathname === "/events/observability") {
+        return json({ observability: await new EventBus(env.DB).observability() });
+      }
+
+      if (url.pathname === "/events/dead-letters") {
+        return json({ deadLetters: await new EventBus(env.DB).deadLetters(safeLimit(url.searchParams.get("limit"), 50, 100)) });
+      }
+
       if (url.pathname === "/forward-test") {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         return json(await new ForwardTestService(env.DB).summary(portfolioId));
@@ -874,7 +909,8 @@ export default {
       runScheduledDailyOrchestrations(env, scheduledAt),
       runScheduledForwardTests(env, scheduledAt),
       runScheduledMarketIntelligence(env, scheduledAt),
-      runScheduledResearch(env, scheduledAt)
+      runScheduledResearch(env, scheduledAt),
+      new EventBus(env.DB).processPending(100, new Date(scheduledAt))
     ]));
   }
 } satisfies ExportedHandler<Env>;
@@ -1083,6 +1119,11 @@ function researchRankBy(value: string | null): ResearchRankBy {
   return value === "dividend" || value === "growth" || value === "quality" || value === "risk" || value === "momentum" || value === "income" || value === "overall"
     ? value
     : "overall";
+}
+
+function safeLimit(value: string | null, fallback: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(maximum, Math.floor(parsed)) : fallback;
 }
 
 function briefingTypeFromUrl(url: URL) {

@@ -1,4 +1,5 @@
 import { MarketDataService, type MarketDataSnapshot, type NormalizedQuote } from "../market/service.ts";
+import { safePublishDomainEvent } from "../events/eventBus.ts";
 import { listRows } from "../shared/db.ts";
 import { pctChange, roundMoney, roundRatio } from "../shared/money.ts";
 import type { Env } from "../shared/types.ts";
@@ -309,13 +310,31 @@ export class StrategyEvaluationLabService {
     await this.persistValuations(program, valuations);
     await this.persistMonthlyRanking(program, marketDate, valuations, now);
     await this.audit(program, "strategy_lab_run_completed", "Strategy lab run completed without touching active portfolio holdings.", { marketDate, strategyCount: strategies.length, warnings }, now);
+    const rankings = rankStrategies(valuations);
+    await safePublishDomainEvent(this.db, {
+      eventType: "StrategyLab.Ranked",
+      correlationId: `strategy_lab_${portfolioId}_${marketDate}`,
+      portfolioId,
+      sourceService: "StrategyEvaluationLabService",
+      payload: {
+        programId: program.id,
+        marketDate,
+        snapshotId: snapshot.id,
+        rankings: rankings.map((ranking) => ({
+          strategyName: ranking.strategyName,
+          rank: ranking.rank,
+          score: ranking.score
+        }))
+      },
+      occurredAt: now
+    });
     return {
       programId: program.id,
       marketDate,
       idempotent: false,
       snapshotId: snapshot.id,
       valuations,
-      rankings: rankStrategies(valuations),
+      rankings,
       warnings
     };
   }

@@ -1,4 +1,5 @@
 import { recordJourneyEvent } from "../journey/service.ts";
+import { safePublishDomainEvent } from "../events/eventBus.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { roundRatio } from "../shared/money.ts";
 
@@ -233,6 +234,14 @@ export class VerifiedMarketIntelligenceService {
        WHERE id = ?`
     ).bind(now.toISOString(), recordsSeen, recordsIngested, duplicates, rejected, runId).run();
     await this.recordJourneyMilestones(portfolioId, now);
+    await safePublishDomainEvent(this.db, {
+      eventType: "MarketIntelligence.Completed",
+      correlationId: runId,
+      portfolioId,
+      sourceService: "VerifiedMarketIntelligenceService",
+      payload: { runId, triggerSource, recordsSeen, recordsIngested, duplicates, rejected, links },
+      occurredAt: now
+    });
     return { runId, recordsSeen, recordsIngested, duplicates, rejected, links };
   }
 
@@ -289,6 +298,21 @@ export class VerifiedMarketIntelligenceService {
     ).bind(id, portfolioId, cycleId, summaryDate, versionHash, mostMaterial?.id ?? null, JSON.stringify(holdingsAffected), JSON.stringify(marketWideEvents), JSON.stringify(upcomingEvents), JSON.stringify(dataGaps), JSON.stringify(dataGaps), verificationQuality, intelligenceTimestamp).run();
     const summary = { id, portfolioId, cycleId, summaryDate, intelligenceVersionHash: versionHash, mostMaterialRecordId: mostMaterial?.id ?? null, holdingsAffected, marketWideEvents, upcomingEvents, unexplainedMovements: dataGaps, dataGaps, verificationQuality, intelligenceTimestamp };
     await this.recordAudit(portfolioId, mostMaterial?.id ?? null, "portfolio_intelligence_summary_created", verificationQuality, { summaryDate, links: links.length }, now);
+    await safePublishDomainEvent(this.db, {
+      eventType: "MarketIntelligence.Completed",
+      correlationId: id,
+      portfolioId,
+      sourceService: "VerifiedMarketIntelligenceService",
+      payload: {
+        summaryId: id,
+        summaryDate,
+        verificationQuality,
+        holdingsAffected,
+        marketWideEvents: marketWideEvents.length,
+        upcomingEvents: upcomingEvents.length
+      },
+      occurredAt: now
+    });
     return { summary, idempotent: false };
   }
 

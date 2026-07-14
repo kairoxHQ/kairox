@@ -1,4 +1,5 @@
 import { MarketDataService, type MarketDataSnapshot, type NormalizedQuote } from "../market/service.ts";
+import { safePublishDomainEvent } from "../events/eventBus.ts";
 import { getInvestmentPolicy, validateInvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { getPortfolioValuation } from "../portfolio/valuation.ts";
 import { listRows } from "../shared/db.ts";
@@ -197,6 +198,18 @@ export class PortfolioResearchEngine {
     }
     const candidates = await this.persistCandidates(portfolioId, profiles, snapshot?.id ?? null, now);
     await this.audit(portfolioId, null, "research_run_completed", "Security research run completed. Research only; no proposals, orders, trades, fills, or cash changes.", { securitiesEvaluated: profiles.length, snapshotId: snapshot?.id ?? null }, now);
+    await safePublishDomainEvent(this.db, {
+      eventType: "Research.Completed",
+      correlationId: `research_${portfolioId}_${accountDate(now)}`,
+      portfolioId,
+      sourceService: "PortfolioResearchEngine",
+      payload: {
+        snapshotId: snapshot?.id ?? null,
+        securitiesEvaluated: profiles.length,
+        topRankedSymbols: rankProfiles(profiles, "overall").slice(0, 10).map((profile) => profile.symbol)
+      },
+      occurredAt: now
+    });
     return {
       portfolioId,
       snapshotId: snapshot?.id ?? null,

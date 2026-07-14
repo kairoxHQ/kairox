@@ -1,6 +1,7 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { roundMoney } from "../shared/money.ts";
 import type { PortfolioValuation } from "../portfolio/valuation.ts";
+import { safePublishDomainEvent } from "../events/eventBus.ts";
 
 export type JourneyEventType =
   | "account_created"
@@ -51,7 +52,7 @@ export interface JourneyEventInput {
 export async function recordJourneyEvent(db: D1Database, input: JourneyEventInput): Promise<void> {
   const portfolioId = input.portfolioId ?? TIM_PORTFOLIO_ID;
   const eventKey = journeyEventKey(portfolioId, input);
-  await db
+  const result = await db
     .prepare(
       `INSERT OR IGNORE INTO journey_events (
         id, event_key, portfolio_id, event_type, timestamp, title, description,
@@ -82,6 +83,24 @@ export async function recordJourneyEvent(db: D1Database, input: JourneyEventInpu
       JSON.stringify(input.metadata ?? {})
     )
     .run();
+  if ((result.meta?.changes ?? 0) > 0) {
+    await safePublishDomainEvent(db, {
+      eventType: "Journey.EventRecorded",
+      correlationId: eventKey,
+      portfolioId,
+      sourceService: "JourneyService",
+      payload: {
+        eventType: input.eventType,
+        title: input.title,
+        source: input.source,
+        severity: input.severity ?? "info",
+        relatedAsset: input.relatedAsset ?? null,
+        relatedTradeId: input.relatedTradeId ?? null,
+        relatedMilestoneId: input.relatedMilestoneId ?? null
+      },
+      occurredAt: input.timestamp
+    });
+  }
 }
 
 export async function recordValuationJourneyEvents(db: D1Database, valuation: PortfolioValuation): Promise<void> {

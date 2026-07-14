@@ -1,6 +1,7 @@
 import { BenchmarkComparisonService, type BenchmarkRunResult } from "../benchmarks/comparison.ts";
 import { PortfolioBriefingService, type PortfolioBriefing } from "../briefings/portfolioBriefing.ts";
 import { PortfolioDecisionService, type PortfolioDecision } from "../decisions/portfolioDecision.ts";
+import { safePublishDomainEvent } from "../events/eventBus.ts";
 import { MarketDataService, type NormalizedQuote } from "../market/service.ts";
 import { DailyManagementCycleService, type DailyManagementCycle } from "../management/dailyCycle.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
@@ -204,6 +205,14 @@ export class DailyPortfolioOrchestrator {
         const quotes = await new MarketDataService(this.db).getQuotes(symbols, "daily_review", now);
         validateQuotes(quotes, now);
         sourceMarketDataTimestamps = Object.fromEntries(quotes.map((quote) => [quote.symbol, quote.providerTimestamp]));
+        await safePublishDomainEvent(this.db, {
+          eventType: "MarketData.Refreshed",
+          correlationId: run.id,
+          portfolioId,
+          sourceService: "DailyPortfolioOrchestrator",
+          payload: { symbols, sourceMarketDataTimestamps, useCase: "daily_review" },
+          occurredAt: now
+        });
       }, stageResults, true, now);
 
       await this.stage(run.id, "calculate_valuation", async () => {
@@ -211,6 +220,14 @@ export class DailyPortfolioOrchestrator {
         if (state.valuation.dataStatus === "unavailable") {
           throw new Error("Current valuation is unavailable because trusted market data is missing.");
         }
+        await safePublishDomainEvent(this.db, {
+          eventType: "PortfolioValuation.Completed",
+          correlationId: run.id,
+          portfolioId,
+          sourceService: "PortfolioValuation",
+          payload: slimValuation(state.valuation),
+          occurredAt: now
+        });
       }, stageResults, true, now);
 
       await this.stage(run.id, "record_daily_snapshot", async () => {
@@ -220,6 +237,18 @@ export class DailyPortfolioOrchestrator {
       await this.stage(run.id, "update_benchmarks", async () => {
         try {
           state.benchmarkRun = await new BenchmarkComparisonService(this.db).run(portfolioId, triggerType === "Scheduled" ? "scheduled" : "manual", now);
+          await safePublishDomainEvent(this.db, {
+            eventType: "Benchmark.Updated",
+            correlationId: run.id,
+            portfolioId,
+            sourceService: "BenchmarkComparisonService",
+            payload: {
+              runId: state.benchmarkRun.runId,
+              skipped: state.benchmarkRun.skipped,
+              valuationCount: state.benchmarkRun.valuations.length
+            },
+            occurredAt: now
+          });
         } catch (error) {
           warnings.push(`Benchmark update warning: ${messageOf(error)}`);
           throw error;
@@ -235,16 +264,58 @@ export class DailyPortfolioOrchestrator {
         if (!state.cycle || state.cycle.status !== "completed") {
           throw new Error(result.reason ?? "Daily management cycle did not complete.");
         }
+        await safePublishDomainEvent(this.db, {
+          eventType: "DailyManagement.Completed",
+          correlationId: run.id,
+          portfolioId,
+          sourceService: "DailyManagementCycleService",
+          payload: {
+            cycleId: state.cycle.id,
+            marketDate: state.cycle.cycleDate,
+            portfolioValueUsd: state.cycle.portfolioValueUsd,
+            policyCompliant: state.cycle.policyCompliant,
+            outcome: state.cycle.outcome
+          },
+          occurredAt: now
+        });
       }, stageResults, true, now);
 
       await this.stage(run.id, "evaluate_portfolio_decision", async () => {
         if (!state.cycle) throw new Error("Daily management cycle is required before decision evaluation.");
         state.decision = (await new PortfolioDecisionService(this.db).evaluateCycle(state.cycle.id, now)).decision;
+        await safePublishDomainEvent(this.db, {
+          eventType: "PortfolioDecision.Generated",
+          correlationId: run.id,
+          portfolioId,
+          sourceService: "PortfolioDecisionService",
+          payload: {
+            decisionId: state.decision.id,
+            sourceCycleId: state.decision.sourceCycleId,
+            recommendation: state.decision.primaryRecommendation,
+            confidenceScore: state.decision.confidenceScore,
+            riskScore: state.decision.riskScore
+          },
+          occurredAt: now
+        });
       }, stageResults, true, now);
 
       await this.stage(run.id, "generate_portfolio_briefing", async () => {
         try {
           state.briefing = (await new PortfolioBriefingService(this.db).generate(portfolioId, { type: "daily_close", now })).briefing;
+          await safePublishDomainEvent(this.db, {
+            eventType: "Briefing.Generated",
+            correlationId: run.id,
+            portfolioId,
+            sourceService: "PortfolioBriefingService",
+            payload: {
+              briefingId: state.briefing.id,
+              sourceDecisionId: state.briefing.sourceDecisionId,
+              briefingType: state.briefing.briefingType,
+              validationStatus: state.briefing.validationStatus,
+              narrativeSource: state.briefing.narrativeSource
+            },
+            occurredAt: now
+          });
         } catch (error) {
           warnings.push(`Briefing warning: ${messageOf(error)}`);
           throw error;
