@@ -1,15 +1,20 @@
-import { PortfolioDecisionService, type PortfolioDecision } from "../decisions/portfolioDecision.ts";
+import { PortfolioDecisionService, type PortfolioDecision, type PortfolioDecisionRecommendation } from "../decisions/portfolioDecision.ts";
 import { calculatePerformance, type PerformanceMetrics } from "../portfolio/performance.ts";
 import { listPortfolioProfiles } from "../portfolio/profiles.ts";
 import { TIM_PORTFOLIO_ID } from "../shared/db.ts";
 
 const IRA_PORTFOLIO_ID = "portfolio_ira";
 
+type HomeAttentionLevel = "none" | "review" | "policy" | "data" | "action";
+
 export interface HomeSummary {
   portfolioHealth: string;
   todaysRecommendation: string;
+  internalRecommendation: PortfolioDecisionRecommendation;
   portfolioValueUsd: number;
   explanation: string;
+  reassurance: string;
+  technicalDetails: string[];
 }
 
 export interface HomeData {
@@ -50,37 +55,59 @@ export async function getHomeData(db: D1Database, requestedPortfolioId?: string)
 
 export function buildHomeSummary(performance: PerformanceMetrics, decision: PortfolioDecision | null): HomeSummary {
   const recommendation = decision?.primaryRecommendation ?? "Hold";
-  const dataUnavailable = recommendation === "Data unavailable";
-  const riskReview = recommendation === "Risk intervention" || recommendation === "Review required";
-  const drawdownNeedsReview = performance.maxDrawdownPct >= 0.1;
-  const portfolioHealth = dataUnavailable
-    ? "Data Incomplete"
-    : riskReview || drawdownNeedsReview
-    ? "Review Needed"
-    : performance.totalReturnPct >= -0.02
-    ? "Healthy"
-    : "Watch";
-  const explanation = decision?.summary
-    ?? (recommendation === "Hold"
-      ? "Your retirement plan remains on track. No action is recommended today."
-      : `Kairox recommends ${recommendation.toLowerCase()} based on the latest portfolio review.`);
+  const presentation = presentDecision(recommendation);
+  const policyViolation = recommendation === "Risk intervention" || decision?.status === "Blocked by policy" || decision?.policyCompliance.compliant === false;
+  const needsReview = policyViolation || recommendation === "Review required" || performance.maxDrawdownPct >= 0.1;
+  const portfolioHealth = recommendation === "Data unavailable"
+    ? "Waiting for updated information"
+    : needsReview
+    ? "Review suggested"
+    : "Within strategy";
 
   return {
     portfolioHealth,
-    todaysRecommendation: recommendation,
+    todaysRecommendation: policyViolation ? "One investment is outside your chosen limits" : presentation.label,
+    internalRecommendation: recommendation,
     portfolioValueUsd: performance.totalValueUsd,
-    explanation
+    explanation: homeExplanation(performance, decision, presentation),
+    reassurance: reassuranceFor(performance, decision, presentation),
+    technicalDetails: technicalDetailsFor(decision)
   };
+}
+
+export function presentDecision(value: string): { label: string; attention: HomeAttentionLevel } {
+  switch (value) {
+    case "Hold":
+      return { label: "Stay the course", attention: "none" };
+    case "Review recommended":
+    case "Review required":
+      return { label: "Review suggested", attention: "review" };
+    case "Rebalance proposal recommended":
+    case "Rebalance":
+    case "Deploy excess cash":
+    case "Increase cash":
+    case "Add to existing position":
+    case "Reduce existing position":
+      return { label: "Portfolio adjustment suggested", attention: "action" };
+    case "Risk intervention":
+      return { label: "Attention needed", attention: "policy" };
+    case "Data unavailable":
+      return { label: "Waiting for updated information", attention: "data" };
+    case "Policy violation":
+      return { label: "One investment is outside your chosen limits", attention: "policy" };
+    default:
+      return { label: "Review suggested", attention: "review" };
+  }
 }
 
 export function renderHomeHtml(data: HomeData): string {
   const quickActions = [
-    { icon: "🏖", title: "Help me retire comfortably", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#simulation-status` },
-    { icon: "📈", title: "Grow my investments", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#strategy-analysis` },
-    { icon: "💵", title: "Generate income", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#research-center` },
-    { icon: "📊", title: "Review my portfolio", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#daily-review` },
-    { icon: "🔍", title: "Find opportunities", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#opportunities` },
-    { icon: "🎓", title: "Learn about investing", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#portfolio-briefing` }
+    { icon: "Plan", title: "Help me retire comfortably", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#simulation-status` },
+    { icon: "Grow", title: "Grow my investments", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#strategy-analysis` },
+    { icon: "Cash", title: "Generate income", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#research-center` },
+    { icon: "View", title: "Review my portfolio", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#daily-review` },
+    { icon: "Find", title: "Find opportunities", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#opportunities` },
+    { icon: "Learn", title: "Learn about investing", href: `/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}#portfolio-briefing` }
   ];
 
   return `<!doctype html>
@@ -99,7 +126,6 @@ export function renderHomeHtml(data: HomeData): string {
       --muted: #647084;
       --border: #e4e8ef;
       --accent: #1f6feb;
-      --accent-soft: #eef5ff;
       --shadow: 0 24px 70px rgba(31, 42, 55, 0.10);
       --radius: 22px;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -114,7 +140,7 @@ export function renderHomeHtml(data: HomeData): string {
         linear-gradient(180deg, #ffffff 0%, var(--bg) 50%, #eef1f5 100%);
     }
     a { color: inherit; text-decoration: none; }
-    a:focus-visible, button:focus-visible, input:focus-visible {
+    a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
       outline: 3px solid rgba(31, 111, 235, 0.32);
       outline-offset: 3px;
     }
@@ -163,7 +189,7 @@ export function renderHomeHtml(data: HomeData): string {
       align-items: start;
     }
     .conversation {
-      padding: clamp(28px, 5vw, 56px);
+      padding: 56px;
       background: rgba(255, 255, 255, 0.86);
       border: 1px solid rgba(228, 232, 239, 0.86);
       border-radius: var(--radius);
@@ -177,16 +203,25 @@ export function renderHomeHtml(data: HomeData): string {
     }
     h1 {
       margin: 0 0 8px;
-      font-size: clamp(2.35rem, 7vw, 5.1rem);
+      max-width: 11ch;
+      font-size: 4.35rem;
       line-height: 0.96;
       letter-spacing: 0;
+      overflow-wrap: anywhere;
     }
     .prompt {
       margin: 0 0 34px;
       color: #2f3a4d;
-      font-size: clamp(1.35rem, 3vw, 2.25rem);
+      font-size: 2.15rem;
       line-height: 1.1;
       font-weight: 650;
+    }
+    .reassurance {
+      margin: -16px 0 28px;
+      max-width: 48rem;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.5;
     }
     .ask {
       display: flex;
@@ -243,8 +278,12 @@ export function renderHomeHtml(data: HomeData): string {
       background: #ffffff;
     }
     .action .icon {
-      font-size: 1.55rem;
+      color: var(--accent);
+      font-size: 0.76rem;
+      font-weight: 780;
+      letter-spacing: 0;
       line-height: 1;
+      text-transform: uppercase;
     }
     .action .title {
       font-weight: 690;
@@ -287,6 +326,23 @@ export function renderHomeHtml(data: HomeData): string {
       color: rgba(255, 255, 255, 0.78);
       line-height: 1.55;
     }
+    .summary details {
+      margin-top: 18px;
+      border-top: 1px solid rgba(255, 255, 255, 0.14);
+      padding-top: 14px;
+    }
+    .summary summary {
+      width: fit-content;
+      cursor: pointer;
+      color: #d9e6ff;
+      font-weight: 700;
+    }
+    .details-list {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: rgba(255, 255, 255, 0.74);
+      line-height: 1.45;
+    }
     .footer-note {
       margin-top: 18px;
       color: var(--muted);
@@ -303,8 +359,11 @@ export function renderHomeHtml(data: HomeData): string {
       .links { justify-content: flex-start; }
       main { padding-top: 22px; }
       .conversation, .summary { border-radius: 18px; }
+      .conversation { padding: 26px 20px; }
+      h1 { max-width: 100%; font-size: 2.65rem; }
+      .prompt { font-size: 1.55rem; }
       .ask { align-items: stretch; flex-direction: column; }
-      .ask input { font-size: 0.82rem; padding-inline: 10px; }
+      .ask input { font-size: 0.92rem; padding-inline: 10px; }
       .ask button { width: 100%; }
       .actions { grid-template-columns: 1fr; }
     }
@@ -326,26 +385,33 @@ export function renderHomeHtml(data: HomeData): string {
   <main class="shell">
     <section class="hero" aria-label="Kairox home">
       <div class="conversation">
-        <div class="eyebrow">${escapeHtml(data.portfolioName)} · Paper portfolio</div>
+        <div class="eyebrow">${escapeHtml(data.portfolioName)} &middot; Paper portfolio</div>
         <h1><span data-home-greeting>Good Evening</span>, ${escapeHtml(data.userName)}.</h1>
         <p class="prompt">How can I help you today?</p>
+        <p class="reassurance">${escapeHtml(data.summary.reassurance)}</p>
         <form class="ask" action="/dashboard" method="get">
           <input type="hidden" name="portfolioId" value="${escapeHtml(data.portfolioId)}">
-          <input name="q" autocomplete="off" placeholder="Ask Kairox anything about your portfolio..." aria-label="Ask Kairox anything about your portfolio">
+          <input name="q" autocomplete="off" placeholder="What would you like help with?" aria-label="Ask Kairox what you would like help with about your paper portfolio">
           <button type="submit">Ask</button>
         </form>
         <div class="actions" aria-label="Quick actions">
-          ${quickActions.map((action) => `<a class="action" href="${action.href}"><span class="icon" aria-hidden="true">${action.icon}</span><span class="title">${escapeHtml(action.title)}</span></a>`).join("")}
+          ${quickActions.map((action) => `<a class="action" href="${action.href}" aria-label="${escapeHtml(action.title)}"><span class="icon" aria-hidden="true">${escapeHtml(action.icon)}</span><span class="title">${escapeHtml(action.title)}</span></a>`).join("")}
         </div>
       </div>
-      <aside class="summary" aria-label="Today's Summary">
-        <h2>Today's Summary</h2>
+      <aside class="summary" aria-label="Today's Briefing">
+        <h2>Today's Briefing</h2>
         <div class="summary-grid">
           ${summaryRow("Portfolio Health", data.summary.portfolioHealth)}
           ${summaryRow("Today's Recommendation", data.summary.todaysRecommendation)}
           ${summaryRow("Portfolio Value", money(data.summary.portfolioValueUsd))}
         </div>
         <p>${escapeHtml(data.summary.explanation)}</p>
+        <details>
+          <summary>View details</summary>
+          <ul class="details-list">
+            ${data.summary.technicalDetails.map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}
+          </ul>
+        </details>
       </aside>
     </section>
     <p class="footer-note">Kairox remains paper-only. Existing dashboards, APIs, and portfolio workflows are still available from the navigation.</p>
@@ -361,12 +427,99 @@ export function renderHomeHtml(data: HomeData): string {
 </html>`;
 }
 
+function homeExplanation(
+  performance: PerformanceMetrics,
+  decision: PortfolioDecision | null,
+  presentation: ReturnType<typeof presentDecision>
+): string {
+  const reason = plainReason(decision);
+  if (presentation.attention === "data") {
+    return `Kairox is waiting for updated market information before making a recommendation. ${reason} No immediate trade action is available from this briefing.`;
+  }
+  if (presentation.attention === "policy") {
+    return `One position needs review because it is outside your chosen limits. ${reason} No trade has been placed from this briefing.`;
+  }
+  if (presentation.attention === "action" || presentation.attention === "review") {
+    return `One portfolio item needs review today. ${reason} No immediate action is required until you review the details.`;
+  }
+  if (performance.maxDrawdownPct >= 0.1) {
+    return "Portfolio drawdown is elevated enough to review, even though the latest recommendation is to stay the course. No trade has been placed from this briefing.";
+  }
+  return "Nothing needs attention today. The latest paper-portfolio decision is to stay the course, and no trade has been placed.";
+}
+
+function reassuranceFor(
+  performance: PerformanceMetrics,
+  decision: PortfolioDecision | null,
+  presentation: ReturnType<typeof presentDecision>
+): string {
+  if (presentation.attention === "data") {
+    return "I'm waiting for updated market information before making a recommendation.";
+  }
+  if (presentation.attention === "policy") {
+    return "One position needs review, but no trade has been placed.";
+  }
+  if (presentation.attention === "action" || presentation.attention === "review" || performance.maxDrawdownPct >= 0.1) {
+    return "One position needs review, but no trade has been placed.";
+  }
+  if (decision?.policyCompliance.compliant === true || !decision) {
+    return "Your portfolio remains within its current paper strategy.";
+  }
+  return "Nothing requires action today.";
+}
+
+function plainReason(decision: PortfolioDecision | null): string {
+  const policyReason = decision?.policyCompliance.reasons.find(Boolean);
+  if (policyReason) {
+    return sentence(policyReason);
+  }
+  const actionReason = decision?.actions.find((action) => action.reason)?.reason;
+  if (actionReason) {
+    return sentence(actionReason);
+  }
+  const triggeredRule = decision?.triggeredRules.find(Boolean);
+  if (triggeredRule) {
+    return sentence(triggeredRule);
+  }
+  if (decision?.dataQualityStatus && decision.dataQualityStatus !== "fresh") {
+    return `Market data status is ${decision.dataQualityStatus}.`;
+  }
+  return "The latest decision record does not show a material policy exception.";
+}
+
+function technicalDetailsFor(decision: PortfolioDecision | null): string[] {
+  if (!decision) {
+    return ["Internal recommendation: Hold", "No current decision record is available for this portfolio."];
+  }
+  return [
+    `Internal recommendation: ${decision.primaryRecommendation}`,
+    `Decision status: ${decision.status}`,
+    `Confidence score: ${pct(decision.confidenceScore)}`,
+    `Risk score: ${pct(decision.riskScore)}`,
+    `Data quality: ${decision.dataQualityStatus}`,
+    decision.triggeredRules.length ? `Triggered rules: ${decision.triggeredRules.join(" ")}` : "Triggered rules: none recorded",
+    decision.suppressedRules.length ? `Suppressed rules: ${decision.suppressedRules.join(" ")}` : "Suppressed rules: none recorded"
+  ];
+}
+
 function summaryRow(label: string, value: string): string {
   return `<div class="summary-row"><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span></div>`;
 }
 
 function money(value: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
+}
+
+function pct(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function sentence(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 function escapeHtml(value: string): string {
