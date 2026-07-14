@@ -20,9 +20,10 @@ import { StrategyEngine, type StrategyRun } from "../strategy/engine.ts";
 import { ForwardTestService, type ForwardMetricsSummary } from "../forward/forwardTest.ts";
 import { DailyManagementCycleService, type DailyManagementCycle } from "../management/dailyCycle.ts";
 import { BenchmarkComparisonService, type BenchmarkComparisonSummary } from "../benchmarks/comparison.ts";
+import { PortfolioDecisionService, type PortfolioDecision } from "../decisions/portfolioDecision.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -154,7 +155,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       new StrategyEngine(db).latest(portfolioId),
       new ForwardTestService(db).summary(portfolioId),
       new DailyManagementCycleService(db).list(portfolioId),
-      new BenchmarkComparisonService(db).summary(portfolioId)
+      new BenchmarkComparisonService(db).summary(portfolioId),
+      new PortfolioDecisionService(db).list(portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -173,6 +175,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     paperExecution,
     dailyReviews,
     dailyManagementCycles,
+    portfolioDecisions,
     recommendationProposals,
     strategyRun,
     forwardTest,
@@ -248,6 +251,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     paperExecution: PaperExecutionRecord | null;
     dailyReviews: DailyPortfolioReview[];
     dailyManagementCycles: DailyManagementCycle[];
+    portfolioDecisions: PortfolioDecision[];
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     forwardTest: ForwardMetricsSummary;
@@ -301,6 +305,7 @@ export function renderDashboardHtml(data: {
   paperExecution?: PaperExecutionRecord | null;
   dailyReviews?: DailyPortfolioReview[];
   dailyManagementCycles?: DailyManagementCycle[];
+  portfolioDecisions?: PortfolioDecision[];
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   forwardTest?: ForwardMetricsSummary;
@@ -445,7 +450,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -457,6 +462,7 @@ export function renderDashboardHtml(data: {
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("daily-management", "Daily Management", renderDailyManagement(data.dailyManagementCycles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("portfolio-decision", "Portfolio Decision", renderPortfolioDecision(data.portfolioDecisions ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("benchmark-comparison", "Performance Comparison", renderBenchmarkComparison(data.benchmarkComparison, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
@@ -704,6 +710,46 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Benchmark update failed." }));
             alert(payload.message || payload.error || "Benchmark update failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-portfolio-decision]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-portfolio-decision") || "portfolio_ira";
+          const confirmed = confirm("Run portfolio decision evaluation now? This creates a recommendation record only; it will not approve proposals, stage orders, execute trades, or move cash.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected decision evaluation.");
+          if (!secret) return;
+          const response = await fetch("/portfolio-decisions/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Portfolio decision failed." }));
+            alert(payload.message || payload.error || "Portfolio decision failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-portfolio-decision-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const decisionId = button.getAttribute("data-decision-id");
+          const action = button.getAttribute("data-portfolio-decision-action");
+          if (!decisionId || !action) return;
+          const confirmed = confirm("Update this portfolio recommendation? Accepting may create a Draft proposal only; it will not approve, stage, execute, or move cash.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret for this protected decision action.");
+          if (!secret) return;
+          const response = await fetch("/portfolio-decisions/" + encodeURIComponent(decisionId) + "/" + encodeURIComponent(action), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Portfolio decision action failed." }));
+            alert(payload.message || payload.error || "Portfolio decision action failed.");
             return;
           }
           location.reload();
@@ -989,6 +1035,81 @@ function dailyReviewIneligibleReason(review: DailyPortfolioReview): string {
     return "Data not current";
   }
   return `${review.recommendation} is not proposal-eligible`;
+}
+
+function renderPortfolioDecision(decisions: PortfolioDecision[], portfolioId: string): string {
+  const latest = decisions[0];
+  const action = `<div class="filters"><button class="filter" type="button" data-run-portfolio-decision="${escapeHtml(portfolioId)}">Run Portfolio Decision</button><a class="filter" href="/portfolio-decisions?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><span class="pill">Recommendation only</span><span class="pill">No orders</span><span class="pill">No execution</span></div>`;
+  if (!latest) {
+    return `${action}<span class="pill">No portfolio decision has been recorded yet</span>`;
+  }
+  const controls = `<div class="filters">
+    <button class="filter" type="button" data-decision-id="${escapeHtml(latest.id)}" data-portfolio-decision-action="accept">Accept for proposal</button>
+    <button class="filter" type="button" data-decision-id="${escapeHtml(latest.id)}" data-portfolio-decision-action="reject">Reject recommendation</button>
+    <button class="filter" type="button" data-decision-id="${escapeHtml(latest.id)}" data-portfolio-decision-action="defer">Defer</button>
+    <button class="filter" type="button" data-decision-id="${escapeHtml(latest.id)}" data-portfolio-decision-action="review">Mark reviewed</button>
+    ${latest.resultingProposalId ? `<a class="filter" href="#daily-review">Draft proposal ${escapeHtml(latest.resultingProposalId)}</a>` : ""}
+  </div>`;
+  const actionCards = latest.actions.length
+    ? latest.actions.map(portfolioDecisionActionCard).join("")
+    : '<span class="pill">No portfolio-changing action suggested</span>';
+  const facts = latest.supportingFacts.map((fact) => `<div class="mini-card">${escapeHtml(fact)}</div>`).join("");
+  const missingEvidence = latest.suppressedRules.length
+    ? `<div class="mini-card"><strong>Evidence missing or suppressed</strong><div class="muted">${escapeHtml(latest.suppressedRules.join(" "))}</div></div>`
+    : `<span class="pill">No missing critical evidence flagged</span>`;
+  const history = decisions.slice(0, 8).map((decision) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(decision.evaluationDate)} ${escapeHtml(decision.primaryRecommendation)}</strong><span class="pill">${escapeHtml(decision.status)}</span></div><div class="muted">Confidence ${escapeHtml(pct(decision.confidenceScore))} · ${escapeHtml(decision.urgency)} urgency · ${decision.resultingProposalId ? `Proposal ${escapeHtml(decision.resultingProposalId)}` : "No linked proposal"}</div><div class="muted">${escapeHtml(decision.userResponseReason ?? decision.summary)}</div></div>`).join("");
+  return `${action}${controls}
+    <div class="grid">
+      ${miniMetric("Recommendation", latest.primaryRecommendation)}
+      ${miniMetric("Status", latest.status)}
+      ${miniMetric("Confidence", pct(latest.confidenceScore))}
+      ${miniMetric("Urgency", latest.urgency)}
+      ${miniMetric("Decision date", latest.evaluationDate)}
+      ${miniMetric("Data", latest.dataQualityStatus)}
+      ${miniMetric("Policy", latest.policyCompliance.compliant ? "Compliant" : "Review")}
+      ${miniMetric("Expires", formatTimestampElement(latest.expiresAt))}
+    </div>
+    <div class="mini-card"><div class="mini-head"><strong>Why</strong><span class="pill">${escapeHtml(latest.benchmarkContext.evidenceLabel)}</span></div><div>${escapeHtml(sanitizeForUser(latest.summary, "Decision summary unavailable."))}</div><div class="muted">${escapeHtml(sanitizeForUser(latest.detailedExplanation, "Decision explanation unavailable."))}</div></div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Current versus target allocation</strong>
+        ${row("Cash", `${pct(latest.currentAllocation.cashPct)} target ${pct(latest.targetAllocation.cashPct)} drift ${signedPct(latest.allocationDrift.cashPct)}`)}
+        ${row("Equity", `${pct(latest.currentAllocation.equityPct)} target ${pct(latest.targetAllocation.equityPct)} drift ${signedPct(latest.allocationDrift.equityPct)}`)}
+        ${row("Bonds", `${pct(latest.currentAllocation.bondPct)} target ${pct(latest.targetAllocation.bondPct)} drift ${signedPct(latest.allocationDrift.bondPct)}`)}
+        ${row("Max drift", pct(latest.allocationDrift.maxAbsoluteDriftPct))}
+      </div>
+      <div class="mini-card"><strong>Risk and policy</strong>
+        ${row("Cash", `${money(latest.cashLevel.cashUsd)} (${pct(latest.cashLevel.cashPct)})`)}
+        ${row("Minimum cash", pct(latest.cashLevel.minimumCashPct))}
+        ${row("Current drawdown", pct(latest.drawdown.currentDrawdownPct))}
+        ${row("Policy drawdown", pct(latest.drawdown.policyMaxDrawdownPct))}
+        ${row("Risk score", pct(latest.riskScore))}
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Suggested actions</strong><div class="card-list">${actionCards}</div></div>
+      <div class="mini-card"><strong>Benchmark context</strong>
+        ${row("Evidence", `${latest.benchmarkContext.evidenceLabel} (${latest.benchmarkContext.days} days)`)}
+        ${row("Best return", latest.benchmarkContext.bestReturnBenchmark ?? "Unavailable")}
+        ${row("Lowest drawdown", latest.benchmarkContext.lowestDrawdownBenchmark ?? "Unavailable")}
+        <div class="muted">${escapeHtml(latest.benchmarkContext.summary)}</div>
+      </div>
+    </div>
+    <div class="two-col"><div class="mini-card"><strong>Supporting facts</strong><div class="card-list">${facts}</div></div>${missingEvidence}</div>
+    <div class="mini-card"><strong>Triggered rules</strong><div class="muted">${escapeHtml(latest.triggeredRules.join(" ") || "None")}</div></div>
+    <div class="mini-card"><strong>Recommendation history</strong><div class="card-list">${history}</div></div>`;
+}
+
+function portfolioDecisionActionCard(action: PortfolioDecision["actions"][number]): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(action.actionType)} ${escapeHtml(action.symbolOrCategory)}</strong><span class="pill">Priority ${escapeHtml(String(action.priority))}</span></div>
+    ${row("Direction", action.suggestedDirection)}
+    ${row("Dollar range", `${money(action.suggestedDollarRange.minUsd)} - ${money(action.suggestedDollarRange.maxUsd)}`)}
+    ${row("Maximum permitted", money(action.maximumPermittedAmountUsd))}
+    ${row("Policy", action.policyValidation.allowed ? "Allowed for review" : "Blocked")}
+    <div class="muted">${escapeHtml(action.reason)}</div>
+    <div class="muted">Allocation: ${escapeHtml(action.expectedEffectOnAllocation)} Cash: ${escapeHtml(action.expectedEffectOnCash)} Risk: ${escapeHtml(action.expectedEffectOnRisk)}</div>
+    ${action.policyValidation.reasons.length ? `<div class="muted">${escapeHtml(action.policyValidation.reasons.join(" "))}</div>` : ""}
+  </div>`;
 }
 
 function renderStrategyAnalysis(run: StrategyRun | null, portfolioId: string): string {

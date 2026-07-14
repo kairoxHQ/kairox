@@ -51,6 +51,7 @@ import { StrategyEngine } from "./strategy/engine.ts";
 import { ForwardTestService, runScheduledForwardTests } from "./forward/forwardTest.ts";
 import { DailyManagementCycleService, runScheduledDailyManagementCycles } from "./management/dailyCycle.ts";
 import { BenchmarkComparisonService, runScheduledBenchmarkComparisons } from "./benchmarks/comparison.ts";
+import { PortfolioDecisionService } from "./decisions/portfolioDecision.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -146,14 +147,15 @@ export default {
       "/forward-test/monthly-report",
       "/benchmark-comparison",
       "/benchmark-comparison/monthly-report",
-      "/benchmark-comparison/history.csv"
+      "/benchmark-comparison/history.csv",
+      "/portfolio-decisions"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -234,6 +236,12 @@ export default {
         return json(await new BenchmarkComparisonService(env.DB).createMonthlyReport(portfolioId, url.searchParams.get("month") ?? undefined, url.searchParams.get("reason")));
       }
 
+      if (url.pathname === "/portfolio-decisions/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const result = await new PortfolioDecisionService(env.DB).evaluate(portfolioId);
+        return portfolioDecisionActionResponse(request, portfolioId, result);
+      }
+
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
       if (createReviewProposalMatch) {
         if (request.method !== "POST") {
@@ -247,6 +255,30 @@ export default {
         const result = await service.createDraftFromReview(createReviewProposalMatch[1]);
         const portfolioId = result.proposal?.portfolioId ?? "portfolio_ira";
         return recommendationProposalActionResponse(request, portfolioId, result);
+      }
+
+      const portfolioDecisionActionMatch = url.pathname.match(/^\/portfolio-decisions\/([A-Za-z0-9_-]+)\/(accept|reject|defer|review)$/);
+      if (portfolioDecisionActionMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const auth = await authorize(request, env);
+        if (auth) {
+          return auth;
+        }
+        const service = new PortfolioDecisionService(env.DB);
+        const reason = await actionReason(request, `${portfolioDecisionActionMatch[2]} by reviewer.`);
+        const decisionId = portfolioDecisionActionMatch[1];
+        const action = portfolioDecisionActionMatch[2];
+        const result = action === "accept"
+          ? await service.acceptForProposal(decisionId, reason)
+          : action === "reject"
+          ? await service.reject(decisionId, reason)
+          : action === "defer"
+          ? await service.defer(decisionId, reason)
+          : await service.markReviewed(decisionId, reason);
+        const portfolioId = "decision" in result ? result.decision.portfolioId : result.portfolioId;
+        return portfolioDecisionActionResponse(request, portfolioId, result);
       }
 
       if (url.pathname === "/health") {
@@ -676,6 +708,12 @@ export default {
         return report instanceof Response ? report : json(report);
       }
 
+      if (url.pathname === "/portfolio-decisions") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const service = new PortfolioDecisionService(env.DB);
+        return json({ latest: await service.latest(portfolioId), decisions: await service.list(portfolioId) });
+      }
+
       if (url.pathname === "/summaries") {
         return json(await getSummaries(env.DB));
       }
@@ -848,6 +886,17 @@ function benchmarkComparisonActionResponse(request: Request, portfolioId: string
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#benchmark-comparison` }
+    });
+  }
+  return json(payload);
+}
+
+function portfolioDecisionActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#portfolio-decision` }
     });
   }
   return json(payload);

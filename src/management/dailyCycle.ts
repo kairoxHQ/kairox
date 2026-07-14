@@ -6,6 +6,7 @@ import { listPortfolioProfiles } from "../portfolio/profiles.ts";
 import { accountDate, getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
 import { RecommendationProposalService } from "../recommendations/proposalService.ts";
 import { DailyPortfolioReviewService, getDailyReview, shouldRunScheduledDailyReview, type DailyPortfolioReview } from "../reviews/dailyReview.ts";
+import { PortfolioDecisionService } from "../decisions/portfolioDecision.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { addMoney, roundRatio } from "../shared/money.ts";
 import type { AssetClass, Env } from "../shared/types.ts";
@@ -293,6 +294,7 @@ export class DailyManagementCycleService {
       });
 
       await this.persistCycle(cycle, options.refresh === true);
+      await new PortfolioDecisionService(this.db).evaluateCycle(cycle.id, now);
       await this.recordMeaningfulJourney(cycle, policy);
       await this.recordEvent(cycle.id, portfolioId, cycleDate, "cycle_completed", "Daily paper management cycle completed.", { outcome: cycle.outcome, createdProposalId }, now);
       return { cycle, skipped: false, idempotent: false, reason: null };
