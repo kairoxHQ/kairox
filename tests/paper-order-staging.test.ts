@@ -7,7 +7,8 @@ import type { InvestmentPolicy } from "../src/policies/investmentPolicy.ts";
 
 const migration = [
   readFileSync("migrations/0016_paper_order_staging.sql", "utf8"),
-  readFileSync("migrations/0023_paper_order_staging_metadata.sql", "utf8")
+  readFileSync("migrations/0023_paper_order_staging_metadata.sql", "utf8"),
+  readFileSync("migrations/0024_backfill_paper_order_staging_metadata.sql", "utf8")
 ].join("\n");
 const serviceSource = readFileSync("src/orders/staging.ts", "utf8");
 
@@ -59,6 +60,8 @@ test("duplicate staging requests are idempotent by proposal", () => {
   assert.match(migration, /UNIQUE\(proposal_id\)/);
   assert.match(migration, /market_data_timestamp TEXT/);
   assert.match(migration, /target_allocation_pct REAL/);
+  assert.match(migration, /UPDATE paper_order_batch_orders/);
+  assert.match(migration, /UPDATE paper_order_batches/);
   assert.match(serviceSource, /getPaperOrderBatchByProposalId\(db, proposalId\)/);
   assert.match(serviceSource, /INSERT OR IGNORE INTO paper_order_batches/);
   assert.match(serviceSource, /INSERT OR IGNORE INTO paper_order_batch_orders/);
