@@ -58,6 +58,7 @@ import { DailyPortfolioOrchestrator, runScheduledDailyOrchestrations, type Daily
 import { StrategyEvaluationLabService } from "./lab/strategyEvaluationLab.ts";
 import { PortfolioResearchEngine, runScheduledResearch, type ResearchRankBy } from "./research/engine.ts";
 import { EventBus } from "./events/eventBus.ts";
+import { KnowledgeGraphService } from "./graph/knowledgeGraph.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -166,14 +167,16 @@ export default {
       "/research/candidates",
       "/events",
       "/events/observability",
-      "/events/dead-letters"
+      "/events/dead-letters",
+      "/knowledge-graph",
+      "/knowledge-graph/visualization"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/strategy-lab/run", "/research/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run", "/events/process", "/events/replay"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/strategy-lab/run", "/research/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run", "/events/process", "/events/replay", "/knowledge-graph/sync"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -324,6 +327,12 @@ export default {
           toTimestamp: url.searchParams.get("to"),
           requestedBy: "protected_endpoint"
         });
+        return json(result);
+      }
+
+      if (url.pathname === "/knowledge-graph/sync") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const result = await new KnowledgeGraphService(env.DB).syncPortfolio(portfolioId, "protected_endpoint");
         return json(result);
       }
 
@@ -813,6 +822,24 @@ export default {
 
       if (url.pathname === "/events/dead-letters") {
         return json({ deadLetters: await new EventBus(env.DB).deadLetters(safeLimit(url.searchParams.get("limit"), 50, 100)) });
+      }
+
+      if (url.pathname === "/knowledge-graph") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const nodeId = url.searchParams.get("nodeId");
+        const service = new KnowledgeGraphService(env.DB);
+        if (nodeId) {
+          if (!/^[A-Za-z0-9_-]{1,120}$/.test(nodeId)) {
+            throw new RequestError(400, "Invalid graph node identifier.");
+          }
+          return json(await service.traverse(nodeId, safeLimit(url.searchParams.get("depth"), 1, 4), safeLimit(url.searchParams.get("limit"), 100, 300)));
+        }
+        return json(await service.summary(portfolioId, safeLimit(url.searchParams.get("limit"), 200, 500)));
+      }
+
+      if (url.pathname === "/knowledge-graph/visualization") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new KnowledgeGraphService(env.DB).visualization(portfolioId, safeLimit(url.searchParams.get("limit"), 140, 300)));
       }
 
       if (url.pathname === "/forward-test") {

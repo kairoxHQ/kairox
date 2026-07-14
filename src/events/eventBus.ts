@@ -1,4 +1,5 @@
 import { listRows } from "../shared/db.ts";
+import { safeSyncKnowledgeGraphForEvent } from "../graph/knowledgeGraph.ts";
 
 export const DOMAIN_EVENT_TYPES = [
   "PortfolioValuation.Completed",
@@ -148,6 +149,7 @@ export class EventBus {
         await this.processSubscription(event, subscription);
       }
     }
+    await safeSyncKnowledgeGraphForEvent(this.db, event);
     return event;
   }
 

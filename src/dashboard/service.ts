@@ -28,9 +28,10 @@ import { DailyPortfolioOrchestrator, type DailyOrchestrationRun } from "../orche
 import { StrategyEvaluationLabService, type StrategyLabSummary } from "../lab/strategyEvaluationLab.ts";
 import { PortfolioResearchEngine, type ResearchCenterSummary, type SecurityResearchProfile } from "../research/engine.ts";
 import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from "../events/eventBus.ts";
+import { KnowledgeGraphService, type KnowledgeGraphSummary } from "../graph/knowledgeGraph.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, researchCenter, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration, eventTimeline, eventObservability] =
+  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, researchCenter, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration, eventTimeline, eventObservability, knowledgeGraph] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -159,7 +160,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       new PortfolioBriefingService(db).list(portfolioId),
       new DailyPortfolioOrchestrator(db).latest(portfolioId),
       new EventBus(db).timeline(portfolioId, 24),
-      new EventBus(db).observability()
+      new EventBus(db).observability(),
+      new KnowledgeGraphService(db).summary(portfolioId, 80).catch(() => null)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -192,6 +194,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     dailyOrchestration,
     eventTimeline,
     eventObservability,
+    knowledgeGraph,
     recommendationProposals,
     strategyRun,
     strategyLab,
@@ -275,6 +278,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     dailyOrchestration: DailyOrchestrationRun | null;
     eventTimeline: EventTimelineItem[];
     eventObservability: EventObservabilitySummary[];
+    knowledgeGraph: KnowledgeGraphSummary | null;
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     strategyLab: StrategyLabSummary;
@@ -336,6 +340,7 @@ export function renderDashboardHtml(data: {
   dailyOrchestration?: DailyOrchestrationRun | null;
   eventTimeline?: EventTimelineItem[];
   eventObservability?: EventObservabilitySummary[];
+  knowledgeGraph?: KnowledgeGraphSummary | null;
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   strategyLab?: StrategyLabSummary;
@@ -483,7 +488,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#research-center">Research</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#event-timeline">Events</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#portfolio-decision">Decision</a><a href="#portfolio-briefing">Briefing</a><a href="#market-intelligence">Intelligence</a><a href="#research-center">Research</a><a href="#strategy-analysis">Strategy</a><a href="#strategy-lab">Strategy lab</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#knowledge-graph">Graph</a><a href="#event-timeline">Events</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -492,6 +497,7 @@ export function renderDashboardHtml(data: {
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     ${section("portfolio-operations", "Portfolio Operations", renderPortfolioOperations(data.dailyOrchestration ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("knowledge-graph", "Knowledge Graph", renderKnowledgeGraph(data.knowledgeGraph ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("event-timeline", "Event Timeline", renderEventTimeline(data.eventTimeline ?? [], data.eventObservability ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
@@ -712,6 +718,25 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Daily orchestration failed." }));
             alert(payload.message || payload.error || "Daily orchestration failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-knowledge-graph]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-knowledge-graph") || "portfolio_ira";
+          const confirmed = confirm("Sync the Kairox Knowledge Graph now? This updates relationship nodes only. It will not create proposals, orders, fills, trades, positions, or cash movements.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected graph sync.");
+          if (!secret) return;
+          const response = await fetch("/knowledge-graph/sync?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Knowledge graph sync failed." }));
+            alert(payload.message || payload.error || "Knowledge graph sync failed.");
             return;
           }
           location.reload();
@@ -1747,6 +1772,52 @@ function renderEventTimeline(events: EventTimelineItem[], observability: EventOb
     </div>`;
   }).join("");
   return `${action}${summary}<div class="card-list">${cards}</div>`;
+}
+
+function renderKnowledgeGraph(summary: KnowledgeGraphSummary | null, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-knowledge-graph="${escapeHtml(portfolioId)}">Sync Knowledge Graph</button><a class="filter" href="/knowledge-graph?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="/knowledge-graph/visualization?portfolioId=${encodeURIComponent(portfolioId)}">Visualization JSON</a><span class="pill">Relationship layer</span><span class="pill">No trading changes</span><span class="pill">AI traversal ready</span></div>`;
+  if (!summary) {
+    return `${action}<div class="mini-card"><strong>Graph unavailable</strong><div class="muted">Run the protected graph sync after migration to populate relationship nodes.</div></div>`;
+  }
+  const nodeCount = summary.nodes.length;
+  const relationshipCount = summary.relationships.length;
+  const topNodes = Object.entries(summary.nodeCounts).slice(0, 8).map(([type, count]) => miniMetric(type, String(count))).join("");
+  const topRelationships = Object.entries(summary.relationshipCounts).slice(0, 8).map(([type, count]) => miniMetric(type, String(count))).join("");
+  const latestSync = summary.latestSync
+    ? `<div class="mini-card"><strong>Latest sync</strong>${row("Status", summary.latestSync.status)}${row("Trigger", summary.latestSync.triggerSource)}${row("Nodes", String(summary.latestSync.nodesUpserted))}${row("Relationships", String(summary.latestSync.relationshipsUpserted))}${row("Completed", summary.latestSync.completedAt ? formatTimestampElement(summary.latestSync.completedAt) : "Running")}</div>`
+    : `<div class="mini-card"><strong>Latest sync</strong><div class="muted">No graph sync has run yet.</div></div>`;
+  const visualization = renderKnowledgeGraphSvg(summary);
+  return `${action}<div class="grid">${miniMetric("Nodes", String(nodeCount))}${miniMetric("Relationships", String(relationshipCount))}${miniMetric("Node types", String(Object.keys(summary.nodeCounts).length))}${miniMetric("Edge types", String(Object.keys(summary.relationshipCounts).length))}</div><div class="two-col"><div class="mini-card"><strong>Node mix</strong><div class="grid">${topNodes || miniMetric("None", "0")}</div></div><div class="mini-card"><strong>Relationship mix</strong><div class="grid">${topRelationships || miniMetric("None", "0")}</div></div></div>${latestSync}${visualization}`;
+}
+
+function renderKnowledgeGraphSvg(summary: KnowledgeGraphSummary): string {
+  if (summary.nodes.length === 0) {
+    return `<div class="mini-card"><strong>Graph visualization</strong><div class="muted">No graph nodes have been created yet.</div></div>`;
+  }
+  const nodes = summary.nodes.slice(0, 18);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = summary.relationships.filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId)).slice(0, 32);
+  const width = 720;
+  const height = 240;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radiusX = 280;
+  const radiusY = 86;
+  const coords = new Map(nodes.map((node, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(1, nodes.length);
+    return [node.id, { x: centerX + Math.cos(angle) * radiusX, y: centerY + Math.sin(angle) * radiusY }];
+  }));
+  const lines = edges.map((edge) => {
+    const from = coords.get(edge.fromNodeId);
+    const to = coords.get(edge.toNodeId);
+    return from && to ? `<line x1="${round(from.x)}" y1="${round(from.y)}" x2="${round(to.x)}" y2="${round(to.y)}" stroke="#cbd5e1" stroke-width="1.5"></line>` : "";
+  }).join("");
+  const circles = nodes.map((node) => {
+    const point = coords.get(node.id) ?? { x: centerX, y: centerY };
+    const label = node.label.length > 18 ? `${node.label.slice(0, 16)}...` : node.label;
+    return `<g><circle cx="${round(point.x)}" cy="${round(point.y)}" r="14" fill="#e8f1ff" stroke="#246bfe" stroke-width="2"></circle><text x="${round(point.x)}" y="${round(point.y + 32)}" text-anchor="middle" font-size="10" fill="#1f2a37">${escapeHtml(label)}</text></g>`;
+  }).join("");
+  return `<div class="mini-card"><strong>Graph visualization</strong><svg class="history" viewBox="0 0 ${width} ${height}" role="img" aria-label="Knowledge graph visualization">${lines}${circles}</svg><div class="muted">Showing ${escapeHtml(String(nodes.length))} nodes and ${escapeHtml(String(edges.length))} visible relationships. Use JSON for traversal-ready graph data.</div></div>`;
 }
 
 function renderSimulationStatus(
