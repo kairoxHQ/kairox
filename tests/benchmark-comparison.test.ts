@@ -134,7 +134,7 @@ test("routes, scheduler, dashboard, exports, and protected actions are wired", (
   assert.match(indexSource, /"\/benchmark-comparison"/);
   assert.match(indexSource, /"\/benchmark-comparison\/run"/);
   assert.match(indexSource, /"\/benchmark-comparison\/monthly-report\/create"/);
-  assert.match(indexSource, /runScheduledBenchmarkComparisons/);
+  assert.match(indexSource, /runScheduledDailyOrchestrations/);
   assert.match(dashboardSource, /Performance Comparison/);
   assert.match(dashboardSource, /data-run-benchmark-comparison/);
   assert.match(dashboardSource, /data-benchmark-toggle/);

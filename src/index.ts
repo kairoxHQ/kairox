@@ -44,16 +44,17 @@ import {
   stagePaperOrdersForProposal
 } from "./orders/staging.ts";
 import { executePaperOrderBatch, getPaperExecutionByBatchId } from "./orders/execution.ts";
-import { DailyPortfolioReviewService, listDailyReviews, runScheduledDailyReviews } from "./reviews/dailyReview.ts";
+import { DailyPortfolioReviewService, listDailyReviews } from "./reviews/dailyReview.ts";
 import { RecommendationProposalService } from "./recommendations/proposalService.ts";
 import { MarketDataService } from "./market/service.ts";
 import { StrategyEngine } from "./strategy/engine.ts";
 import { ForwardTestService, runScheduledForwardTests } from "./forward/forwardTest.ts";
-import { DailyManagementCycleService, runScheduledDailyManagementCycles } from "./management/dailyCycle.ts";
-import { BenchmarkComparisonService, runScheduledBenchmarkComparisons } from "./benchmarks/comparison.ts";
+import { DailyManagementCycleService } from "./management/dailyCycle.ts";
+import { BenchmarkComparisonService } from "./benchmarks/comparison.ts";
 import { PortfolioDecisionService } from "./decisions/portfolioDecision.ts";
 import { PortfolioBriefingService } from "./briefings/portfolioBriefing.ts";
 import { VerifiedMarketIntelligenceService, runScheduledMarketIntelligence } from "./intelligence/verifiedPipeline.ts";
+import { DailyPortfolioOrchestrator, runScheduledDailyOrchestrations, type DailyOrchestrationTriggerType } from "./orchestration/dailyPortfolioOrchestrator.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -253,6 +254,29 @@ export default {
         const type = briefingTypeFromUrl(url);
         const result = await new PortfolioBriefingService(env.DB).generate(portfolioId, { type, length: "standard", tone: "plain", regenerate: url.searchParams.get("regenerate") === "true", regenerationReason: url.searchParams.get("reason") });
         return portfolioBriefingActionResponse(request, portfolioId, result);
+      }
+
+      const orchestrationMatch = url.pathname.match(/^\/accounts\/([A-Za-z0-9_-]+)\/daily-orchestration$/);
+      if (orchestrationMatch) {
+        if (request.method === "GET") {
+          return json({ latest: await new DailyPortfolioOrchestrator(env.DB).latest(orchestrationMatch[1]) });
+        }
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const auth = await authorize(request, env);
+        if (auth) {
+          return auth;
+        }
+        const body = await orchestrationBody(request);
+        const result = await new DailyPortfolioOrchestrator(env.DB).run({
+          portfolioId: orchestrationMatch[1],
+          marketDate: body.marketDate ?? url.searchParams.get("marketDate") ?? undefined,
+          refreshMode: body.refreshMode ?? parseRefreshMode(url.searchParams.get("refreshMode")),
+          triggerType: body.triggerType ?? "Manual protected",
+          actor: body.actor ?? "protected_manual"
+        });
+        return json(result);
       }
 
       if (url.pathname === "/market-intelligence/run") {
@@ -802,10 +826,8 @@ export default {
     const scheduledAt = new Date(controller.scheduledTime).toISOString();
     ctx.waitUntil(Promise.all([
       runScheduledPaperStrategy(env, controller.cron, scheduledAt),
-      runScheduledDailyReviews(env, scheduledAt),
-      runScheduledDailyManagementCycles(env, scheduledAt),
+      runScheduledDailyOrchestrations(env, scheduledAt),
       runScheduledForwardTests(env, scheduledAt),
-      runScheduledBenchmarkComparisons(env, scheduledAt),
       runScheduledMarketIntelligence(env, scheduledAt)
     ]));
   }
@@ -826,6 +848,28 @@ async function authorize(request: Request, env: Env): Promise<Response | null> {
 
 async function proposalRejectionReason(request: Request): Promise<string> {
   return actionReason(request, "Rejected by reviewer.");
+}
+
+async function orchestrationBody(request: Request): Promise<{ marketDate?: string; refreshMode?: "normal" | "validate_only" | "administrative_refresh"; triggerType?: DailyOrchestrationTriggerType; actor?: string }> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return {};
+  }
+  try {
+    const body = await request.json<{
+      marketDate?: string;
+      refreshMode?: "normal" | "validate_only" | "administrative_refresh";
+      triggerType?: DailyOrchestrationTriggerType;
+      actor?: string;
+    }>();
+    return body && typeof body === "object" ? body : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseRefreshMode(value: string | null): "normal" | "validate_only" | "administrative_refresh" | undefined {
+  return value === "normal" || value === "validate_only" || value === "administrative_refresh" ? value : undefined;
 }
 
 async function actionReason(request: Request, fallback: string): Promise<string> {

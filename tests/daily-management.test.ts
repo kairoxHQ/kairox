@@ -110,10 +110,10 @@ test("daily-cycle idempotency, refresh, snapshots, and journey dedupe are repres
 
 test("scheduler, market holiday handling, and protected manual endpoint are wired", () => {
   assert.match(serviceSource, /shouldRunScheduledDailyReview/);
-  assert.match(indexSource, /runScheduledDailyManagementCycles/);
+  assert.match(indexSource, /runScheduledDailyOrchestrations/);
   assert.match(indexSource, /\/daily-management-cycles\/run/);
   assert.match(indexSource, /authorize\(request, env\)/);
-  assert.match(indexSource, /runScheduledDailyManagementCycles\(env, scheduledAt\)/);
+  assert.doesNotMatch(indexSource, /runScheduledDailyManagementCycles\(env, scheduledAt\)/);
 });
 
 test("dashboard displays daily management cycle and safe manual action", () => {

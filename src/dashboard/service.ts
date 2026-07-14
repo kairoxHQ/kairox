@@ -24,9 +24,10 @@ import { BenchmarkComparisonService, type BenchmarkComparisonSummary } from "../
 import { PortfolioDecisionService, type PortfolioDecision } from "../decisions/portfolioDecision.ts";
 import { PortfolioBriefingService, type PortfolioBriefing } from "../briefings/portfolioBriefing.ts";
 import { VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink, type PortfolioIntelligenceSummary } from "../intelligence/verifiedPipeline.ts";
+import { DailyPortfolioOrchestrator, type DailyOrchestrationRun } from "../orchestration/dailyPortfolioOrchestrator.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings] =
+  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -150,7 +151,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       new DailyManagementCycleService(db).list(portfolioId),
       new BenchmarkComparisonService(db).summary(portfolioId),
       new PortfolioDecisionService(db).list(portfolioId),
-      new PortfolioBriefingService(db).list(portfolioId)
+      new PortfolioBriefingService(db).list(portfolioId),
+      new DailyPortfolioOrchestrator(db).latest(portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -180,6 +182,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     dailyManagementCycles,
     portfolioDecisions,
     portfolioBriefings,
+    dailyOrchestration,
     recommendationProposals,
     strategyRun,
     forwardTest,
@@ -258,6 +261,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     dailyManagementCycles: DailyManagementCycle[];
     portfolioDecisions: PortfolioDecision[];
     portfolioBriefings: PortfolioBriefing[];
+    dailyOrchestration: DailyOrchestrationRun | null;
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     forwardTest: ForwardMetricsSummary;
@@ -314,6 +318,7 @@ export function renderDashboardHtml(data: {
   dailyManagementCycles?: DailyManagementCycle[];
   portfolioDecisions?: PortfolioDecision[];
   portfolioBriefings?: PortfolioBriefing[];
+  dailyOrchestration?: DailyOrchestrationRun | null;
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   forwardTest?: ForwardMetricsSummary;
@@ -467,6 +472,7 @@ export function renderDashboardHtml(data: {
     ${section("market-ticker", "Market Ticker", `<div class="ticker-strip" data-market-ticker>${(data.marketTicker?.instruments ?? []).map(tickerItem).join("")}</div>`)}
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
+    ${section("portfolio-operations", "Portfolio Operations", renderPortfolioOperations(data.dailyOrchestration ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
     ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
@@ -664,6 +670,26 @@ export function renderDashboardHtml(data: {
           if (!response.ok) {
             const payload = await response.json().catch(() => ({ error: "Daily management cycle failed." }));
             alert(payload.message || payload.error || "Daily management cycle failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-daily-orchestration]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-daily-orchestration") || "portfolio_ira";
+          const confirmed = confirm("Run the coordinated paper portfolio workflow now? This refreshes trusted data, valuation, snapshots, benchmarks, daily management, decision, and briefing only. It will not approve proposals, stage orders, execute trades, move cash, or contact a live brokerage.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected orchestration.");
+          if (!secret) return;
+          const response = await fetch("/accounts/" + encodeURIComponent(portfolioId) + "/daily-orchestration", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-cryptolab-paper-secret": secret },
+            body: JSON.stringify({ triggerType: "Manual protected", refreshMode: "normal", actor: "dashboard_admin" })
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Daily orchestration failed." }));
+            alert(payload.message || payload.error || "Daily orchestration failed.");
             return;
           }
           location.reload();
@@ -1501,6 +1527,42 @@ function renderDailyReviewChart(reviews: DailyPortfolioReview[]): string {
     .filter(Boolean)
     .join(" ");
   return `<div class="mini-card"><strong>Performance Comparison</strong><svg class="history" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily review benchmark comparison"><line class="axis" x1="0" y1="${height - 8}" x2="${width}" y2="${height - 8}"></line>${series.map((item) => `<polyline fill="none" stroke="${item.stroke}" stroke-width="3" points="${lineFor(item.values)}"></polyline>`).join("")}</svg><div class="muted">${series.map((item) => item.name).join(" · ")}</div></div>`;
+}
+
+function renderPortfolioOperations(run: DailyOrchestrationRun | null, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-daily-orchestration="${escapeHtml(portfolioId)}">Run Daily Orchestration</button><a class="filter" href="/accounts/${encodeURIComponent(portfolioId)}/daily-orchestration">JSON</a><span class="pill">Paper only</span><span class="pill">No orders or fills</span></div>`;
+  if (!run) {
+    return `${action}<span class="pill">No coordinated daily run recorded yet</span>`;
+  }
+  const reconciliation = run.reconciliation;
+  const latestMarketTime = Object.values(run.sourceMarketDataTimestamps).filter(Boolean).sort().at(-1) ?? run.valuation.lastSuccessfulMarketDataUpdateTime ?? null;
+  const warnings = [...run.warnings, ...(reconciliation?.warnings ?? [])];
+  return `${action}
+    <div class="grid">
+      ${miniMetric("Last date", run.marketDate)}
+      ${miniMetric("Run status", run.status)}
+      ${miniMetric("Valuation", maybeMoney(typeof run.valuation.totalAccountValueUsd === "number" ? run.valuation.totalAccountValueUsd : null))}
+      ${miniMetric("Market data", latestMarketTime ? formatTimestampElement(latestMarketTime) : "Unavailable")}
+      ${miniMetric("Benchmark", run.benchmarkUpdateIds.length ? "Updated" : "Pending")}
+      ${miniMetric("Daily cycle", run.dailyCycleId ? "Completed" : "Pending")}
+      ${miniMetric("Decision", run.decisionId ? "Generated" : "Pending")}
+      ${miniMetric("Briefing", run.briefingId ? "Generated" : "Pending")}
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Reconciliation</strong>
+        ${row("Cash ledger", reconciliation?.cashLedgerReconciled ? "Passed" : "Pending")}
+        ${row("Position quantities", reconciliation?.positionsReconciled ? "Passed" : "Pending")}
+        ${row("Valuation math", reconciliation?.valuationReconciled ? "Passed" : "Pending")}
+        ${row("Decision linked to cycle", reconciliation?.decisionMatchesCycle ? "Passed" : "Pending")}
+      </div>
+      <div class="mini-card"><strong>Stage</strong>
+        ${row("Current stage", run.currentStage)}
+        ${row("Started", formatTimestampElement(run.startedAt))}
+        ${row("Completed", run.completedAt ? formatTimestampElement(run.completedAt) : "Running")}
+        ${row("Retry count", String(run.retryCount))}
+      </div>
+    </div>
+    ${warnings.length ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml([...new Set(warnings)].join(" "))}</div></div>` : `<span class="pill">Reconciliation passed</span>`}`;
 }
 
 function renderSimulationStatus(
