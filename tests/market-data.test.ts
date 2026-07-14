@@ -11,7 +11,7 @@ test("market provider invokes injected fetch with the global receiver", async ()
     assert.equal(this, globalThis);
     const url = String(input);
     if (url.includes("/ticker")) {
-      return Promise.resolve(Response.json({ price: "64000", time: "2026-07-12T12:00:00.000Z" }));
+      return Promise.resolve(Response.json({ price: "64000", time: new Date(Date.now() - 60 * 60 * 1000).toISOString() }));
     }
     return Promise.resolve(Response.json([[1782000000, 63000, 65000, 64000, 64500, 1000], ...btcCandles()]));
   } as typeof fetch;
@@ -119,9 +119,10 @@ test("dashboard uses Kairox branding and keeps raw diagnostics out of normal UI"
 });
 
 function btcCandles(): Array<[number, number, number, number, number, number]> {
+  const start = Math.floor((Date.now() - 35 * 86400 * 1000) / 1000);
   return Array.from({ length: 35 }, (_, index) => {
     const close = 64000 + index;
-    return [1780000000 + index * 86400, close - 100, close + 100, close - 50, close, 1000 + index];
+    return [start + index * 86400, close - 100, close + 100, close - 50, close, 1000 + index];
   });
 }
 

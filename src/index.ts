@@ -34,6 +34,15 @@ import {
   listAllocationProposals,
   rejectAllocationProposal
 } from "./allocation/proposals.ts";
+import {
+  cancelPaperOrderBatch,
+  getLatestPaperOrderBatch,
+  getPaperOrderBatchById,
+  markPaperOrderBatchReady,
+  refreshPaperOrderBatchPrices,
+  rejectPaperOrderBatch,
+  stagePaperOrdersForProposal
+} from "./orders/staging.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -112,6 +121,7 @@ export default {
       "/dashboard/data",
       "/dashboard/contract",
       "/allocation-proposals",
+      "/paper-order-batches",
       "/valuation",
       "/daily-snapshots",
       "/historical-performance",
@@ -290,6 +300,16 @@ export default {
         return json(await listAllocationProposals(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_tim_paper"));
       }
 
+      if (url.pathname === "/paper-order-batches") {
+        const batchId = url.searchParams.get("batchId");
+        if (batchId) {
+          return json(await getPaperOrderBatchById(env.DB, batchId));
+        }
+        return json({
+          batch: await getLatestPaperOrderBatch(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_tim_paper")
+        });
+      }
+
       if (url.pathname === "/allocation-proposals/generate") {
         if (request.method !== "POST") {
           return json({ error: "Method not allowed" }, 405);
@@ -314,6 +334,55 @@ export default {
         }
         const proposal = await rejectAllocationProposal(env.DB, rejectProposalMatch[1], await proposalRejectionReason(request));
         return proposalActionResponse(request, proposal.portfolioId, proposal);
+      }
+
+      if (url.pathname === "/paper-order-batches/stage") {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const proposalId = url.searchParams.get("proposalId") ?? "";
+        if (!/^[A-Za-z0-9_-]{1,180}$/.test(proposalId)) {
+          throw new RequestError(400, "Invalid proposal identifier.");
+        }
+        const result = await stagePaperOrdersOrConflict(env.DB, proposalId);
+        const portfolioId = result.batch?.portfolioId ?? "portfolio_ira";
+        return paperOrderActionResponse(request, portfolioId, result);
+      }
+
+      const readyBatchMatch = url.pathname.match(/^\/paper-order-batches\/([A-Za-z0-9_-]+)\/ready$/);
+      if (readyBatchMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const batch = await markPaperOrderBatchReady(env.DB, readyBatchMatch[1]);
+        return paperOrderActionResponse(request, batch.portfolioId, batch);
+      }
+
+      const rejectBatchMatch = url.pathname.match(/^\/paper-order-batches\/([A-Za-z0-9_-]+)\/reject$/);
+      if (rejectBatchMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const batch = await rejectPaperOrderBatch(env.DB, rejectBatchMatch[1], await actionReason(request, "Rejected by reviewer."));
+        return paperOrderActionResponse(request, batch.portfolioId, batch);
+      }
+
+      const cancelBatchMatch = url.pathname.match(/^\/paper-order-batches\/([A-Za-z0-9_-]+)\/cancel$/);
+      if (cancelBatchMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const batch = await cancelPaperOrderBatch(env.DB, cancelBatchMatch[1], await actionReason(request, "Cancelled by reviewer."));
+        return paperOrderActionResponse(request, batch.portfolioId, batch);
+      }
+
+      const refreshBatchMatch = url.pathname.match(/^\/paper-order-batches\/([A-Za-z0-9_-]+)\/refresh$/);
+      if (refreshBatchMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const batch = await refreshPaperOrderBatchPrices(env.DB, refreshBatchMatch[1]);
+        return paperOrderActionResponse(request, batch.portfolioId, batch);
       }
 
       if (url.pathname.startsWith("/api/analytics")) {
@@ -425,21 +494,25 @@ async function authorize(request: Request, env: Env): Promise<Response | null> {
 }
 
 async function proposalRejectionReason(request: Request): Promise<string> {
+  return actionReason(request, "Rejected by reviewer.");
+}
+
+async function actionReason(request: Request, fallback: string): Promise<string> {
   const contentType = request.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     try {
       const body = await request.json<{ reason?: string }>();
-      return body.reason?.slice(0, 500) || "Rejected by reviewer.";
+      return body.reason?.slice(0, 500) || fallback;
     } catch {
-      return "Rejected by reviewer.";
+      return fallback;
     }
   }
   if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
     const form = await request.formData();
     const reason = form.get("reason");
-    return typeof reason === "string" && reason ? reason.slice(0, 500) : "Rejected by reviewer.";
+    return typeof reason === "string" && reason ? reason.slice(0, 500) : fallback;
   }
-  return "Rejected by reviewer.";
+  return fallback;
 }
 
 function proposalActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
@@ -453,11 +526,40 @@ function proposalActionResponse(request: Request, portfolioId: string, payload: 
   return json(payload);
 }
 
+function paperOrderActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#paper-order-batch` }
+    });
+  }
+  return json(payload);
+}
+
 async function approveProposalOrConflict(db: D1Database, proposalId: string) {
   try {
     return await approveAllocationProposal(db, proposalId);
   } catch (error) {
     if (error instanceof Error && /not approvable/i.test(error.message)) {
+      throw new RequestError(409, error.message);
+    }
+    throw error;
+  }
+}
+
+async function stagePaperOrdersOrConflict(db: D1Database, proposalId: string) {
+  try {
+    const result = await stagePaperOrdersForProposal(db, proposalId);
+    if (!result.batch) {
+      throw new RequestError(409, result.validationReport.reasons.join(" ") || "Paper order staging validation failed.");
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof RequestError) {
+      throw error;
+    }
+    if (error instanceof Error && /approved allocation proposals|validation failed|cannot be staged/i.test(error.message)) {
       throw new RequestError(409, error.message);
     }
     throw error;

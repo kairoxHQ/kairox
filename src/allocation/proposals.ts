@@ -1,6 +1,7 @@
 import { getInvestmentPolicy, validateInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { listRows } from "../shared/db.ts";
 import type { AssetClass } from "../shared/types.ts";
+import { YahooFinanceMarketDataProvider } from "../market/yahooFinanceProvider.ts";
 
 export type ProposalStatus = "draft" | "ready_for_review" | "approved" | "rejected" | "expired" | "executed";
 
@@ -50,6 +51,8 @@ export interface AllocationProposal {
   approvedAt: string | null;
   rejectedAt: string | null;
   rejectionReason: string | null;
+  revisionRequired: boolean;
+  revisionReason: string | null;
   lines: AllocationProposalLine[];
 }
 
@@ -107,6 +110,8 @@ interface ProposalRow {
   approvedAt: string | null;
   rejectedAt: string | null;
   rejectionReason: string | null;
+  revisionRequired?: number;
+  revisionReason?: string | null;
 }
 
 interface LineRow {
@@ -188,11 +193,12 @@ export async function generateAllocationProposal(db: D1Database, portfolioId: st
   }
 
   const symbols = assets.map((asset) => asset.symbol).filter((symbol) => symbol !== "CASH");
-  const prices = await getLatestPrices(db, symbols);
+  const generatedAt = now.toISOString();
+  const prices = await getLatestPrices(db, symbols, generatedAt);
   const proposal = buildAllocationProposal({
     portfolioId,
     version: versionRow?.nextVersion ?? 1,
-    generatedAt: now.toISOString(),
+    generatedAt,
     totalAccountValueUsd: portfolio.totalAccountValueUsd,
     availableCashUsd: portfolio.cashUsd,
     policy,
@@ -335,6 +341,8 @@ export function buildAllocationProposal(input: ProposalBuildInput): AllocationPr
     approvedAt: null,
     rejectedAt: null,
     rejectionReason: null,
+    revisionRequired: false,
+    revisionReason: null,
     lines
   };
 }
@@ -349,7 +357,8 @@ export async function getLatestAllocationProposal(db: D1Database, portfolioId: s
         bond_pct AS bondPct, income_pct AS incomePct, diversification_score AS diversificationScore,
         risk_score AS riskScore, policy_compliant AS policyCompliant, approval_allowed AS approvalAllowed,
         rationale, warnings_json AS warningsJson, policy_validation_json AS policyValidationJson,
-        approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason
+        approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason,
+        COALESCE(revision_required, 0) AS revisionRequired, revision_reason AS revisionReason
        FROM allocation_proposals
        WHERE portfolio_id = ?
        ORDER BY version DESC
@@ -371,7 +380,8 @@ export async function listAllocationProposals(db: D1Database, portfolioId: strin
           bond_pct AS bondPct, income_pct AS incomePct, diversification_score AS diversificationScore,
           risk_score AS riskScore, policy_compliant AS policyCompliant, approval_allowed AS approvalAllowed,
           rationale, warnings_json AS warningsJson, policy_validation_json AS policyValidationJson,
-          approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason
+          approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason,
+          COALESCE(revision_required, 0) AS revisionRequired, revision_reason AS revisionReason
          FROM allocation_proposals
          WHERE portfolio_id = ?
          ORDER BY version DESC
@@ -392,7 +402,7 @@ export async function approveAllocationProposal(db: D1Database, proposalIdValue:
     throw new Error("Allocation proposal is not approvable until policy and pricing checks pass.");
   }
   await db
-    .prepare("UPDATE allocation_proposals SET status = 'approved', approved_at = ?, rejected_at = NULL, rejection_reason = NULL, updated_at = datetime('now') WHERE id = ?")
+    .prepare("UPDATE allocation_proposals SET status = 'approved', approved_at = ?, rejected_at = NULL, rejection_reason = NULL, revision_required = 0, revision_reason = NULL, updated_at = datetime('now') WHERE id = ?")
     .bind(now.toISOString(), proposalIdValue)
     .run();
   const updated = await getProposalRowById(db, proposalIdValue);
@@ -400,6 +410,18 @@ export async function approveAllocationProposal(db: D1Database, proposalIdValue:
     throw new Error("Allocation proposal not found after approval.");
   }
   return hydrateProposal(db, updated);
+}
+
+export async function getAllocationProposalById(db: D1Database, proposalIdValue: string): Promise<AllocationProposal | null> {
+  const row = await getProposalRowById(db, proposalIdValue);
+  return row ? hydrateProposal(db, row) : null;
+}
+
+export async function markAllocationProposalRevisionRequired(db: D1Database, proposalIdValue: string, reason: string): Promise<void> {
+  await db
+    .prepare("UPDATE allocation_proposals SET revision_required = 1, revision_reason = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(reason.slice(0, 1000), proposalIdValue)
+    .run();
 }
 
 export async function rejectAllocationProposal(db: D1Database, proposalIdValue: string, reason = "Rejected by reviewer.", now = new Date()): Promise<AllocationProposal> {
@@ -545,6 +567,8 @@ async function hydrateProposal(db: D1Database, row: ProposalRow): Promise<Alloca
     approvedAt: row.approvedAt,
     rejectedAt: row.rejectedAt,
     rejectionReason: row.rejectionReason,
+    revisionRequired: row.revisionRequired === 1,
+    revisionReason: row.revisionReason ?? null,
     lines: lines.map((line) => ({
       id: line.id,
       symbol: line.symbol,
@@ -578,7 +602,8 @@ async function getProposalRowById(db: D1Database, proposalIdValue: string): Prom
         bond_pct AS bondPct, income_pct AS incomePct, diversification_score AS diversificationScore,
         risk_score AS riskScore, policy_compliant AS policyCompliant, approval_allowed AS approvalAllowed,
         rationale, warnings_json AS warningsJson, policy_validation_json AS policyValidationJson,
-        approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason
+        approved_at AS approvedAt, rejected_at AS rejectedAt, rejection_reason AS rejectionReason,
+        COALESCE(revision_required, 0) AS revisionRequired, revision_reason AS revisionReason
        FROM allocation_proposals
        WHERE id = ?`
     )
@@ -631,8 +656,9 @@ async function getProposalAssets(db: D1Database, portfolioId: string): Promise<P
   });
 }
 
-async function getLatestPrices(db: D1Database, symbols: string[]): Promise<Record<string, ProposalPrice | undefined>> {
+async function getLatestPrices(db: D1Database, symbols: string[], nowIso: string): Promise<Record<string, ProposalPrice | undefined>> {
   const prices: Record<string, ProposalPrice | undefined> = {};
+  const provider = new YahooFinanceMarketDataProvider();
   for (const symbol of symbols) {
     const row = await db
       .prepare(
@@ -644,7 +670,16 @@ async function getLatestPrices(db: D1Database, symbols: string[]): Promise<Recor
       )
       .bind(symbol)
       .first<ProposalPrice>();
-    prices[symbol] = row ?? undefined;
+    if (row && isFreshProposalPrice(row.priceTimestamp, nowIso)) {
+      prices[symbol] = row;
+      continue;
+    }
+    try {
+      const live = await provider.getMarketData(symbol);
+      prices[symbol] = live.validated && live.priceUsd > 0 ? { priceUsd: live.priceUsd, priceTimestamp: live.asOf } : row ?? undefined;
+    } catch {
+      prices[symbol] = row ?? undefined;
+    }
   }
   return prices;
 }

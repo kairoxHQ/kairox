@@ -12,9 +12,10 @@ import { summarizeScheduledRun } from "../scheduler/service.ts";
 import { getAllProfileHoldingQuotes, getMarketTickerQuotes, type HoldingQuote, type NormalizedQuote } from "../market/quotes.ts";
 import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { getLatestAllocationProposal, type AllocationProposal } from "../allocation/proposals.ts";
+import { getLatestPaperOrderBatch, type PaperOrderBatch } from "../orders/staging.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -141,7 +142,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getAllProfileHoldingQuotes(db),
       listPortfolioProfiles(db),
       getInvestmentPolicy(db, portfolioId),
-      getLatestAllocationProposal(db, portfolioId)
+      getLatestAllocationProposal(db, portfolioId),
+      getLatestPaperOrderBatch(db, portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
@@ -153,6 +155,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     accountProfiles,
     investmentPolicy,
     allocationProposal,
+    paperOrderBatch,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -220,6 +223,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     accountProfiles: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
     investmentPolicy: InvestmentPolicy | null;
     allocationProposal: AllocationProposal | null;
+    paperOrderBatch: PaperOrderBatch | null;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -265,6 +269,7 @@ export function renderDashboardHtml(data: {
   accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
   investmentPolicy?: InvestmentPolicy | null;
   allocationProposal?: AllocationProposal | null;
+  paperOrderBatch?: PaperOrderBatch | null;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -411,6 +416,7 @@ export function renderDashboardHtml(data: {
     ${section("accounts", "Accounts", renderAccountSelector(data.accountProfiles ?? data.profileComparison?.profiles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -706,11 +712,13 @@ function renderAllocationProposal(proposal: AllocationProposal | null | undefine
   const actions = `<div class="filters">
     <form method="post" action="/allocation-proposals/generate?portfolioId=${encodeURIComponent(portfolioId)}"><button class="filter" type="submit">Regenerate proposal</button></form>
     ${proposal ? `<form method="post" action="/allocation-proposals/${encodeURIComponent(proposal.id)}/approve"><button class="filter" type="submit" ${proposal.approvalAllowed ? "" : "disabled"}>Approve proposal</button></form>
-    <form method="post" action="/allocation-proposals/${encodeURIComponent(proposal.id)}/reject"><button class="filter" type="submit">Reject proposal</button></form>` : ""}
+    <form method="post" action="/allocation-proposals/${encodeURIComponent(proposal.id)}/reject"><button class="filter" type="submit">Reject proposal</button></form>
+    <form method="post" action="/paper-order-batches/stage?proposalId=${encodeURIComponent(proposal.id)}"><button class="filter" type="submit" ${proposal.status === "approved" ? "" : "disabled"}>Stage paper orders</button></form>` : ""}
   </div>`;
   if (!proposal) {
     return `${actions}<span class="pill">No allocation proposal yet</span>`;
   }
+  const revision = proposal.revisionRequired ? `<div class="mini-card"><strong>Revision needed</strong><div class="muted">${escapeHtml(proposal.revisionReason ?? "Refresh prices or regenerate this proposal before staging orders.")}</div></div>` : "";
   const warnings = proposal.warnings.length ? `<div class="mini-card"><strong>Warnings</strong><div class="muted">${escapeHtml(proposal.warnings.join(" "))}</div></div>` : "";
   return `${actions}
     <div class="grid">
@@ -724,8 +732,59 @@ function renderAllocationProposal(proposal: AllocationProposal | null | undefine
       ${miniMetric("Policy", proposal.policyCompliant ? "Compliant" : "Blocked")}
     </div>
     <div class="card-list">${proposal.lines.map(allocationLineCard).join("")}</div>
+    ${revision}
     ${warnings}
     <div class="muted">${escapeHtml(proposal.rationale)} Generated ${formatTimestampElement(proposal.generatedAt)}.</div>`;
+}
+
+function renderPaperOrderBatch(batch: PaperOrderBatch | null | undefined, proposal: AllocationProposal | null | undefined): string {
+  if (!batch) {
+    const stageAction = proposal?.status === "approved"
+      ? `<form method="post" action="/paper-order-batches/stage?proposalId=${encodeURIComponent(proposal.id)}"><button class="filter" type="submit">Stage paper orders</button></form>`
+      : "";
+    return `<div class="filters">${stageAction}<a class="filter" href="#allocation-proposal">Return to proposal</a></div><span class="pill">No staged paper orders</span>`;
+  }
+  const warnings = [
+    ...batch.validationReport.warnings,
+    ...(batch.validationReport.reasons.length ? batch.validationReport.reasons : [])
+  ];
+  return `<div class="filters">
+      <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/ready"><button class="filter" type="submit" ${batch.validationStatus === "passed" ? "" : "disabled"}>Mark Ready to Execute</button></form>
+      <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/reject"><button class="filter" type="submit">Reject order batch</button></form>
+      <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/cancel"><button class="filter" type="submit">Cancel order batch</button></form>
+      <form method="post" action="/paper-order-batches/${encodeURIComponent(batch.id)}/refresh"><button class="filter" type="submit">Refresh prices and revalidate</button></form>
+      <a class="filter" href="#allocation-proposal">Return to proposal</a>
+    </div>
+    <div class="grid">
+      ${miniMetric("Status", batch.status)}
+      ${miniMetric("Proposal", `v${batch.proposalVersion}`)}
+      ${miniMetric("Orders", String(batch.orderCount))}
+      ${miniMetric("Estimated buys", money(batch.totalEstimatedPurchaseUsd))}
+      ${miniMetric("Remaining cash", money(batch.estimatedRemainingCashUsd))}
+      ${miniMetric("Validation", batch.validationStatus)}
+      ${miniMetric("Price drift", batch.priceDeviationStatus)}
+      ${miniMetric("Created", formatTimestampElement(batch.createdAt))}
+    </div>
+    <div class="card-list">${batch.orders.map(orderLineCard).join("")}</div>
+    ${warnings.length ? `<div class="mini-card"><strong>Review notes</strong><div class="muted">${escapeHtml(warnings.join(" "))}</div></div>` : ""}
+    <div class="muted">Staged orders are pending review only. Cash, holdings, valuation, and transactions are unchanged until a separate paper execution workflow runs.</div>`;
+}
+
+function orderLineCard(order: PaperOrderBatch["orders"][number]): string {
+  const policyText = order.policyValidation.allowed ? "Compliant" : order.policyValidation.reasons.join(" ");
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(order.symbol)}</strong><span class="pill">${escapeHtml(order.status)}</span></div>
+    <div class="muted">${escapeHtml(order.securityName)} &middot; ${escapeHtml(order.assetCategory)}</div>
+    <div class="row"><span>Side / type</span><span>${escapeHtml(order.side)} &middot; ${escapeHtml(order.orderType)}</span></div>
+    <div class="row"><span>Estimated quantity</span><span>${escapeHtml(formatQuantity(order.estimatedQuantity, order.symbol, order.assetClass))}</span></div>
+    <div class="row"><span>Estimated cost</span><span>${escapeHtml(money(order.estimatedDollarAmountUsd))}</span></div>
+    <div class="row"><span>Latest reference price</span><span>${escapeHtml(money(order.latestReferencePriceUsd))}</span></div>
+    <div class="row"><span>Proposal price</span><span>${escapeHtml(money(order.referencePriceUsd))}</span></div>
+    <div class="row"><span>Policy</span><span>${escapeHtml(policyText)}</span></div>
+    <div class="row"><span>Confidence</span><span>${escapeHtml(pct(order.confidenceScore))}</span></div>
+    ${order.priceDeviationWarning ? `<div class="muted">Price-change warning: ${escapeHtml(pct(order.priceDeviationPct))} from proposal reference.</div>` : ""}
+    <div class="muted">${escapeHtml(order.investmentRationale)} Price data ${formatTimestampElement(order.marketDataTimestamp)}.</div>
+  </div>`;
 }
 
 function allocationLineCard(line: AllocationProposal["lines"][number]): string {
