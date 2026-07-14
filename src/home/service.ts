@@ -200,6 +200,7 @@ export function renderHomeHtml(data: HomeData): string {
     }
     .ask input {
       min-width: 0;
+      width: 100%;
       flex: 1;
       border: 0;
       background: transparent;
@@ -303,6 +304,7 @@ export function renderHomeHtml(data: HomeData): string {
       main { padding-top: 22px; }
       .conversation, .summary { border-radius: 18px; }
       .ask { align-items: stretch; flex-direction: column; }
+      .ask input { font-size: 0.95rem; }
       .ask button { width: 100%; }
       .actions { grid-template-columns: 1fr; }
     }
