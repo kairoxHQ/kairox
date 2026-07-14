@@ -15,6 +15,7 @@ import { getLatestAllocationProposal, type AllocationProposal } from "../allocat
 import { getLatestPaperOrderBatch, type PaperOrderBatch } from "../orders/staging.ts";
 import { getPaperExecutionByBatchId, type PaperExecutionRecord } from "../orders/execution.ts";
 import { listDailyReviews, type DailyPortfolioReview } from "../reviews/dailyReview.ts";
+import { RecommendationProposalService, type RecommendationProposal } from "../recommendations/proposalService.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch] =
@@ -150,6 +151,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
   const dailyReviews = await listDailyReviews(db, portfolioId);
+  const recommendationProposals = await new RecommendationProposalService(db).list(portfolioId);
   const positionsBySymbol = new Map((positions as Array<{ symbol: string; marketValueUsd: number }>).map((position) => [position.symbol, position.marketValueUsd]));
   const statusBySymbol = new Map((marketStatuses as Array<{ symbol: string }>).map((status) => [status.symbol, status]));
   const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
@@ -162,6 +164,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     paperOrderBatch,
     paperExecution,
     dailyReviews,
+    recommendationProposals,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -232,6 +235,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     paperOrderBatch: PaperOrderBatch | null;
     paperExecution: PaperExecutionRecord | null;
     dailyReviews: DailyPortfolioReview[];
+    recommendationProposals: RecommendationProposal[];
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -280,6 +284,7 @@ export function renderDashboardHtml(data: {
   paperOrderBatch?: PaperOrderBatch | null;
   paperExecution?: PaperExecutionRecord | null;
   dailyReviews?: DailyPortfolioReview[];
+  recommendationProposals?: RecommendationProposal[];
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -427,7 +432,7 @@ export function renderDashboardHtml(data: {
     ${section("simulation-status", "Simulation Status", renderSimulationStatus(data.investmentPolicy, data.performance))}
     ${section("allocation-proposal", "Allocation Proposal", renderAllocationProposal(data.allocationProposal, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("paper-order-batch", "Pending Paper Orders", renderPaperOrderBatch(data.paperOrderBatch, data.allocationProposal, data.paperExecution))}
-    ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("daily-review", "Daily Review", renderDailyReview(data.dailyReviews ?? [], data.recommendationProposals ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -601,6 +606,41 @@ export function renderDashboardHtml(data: {
           location.reload();
         });
       });
+      document.querySelectorAll("[data-create-review-proposal]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const reviewId = button.getAttribute("data-create-review-proposal");
+          if (!reviewId) return;
+          const confirmed = confirm("Create a draft paper rebalance proposal from this daily review? This will not create orders or execute trades.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to create this protected draft proposal.");
+          if (!secret) return;
+          const response = await fetch("/daily-reviews/" + encodeURIComponent(reviewId) + "/proposal", { method: "POST", headers: { "x-cryptolab-paper-secret": secret } });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Draft proposal failed." }));
+            alert(payload.message || payload.error || "Draft proposal failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-recommendation-proposal-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const proposalId = button.getAttribute("data-proposal-id");
+          const action = button.getAttribute("data-recommendation-proposal-action");
+          if (!proposalId || !action) return;
+          const confirmed = confirm("Update this draft paper proposal? This will not create orders or execute trades.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret for this protected proposal action.");
+          if (!secret) return;
+          const response = await fetch("/recommendation-proposals/" + encodeURIComponent(proposalId) + "/" + encodeURIComponent(action), { method: "POST", headers: { "x-cryptolab-paper-secret": secret } });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Proposal action failed." }));
+            alert(payload.message || payload.error || "Proposal action failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
       scheduleQuotes();
     })();
   </script>
@@ -736,12 +776,17 @@ function renderAccountSelector(
   }).join("")}</div>`;
 }
 
-function renderDailyReview(reviews: DailyPortfolioReview[], portfolioId: string): string {
+function renderDailyReview(reviews: DailyPortfolioReview[], proposals: RecommendationProposal[], portfolioId: string): string {
   const latest = reviews[0];
   const action = `<div class="filters"><button class="filter" type="button" data-run-daily-review="${escapeHtml(portfolioId)}">Run Daily Review Now</button></div>`;
   if (!latest) {
     return `${action}<span class="pill">No daily review yet</span>`;
   }
+  const latestProposal = proposals.find((proposal) => proposal.sourceDailyReviewId === latest.id) ?? proposals[0] ?? null;
+  const eligible = ["Rebalance Suggested", "Risk Reduction Suggested", "Opportunity Identified"].includes(latest.recommendation) && latest.status === "completed" && latest.dataFreshnessStatus === "fresh";
+  const proposalAction = eligible
+    ? `<button class="filter" type="button" data-create-review-proposal="${escapeHtml(latest.id)}">Create Draft Proposal</button>`
+    : `<span class="pill">${escapeHtml(dailyReviewIneligibleReason(latest))}</span>`;
   const benchmarkRows = latest.benchmarks.map((benchmark) => row(
     benchmark.name,
     benchmark.valueUsd === null ? `${benchmark.dataStatus}: ${benchmark.disclosure}` : `${money(benchmark.valueUsd)} (${pct(benchmark.returnPct ?? 0)})`
@@ -749,7 +794,7 @@ function renderDailyReview(reviews: DailyPortfolioReview[], portfolioId: string)
   const warnings = latest.policyWarnings.length
     ? `<div class="mini-card"><strong>Policy warnings</strong><div class="muted">${escapeHtml(latest.policyWarnings.join(" "))}</div></div>`
     : `<span class="pill">Policy compliant</span>`;
-  return `${action}
+  return `${action}<div class="filters">${proposalAction}<a class="filter" href="#daily-review">Return to Daily Review</a></div>
     <div class="grid">
       ${miniMetric("Portfolio value", money(latest.portfolioValueUsd))}
       ${miniMetric("Daily gain/loss", `${signedMoney(latest.dailyChangeUsd)} (${pct(latest.dailyChangePct)})`)}
@@ -771,8 +816,80 @@ function renderDailyReview(reviews: DailyPortfolioReview[], portfolioId: string)
         ${row("Current drawdown", pct(latest.currentDrawdownPct))}
       </div>
     </div>
+    ${renderRecommendationProposal(latestProposal)}
     ${warnings}
     <div class="card-list">${reviews.slice(0, 6).map((review) => `<div class="mini-card"><div class="mini-head"><strong>${escapeHtml(review.marketDate)} ${escapeHtml(review.recommendation)}</strong><span class="pill">${escapeHtml(review.dataFreshnessStatus)}</span></div><div class="muted">${escapeHtml(signedMoney(review.dailyChangeUsd))} daily · ${escapeHtml(pct(review.totalReturnPct))} since inception · ${formatTimestampElement(review.generatedAt)}</div></div>`).join("")}</div>`;
+}
+
+function dailyReviewIneligibleReason(review: DailyPortfolioReview): string {
+  if (review.status !== "completed") {
+    return "Review incomplete";
+  }
+  if (review.dataFreshnessStatus !== "fresh") {
+    return "Data not current";
+  }
+  return `${review.recommendation} is not proposal-eligible`;
+}
+
+function renderRecommendationProposal(proposal: RecommendationProposal | null): string {
+  if (!proposal) {
+    return `<div class="mini-card"><strong>Review Proposal</strong><div class="muted">No draft proposal has been created from this daily review.</div></div>`;
+  }
+  const actionButtons = proposal.status === "Draft" || proposal.status === "Ready for Review"
+    ? `<div class="filters">
+        <button class="filter" type="button" data-proposal-id="${escapeHtml(proposal.id)}" data-recommendation-proposal-action="ready">Mark Ready for Review</button>
+        <button class="filter" type="button" data-proposal-id="${escapeHtml(proposal.id)}" data-recommendation-proposal-action="regenerate">Regenerate</button>
+        <button class="filter" type="button" data-proposal-id="${escapeHtml(proposal.id)}" data-recommendation-proposal-action="reject">Reject</button>
+        <button class="filter" type="button" data-proposal-id="${escapeHtml(proposal.id)}" data-recommendation-proposal-action="supersede">Supersede</button>
+        <a class="filter" href="#daily-review">Return to Daily Review</a>
+      </div>`
+    : `<div class="filters"><a class="filter" href="#daily-review">Return to Daily Review</a></div>`;
+  const buyCards = proposal.proposedBuys.length ? proposal.proposedBuys.map(proposalTradeCard).join("") : '<span class="pill">No proposed buys</span>';
+  const sellCards = proposal.proposedSells.length ? proposal.proposedSells.map(proposalTradeCard).join("") : '<span class="pill">No proposed sells</span>';
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>Draft Rebalance Proposal</strong><span class="pill">${escapeHtml(proposal.status)}</span></div>
+    ${actionButtons}
+    <div class="grid">
+      ${miniMetric("Version", String(proposal.version))}
+      ${miniMetric("Recommendation", proposal.recommendationType)}
+      ${miniMetric("Turnover", pct(proposal.estimatedTurnoverPct))}
+      ${miniMetric("Remaining cash", money(proposal.estimatedRemainingCashUsd))}
+      ${miniMetric("Risk", `${pct(proposal.riskScoreBefore)} -> ${pct(proposal.riskScoreAfter)}`)}
+      ${miniMetric("Diversification", `${pct(proposal.diversificationScoreBefore)} -> ${pct(proposal.diversificationScoreAfter)}`)}
+      ${miniMetric("Policy", proposal.policyValidation.compliant ? "Compliant" : "Needs review")}
+      ${miniMetric("Expires", formatTimestampElement(proposal.expiresAt))}
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Current allocation</strong>${allocationRows(proposal.currentAllocation)}</div>
+      <div class="mini-card"><strong>Expected allocation</strong>${allocationRows(proposal.expectedAllocation)}</div>
+    </div>
+    <div class="two-col">
+      <div class="mini-card"><strong>Proposed sells</strong><div class="card-list">${sellCards}</div></div>
+      <div class="mini-card"><strong>Proposed buys</strong><div class="card-list">${buyCards}</div></div>
+    </div>
+    <div class="muted">Rules: ${escapeHtml(proposal.triggeredRules.join(", ") || "None")} · Market data ${formatTimestampElement(proposal.marketDataTimestamp ?? undefined)}.</div>
+    <div>${escapeHtml(sanitizeForUser(proposal.rationale, "Proposal rationale unavailable."))}</div>
+    ${proposal.policyValidation.reasons.length ? `<div class="muted">Policy review: ${escapeHtml(proposal.policyValidation.reasons.join(" "))}</div>` : ""}
+  </div>`;
+}
+
+function allocationRows(allocation: RecommendationProposal["currentAllocation"]): string {
+  return row("Cash", pct(allocation.cashPct)) +
+    row("Equity", pct(allocation.equityPct)) +
+    row("Bonds", pct(allocation.bondPct)) +
+    row("Largest position", pct(allocation.largestPositionPct)) +
+    row("Largest sector", pct(allocation.largestSectorPct));
+}
+
+function proposalTradeCard(line: RecommendationProposal["lines"][number]): string {
+  return `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(line.side)} ${escapeHtml(line.symbol)}</strong><span class="pill">${escapeHtml(line.assetCategory)}</span></div>
+    ${row("Amount", money(line.estimatedAmountUsd))}
+    ${row("Estimated quantity", formatQuantity(line.estimatedQuantity, line.symbol, line.assetClass))}
+    ${row("Reference price", money(line.referencePriceUsd))}
+    ${row("Confidence", pct(line.confidenceScore))}
+    <div class="muted">${escapeHtml(line.reason)}</div>
+  </div>`;
 }
 
 function renderDailyReviewChart(reviews: DailyPortfolioReview[]): string {
