@@ -1185,6 +1185,7 @@ function renderPaperOrderBatch(
       ${miniMetric("Remaining cash", money(batch.estimatedRemainingCashUsd))}
       ${miniMetric("Validation", batch.validationStatus)}
       ${miniMetric("Price drift", batch.priceDeviationStatus)}
+      ${miniMetric("Pricing timestamp", batch.marketDataTimestamp ? formatTimestampElement(batch.marketDataTimestamp) : "Unavailable")}
       ${miniMetric("Created", formatTimestampElement(batch.createdAt))}
     </div>
     <div class="card-list">${batch.orders.map(orderLineCard).join("")}</div>
@@ -1221,6 +1222,7 @@ function orderLineCard(order: PaperOrderBatch["orders"][number]): string {
     <div class="mini-head"><strong>${escapeHtml(order.symbol)}</strong><span class="pill">${escapeHtml(order.status)}</span></div>
     <div class="muted">${escapeHtml(order.securityName)} &middot; ${escapeHtml(order.assetCategory)}</div>
     <div class="row"><span>Side / type</span><span>${escapeHtml(order.side)} &middot; ${escapeHtml(order.orderType)}</span></div>
+    <div class="row"><span>Allocation</span><span>${escapeHtml(pct(order.targetAllocationPct))}</span></div>
     <div class="row"><span>Estimated quantity</span><span>${escapeHtml(formatQuantity(order.estimatedQuantity, order.symbol, order.assetClass))}</span></div>
     <div class="row"><span>Estimated cost</span><span>${escapeHtml(money(order.estimatedDollarAmountUsd))}</span></div>
     <div class="row"><span>Latest reference price</span><span>${escapeHtml(money(order.latestReferencePriceUsd))}</span></div>

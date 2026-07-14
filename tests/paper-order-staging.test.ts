@@ -5,7 +5,10 @@ import { buildAllocationProposal, type AllocationProposal, type ProposalAsset } 
 import { buildPaperOrderBatchPreview } from "../src/orders/staging.ts";
 import type { InvestmentPolicy } from "../src/policies/investmentPolicy.ts";
 
-const migration = readFileSync("migrations/0016_paper_order_staging.sql", "utf8");
+const migration = [
+  readFileSync("migrations/0016_paper_order_staging.sql", "utf8"),
+  readFileSync("migrations/0023_paper_order_staging_metadata.sql", "utf8")
+].join("\n");
 const serviceSource = readFileSync("src/orders/staging.ts", "utf8");
 
 const policy: InvestmentPolicy = {
@@ -41,8 +44,10 @@ test("approved proposal creates pending review paper orders", () => {
   assert.equal(preview.batch.orderCount, 3);
   assert.equal(preview.batch.totalEstimatedPurchaseUsd, 1440);
   assert.equal(preview.batch.estimatedRemainingCashUsd, 960);
+  assert.equal(preview.batch.marketDataTimestamp, "2026-07-13T21:00:00.000Z");
   assert.deepEqual(preview.orders.map((order) => order.symbol), ["SPY", "SCHD", "BND"]);
   assert.equal(preview.orders.every((order) => order.side === "Buy" && order.orderType === "market"), true);
+  assert.equal(preview.orders.every((order) => order.targetAllocationPct === 0.2), true);
 });
 
 test("draft and rejected proposals cannot be staged", () => {
@@ -52,6 +57,8 @@ test("draft and rejected proposals cannot be staged", () => {
 
 test("duplicate staging requests are idempotent by proposal", () => {
   assert.match(migration, /UNIQUE\(proposal_id\)/);
+  assert.match(migration, /market_data_timestamp TEXT/);
+  assert.match(migration, /target_allocation_pct REAL/);
   assert.match(serviceSource, /getPaperOrderBatchByProposalId\(db, proposalId\)/);
   assert.match(serviceSource, /INSERT OR IGNORE INTO paper_order_batches/);
   assert.match(serviceSource, /INSERT OR IGNORE INTO paper_order_batch_orders/);

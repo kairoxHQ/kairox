@@ -30,6 +30,7 @@ export interface PaperOrderBatch {
   validationReport: PaperOrderValidationReport;
   priceDeviationStatus: PriceDeviationStatus;
   priceDeviationThresholdPct: number;
+  marketDataTimestamp: string | null;
   status: PaperOrderBatchStatus;
   rejectionReason: string | null;
   cancelledReason: string | null;
@@ -53,6 +54,7 @@ export interface PaperOrderLine {
   orderType: "market";
   estimatedQuantity: number;
   estimatedDollarAmountUsd: number;
+  targetAllocationPct: number;
   referencePriceUsd: number;
   latestReferencePriceUsd: number;
   marketDataTimestamp: string;
@@ -125,6 +127,7 @@ interface BatchRow {
   validationReportJson: string;
   priceDeviationStatus: PriceDeviationStatus;
   priceDeviationThresholdPct: number;
+  marketDataTimestamp: string | null;
   status: PaperOrderBatchStatus;
   rejectionReason: string | null;
   cancelledReason: string | null;
@@ -147,6 +150,7 @@ interface OrderRow {
   orderType: "market";
   estimatedQuantity: number;
   estimatedDollarAmountUsd: number;
+  targetAllocationPct: number;
   referencePriceUsd: number;
   latestReferencePriceUsd: number;
   marketDataTimestamp: string;
@@ -277,6 +281,7 @@ export function buildPaperOrderBatchPreview(input: {
   }
 
   let totalEstimatedPurchaseUsd = 0;
+  let marketDataTimestamp: string | null = null;
   for (const [index, line] of investableLines.entries()) {
     const asset = assetBySymbol.get(line.symbol);
     const latestPrice = priceBySymbol.get(line.symbol);
@@ -310,6 +315,9 @@ export function buildPaperOrderBatchPreview(input: {
     if (priceDeviationWarning) {
       warnings.push(`${line.symbol} latest price moved ${(priceDeviationPct * 100).toFixed(2)}% from the proposal reference price.`);
     }
+    if (latestPriceFresh && latestPrice?.priceTimestamp) {
+      marketDataTimestamp = latestTimestamp([marketDataTimestamp, latestPrice.priceTimestamp]);
+    }
 
     const currentPositionValueUsd = positionBySymbol.get(line.symbol)?.marketValueUsd ?? 0;
     const policyValidation = validateInvestmentPolicy({
@@ -341,6 +349,7 @@ export function buildPaperOrderBatchPreview(input: {
       orderType: "market",
       estimatedQuantity,
       estimatedDollarAmountUsd: dollarAmount,
+      targetAllocationPct: line.targetAllocationPct,
       referencePriceUsd: referencePrice ?? 0,
       latestReferencePriceUsd: latestReferencePrice ?? 0,
       marketDataTimestamp: latestPriceFresh ? latestPrice?.priceTimestamp ?? createdAt : createdAt,
@@ -391,6 +400,7 @@ export function buildPaperOrderBatchPreview(input: {
     validationReport,
     priceDeviationStatus: orders.some((order) => order.priceDeviationWarning) ? "warning" as const : "none" as const,
     priceDeviationThresholdPct: threshold,
+    marketDataTimestamp,
     status: "Pending Review" as const,
     rejectionReason: null,
     cancelledReason: null,
@@ -410,6 +420,7 @@ export async function getLatestPaperOrderBatch(db: D1Database, portfolioId: stri
         total_estimated_purchase_usd AS totalEstimatedPurchaseUsd, estimated_remaining_cash_usd AS estimatedRemainingCashUsd,
         order_count AS orderCount, validation_status AS validationStatus, validation_report_json AS validationReportJson,
         price_deviation_status AS priceDeviationStatus, price_deviation_threshold_pct AS priceDeviationThresholdPct,
+        market_data_timestamp AS marketDataTimestamp,
         status, rejection_reason AS rejectionReason, cancelled_reason AS cancelledReason, reviewed_at AS reviewedAt,
         rejected_at AS rejectedAt, cancelled_at AS cancelledAt, created_at AS createdAt
        FROM paper_order_batches
@@ -429,6 +440,7 @@ export async function getPaperOrderBatchById(db: D1Database, batchId: string): P
         total_estimated_purchase_usd AS totalEstimatedPurchaseUsd, estimated_remaining_cash_usd AS estimatedRemainingCashUsd,
         order_count AS orderCount, validation_status AS validationStatus, validation_report_json AS validationReportJson,
         price_deviation_status AS priceDeviationStatus, price_deviation_threshold_pct AS priceDeviationThresholdPct,
+        market_data_timestamp AS marketDataTimestamp,
         status, rejection_reason AS rejectionReason, cancelled_reason AS cancelledReason, reviewed_at AS reviewedAt,
         rejected_at AS rejectedAt, cancelled_at AS cancelledAt, created_at AS createdAt
        FROM paper_order_batches
@@ -449,6 +461,7 @@ export async function getPaperOrderBatchByProposalId(db: D1Database, proposalId:
         total_estimated_purchase_usd AS totalEstimatedPurchaseUsd, estimated_remaining_cash_usd AS estimatedRemainingCashUsd,
         order_count AS orderCount, validation_status AS validationStatus, validation_report_json AS validationReportJson,
         price_deviation_status AS priceDeviationStatus, price_deviation_threshold_pct AS priceDeviationThresholdPct,
+        market_data_timestamp AS marketDataTimestamp,
         status, rejection_reason AS rejectionReason, cancelled_reason AS cancelledReason, reviewed_at AS reviewedAt,
         rejected_at AS rejectedAt, cancelled_at AS cancelledAt, created_at AS createdAt
        FROM paper_order_batches
@@ -582,8 +595,8 @@ async function insertPaperOrderBatch(db: D1Database, preview: PaperOrderBatchPre
       `INSERT OR IGNORE INTO paper_order_batches (
         id, portfolio_id, proposal_id, proposal_version, total_estimated_purchase_usd,
         estimated_remaining_cash_usd, order_count, validation_status, validation_report_json,
-        price_deviation_status, price_deviation_threshold_pct, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        price_deviation_status, price_deviation_threshold_pct, market_data_timestamp, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       preview.batch.id,
@@ -597,6 +610,7 @@ async function insertPaperOrderBatch(db: D1Database, preview: PaperOrderBatchPre
       JSON.stringify(preview.batch.validationReport),
       preview.batch.priceDeviationStatus,
       preview.batch.priceDeviationThresholdPct,
+      preview.batch.marketDataTimestamp,
       preview.batch.status,
       preview.batch.createdAt
     )
@@ -608,11 +622,11 @@ async function insertPaperOrderBatch(db: D1Database, preview: PaperOrderBatchPre
         `INSERT OR IGNORE INTO paper_order_batch_orders (
           id, batch_id, portfolio_id, proposal_id, proposal_version, line_order,
           symbol, security_name, side, order_type, estimated_quantity,
-          estimated_dollar_amount_usd, reference_price_usd, latest_reference_price_usd,
+          estimated_dollar_amount_usd, target_allocation_pct, reference_price_usd, latest_reference_price_usd,
           market_data_timestamp, asset_category, asset_class, investment_rationale,
           confidence_score, policy_validation_json, price_deviation_pct,
           price_deviation_warning, fractional_quantity_supported, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         order.id,
@@ -627,6 +641,7 @@ async function insertPaperOrderBatch(db: D1Database, preview: PaperOrderBatchPre
         order.orderType,
         order.estimatedQuantity,
         order.estimatedDollarAmountUsd,
+        order.targetAllocationPct,
         order.referencePriceUsd,
         order.latestReferencePriceUsd,
         order.marketDataTimestamp,
@@ -656,7 +671,7 @@ async function updateExistingPaperOrderBatch(
       `UPDATE paper_order_batches
        SET total_estimated_purchase_usd = ?, estimated_remaining_cash_usd = ?,
         order_count = ?, validation_status = ?, validation_report_json = ?,
-        price_deviation_status = ?, updated_at = datetime('now')
+        price_deviation_status = ?, market_data_timestamp = ?, updated_at = datetime('now')
        WHERE id = ?`
     )
     .bind(
@@ -666,6 +681,7 @@ async function updateExistingPaperOrderBatch(
       preview.batch.validationStatus,
       JSON.stringify(preview.batch.validationReport),
       preview.batch.priceDeviationStatus,
+      preview.batch.marketDataTimestamp,
       batchId
     )
     .run();
@@ -675,7 +691,7 @@ async function updateExistingPaperOrderBatch(
       .prepare(
         `UPDATE paper_order_batch_orders
          SET estimated_quantity = ?, estimated_dollar_amount_usd = ?,
-          reference_price_usd = ?, latest_reference_price_usd = ?,
+          target_allocation_pct = ?, reference_price_usd = ?, latest_reference_price_usd = ?,
           market_data_timestamp = ?, policy_validation_json = ?,
           price_deviation_pct = ?, price_deviation_warning = ?,
           status = ?, updated_at = datetime('now')
@@ -684,6 +700,7 @@ async function updateExistingPaperOrderBatch(
       .bind(
         order.estimatedQuantity,
         order.estimatedDollarAmountUsd,
+        order.targetAllocationPct,
         order.referencePriceUsd,
         order.latestReferencePriceUsd,
         order.marketDataTimestamp,
@@ -704,7 +721,8 @@ async function hydrateBatch(db: D1Database, row: BatchRow): Promise<PaperOrderBa
         `SELECT id, batch_id AS batchId, portfolio_id AS portfolioId, proposal_id AS proposalId,
           proposal_version AS proposalVersion, line_order AS lineOrder, symbol, security_name AS securityName,
           side, order_type AS orderType, estimated_quantity AS estimatedQuantity,
-          estimated_dollar_amount_usd AS estimatedDollarAmountUsd, reference_price_usd AS referencePriceUsd,
+          estimated_dollar_amount_usd AS estimatedDollarAmountUsd, target_allocation_pct AS targetAllocationPct,
+          reference_price_usd AS referencePriceUsd,
           latest_reference_price_usd AS latestReferencePriceUsd, market_data_timestamp AS marketDataTimestamp,
           asset_category AS assetCategory, asset_class AS assetClass, investment_rationale AS investmentRationale,
           confidence_score AS confidenceScore, policy_validation_json AS policyValidationJson,
@@ -728,6 +746,7 @@ async function hydrateBatch(db: D1Database, row: BatchRow): Promise<PaperOrderBa
     validationReport: parseJsonObject<PaperOrderValidationReport>(row.validationReportJson, { compliant: false, reasons: [], warnings: [] }),
     priceDeviationStatus: row.priceDeviationStatus,
     priceDeviationThresholdPct: row.priceDeviationThresholdPct,
+    marketDataTimestamp: row.marketDataTimestamp,
     status: row.status,
     rejectionReason: row.rejectionReason,
     cancelledReason: row.cancelledReason,
@@ -748,6 +767,7 @@ async function hydrateBatch(db: D1Database, row: BatchRow): Promise<PaperOrderBa
       orderType: order.orderType,
       estimatedQuantity: order.estimatedQuantity,
       estimatedDollarAmountUsd: order.estimatedDollarAmountUsd,
+      targetAllocationPct: order.targetAllocationPct,
       referencePriceUsd: order.referencePriceUsd,
       latestReferencePriceUsd: order.latestReferencePriceUsd,
       marketDataTimestamp: order.marketDataTimestamp,
@@ -885,6 +905,14 @@ function duplicates(values: string[]): string[] {
 function isFreshPrice(timestamp: string, nowMs: number): boolean {
   const priceMs = new Date(timestamp).getTime();
   return Number.isFinite(priceMs) && priceMs <= nowMs + 5 * 60 * 1000 && nowMs - priceMs <= PRICE_FRESHNESS_MS;
+}
+
+function latestTimestamp(values: Array<string | null>): string | null {
+  const timestamps = values.filter((value): value is string => Boolean(value));
+  if (timestamps.length === 0) {
+    return null;
+  }
+  return timestamps.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
 }
 
 function parseJsonObject<T>(value: string, fallback: T): T {
