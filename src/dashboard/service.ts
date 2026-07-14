@@ -19,9 +19,10 @@ import { RecommendationProposalService, type RecommendationProposal } from "../r
 import { StrategyEngine, type StrategyRun } from "../strategy/engine.ts";
 import { ForwardTestService, type ForwardMetricsSummary } from "../forward/forwardTest.ts";
 import { DailyManagementCycleService, type DailyManagementCycle } from "../management/dailyCycle.ts";
+import { BenchmarkComparisonService, type BenchmarkComparisonSummary } from "../benchmarks/comparison.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles] =
+  const [settings, performance, benchmarks, positions, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, forwardTest, dailyManagementCycles, benchmarkComparison] =
     await Promise.all([
       getSettings(db),
       calculatePerformance(db, portfolioId),
@@ -152,7 +153,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       getLatestPaperOrderBatch(db, portfolioId),
       new StrategyEngine(db).latest(portfolioId),
       new ForwardTestService(db).summary(portfolioId),
-      new DailyManagementCycleService(db).list(portfolioId)
+      new DailyManagementCycleService(db).list(portfolioId),
+      new BenchmarkComparisonService(db).summary(portfolioId)
     ]);
   const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
   const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
@@ -174,6 +176,7 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     recommendationProposals,
     strategyRun,
     forwardTest,
+    benchmarkComparison,
     settings,
     automation: {
       active: !settings.automationPaused,
@@ -248,6 +251,7 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
     recommendationProposals: RecommendationProposal[];
     strategyRun: StrategyRun | null;
     forwardTest: ForwardMetricsSummary;
+    benchmarkComparison: BenchmarkComparisonSummary;
     settings: { automationPaused: boolean };
     performance: {
       totalValueUsd: number;
@@ -300,6 +304,7 @@ export function renderDashboardHtml(data: {
   recommendationProposals?: RecommendationProposal[];
   strategyRun?: StrategyRun | null;
   forwardTest?: ForwardMetricsSummary;
+  benchmarkComparison?: BenchmarkComparisonSummary;
   settings: { automationPaused: boolean };
   performance: {
     totalValueUsd: number;
@@ -413,6 +418,9 @@ export function renderDashboardHtml(data: {
     .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
     .axis { stroke: #d9e1ea; stroke-width: 1; }
     .line { fill: none; stroke: #246bfe; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .benchmark-chart { width: 100%; height: 190px; display: block; }
+    .benchmark-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .series-toggle { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #cfd8e3; background: #f7fafc; color: #1f2a37; border-radius: 999px; padding: 6px 10px; font-size: .78rem; font-weight: 700; white-space: nowrap; }
     nav { display: flex; justify-content: center; flex-wrap: wrap; gap: var(--space-2); width: 100%; max-width: 100%; padding-top: var(--space-2); contain: layout paint; }
     nav a { color: white; text-decoration: none; border: 1px solid rgba(255,255,255,.3); border-radius: 999px; padding: 6px 10px; white-space: nowrap; }
     a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 3px solid #7db2ff; outline-offset: 3px; }
@@ -437,7 +445,7 @@ export function renderDashboardHtml(data: {
       <nav>
         <a href="#overview">Overview</a><a href="#positions">Positions</a><a href="#trades">Trades</a>
         <a href="#journal">Decision journal</a><a href="#performance">Performance</a>
-        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
+        <a href="#daily-review">Daily review</a><a href="#daily-management">Management cycle</a><a href="#strategy-analysis">Strategy</a><a href="#forward-test">Forward test</a><a href="#benchmark-comparison">Benchmarks</a><a href="#scheduled">Scheduled runs</a><a href="#settings">Settings</a>
       </nav>
     </div>
   </header>
@@ -451,6 +459,7 @@ export function renderDashboardHtml(data: {
     ${section("daily-management", "Daily Management", renderDailyManagement(data.dailyManagementCycles ?? [], data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("strategy-analysis", "Strategy Analysis", renderStrategyAnalysis(data.strategyRun ?? null, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     ${section("forward-test", "Forward Test", renderForwardTest(data.forwardTest, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
+    ${section("benchmark-comparison", "Performance Comparison", renderBenchmarkComparison(data.benchmarkComparison, data.selectedPortfolioId ?? "portfolio_tim_paper"))}
     <section id="overview" class="summary">
       ${summaryMetric("Portfolio value", money(data.performance.totalValueUsd), `Cash ${money(data.performance.cashUsd)}`)}
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
@@ -679,6 +688,33 @@ export function renderDashboardHtml(data: {
             return;
           }
           location.reload();
+        });
+      });
+      document.querySelectorAll("[data-run-benchmark-comparison]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const portfolioId = button.getAttribute("data-run-benchmark-comparison") || "portfolio_ira";
+          const confirmed = confirm("Run a protected benchmark comparison update? This records benchmark valuations only; it will not create proposals, orders, trades, fills, or cash changes.");
+          if (!confirmed) return;
+          const secret = prompt("Enter the paper-run secret to run this protected benchmark update.");
+          if (!secret) return;
+          const response = await fetch("/benchmark-comparison/run?portfolioId=" + encodeURIComponent(portfolioId), {
+            method: "POST",
+            headers: { "x-cryptolab-paper-secret": secret }
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({ error: "Benchmark update failed." }));
+            alert(payload.message || payload.error || "Benchmark update failed.");
+            return;
+          }
+          location.reload();
+        });
+      });
+      document.querySelectorAll("[data-benchmark-toggle]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const key = input.getAttribute("data-benchmark-toggle");
+          document.querySelectorAll('[data-benchmark-series="' + key + '"]').forEach((node) => {
+            node.style.display = input.checked ? "" : "none";
+          });
         });
       });
       document.querySelectorAll("[data-create-review-proposal]").forEach((button) => {
@@ -1075,6 +1111,76 @@ function renderDecisionQuality(summary: ForwardMetricsSummary): string {
   const confidence = summary.decisionQuality.confidenceCalibration.map((bucket) => row(`Confidence ${bucket.bucket}`, `${bucket.count} decisions | hit rate ${maybePct(bucket.hitRate)}`)).join("");
   const score = summary.decisionQuality.scoreCalibration.map((bucket) => row(`Score ${bucket.bucket}`, `${bucket.count} decisions | hit rate ${maybePct(bucket.hitRate)}`)).join("");
   return `<div class="card-list">${recent}</div><div class="mini-card"><strong>Confidence calibration</strong>${confidence}</div><div class="mini-card"><strong>Score calibration</strong>${score}</div>`;
+}
+
+function renderBenchmarkComparison(summary: BenchmarkComparisonSummary | undefined, portfolioId: string): string {
+  const action = `<div class="filters"><button class="filter" type="button" data-run-benchmark-comparison="${escapeHtml(portfolioId)}">Run Benchmark Update</button><a class="filter" href="/benchmark-comparison?portfolioId=${encodeURIComponent(portfolioId)}">JSON</a><a class="filter" href="${escapeHtml(summary?.monthlyReport.previewUrl ?? `/benchmark-comparison/monthly-report?portfolioId=${encodeURIComponent(portfolioId)}&format=html`)}">Printable report</a><a class="filter" href="${escapeHtml(summary?.monthlyReport.csvUrl ?? `/benchmark-comparison/history.csv?portfolioId=${encodeURIComponent(portfolioId)}`)}">CSV history</a><span class="pill">Paper simulation</span><span class="pill">No trades</span></div>`;
+  if (!summary || summary.configurations.length === 0) {
+    return `${action}<span class="pill">Benchmark comparison not initialized yet</span>`;
+  }
+  const cards = summary.benchmarks.map((benchmark) => `<div class="mini-card">
+    <div class="mini-head"><strong>${escapeHtml(shortBenchmarkName(benchmark.benchmarkName))}</strong><span class="pill">${escapeHtml(benchmark.aheadBehind)}</span></div>
+    ${row("Value", maybeMoney(benchmark.currentValueUsd))}
+    ${row("Return", maybePct(benchmark.returnPct))}
+    ${row("Drawdown", maybePct(benchmark.maximumDrawdownPct))}
+    ${row("Vs Kairox", benchmark.benchmarkKey === "kairox_actual" ? "Reference" : `${maybeMoney(benchmark.differenceVsKairoxUsd)} (${maybePct(benchmark.differenceVsKairoxPct)})`)}
+    ${row("Risk", benchmark.riskLevel)}
+    <div class="muted">${escapeHtml(benchmark.pricingStatus)}${benchmark.dataTimestamp ? ` · ${formatTimestampElement(benchmark.dataTimestamp)}` : ""}</div>
+  </div>`).join("");
+  const warning = summary.warnings.length
+    ? `<div class="mini-card"><strong>Data-quality warnings</strong><div class="muted">${escapeHtml(summary.warnings.join(" "))}</div></div>`
+    : `<span class="pill">All available benchmark values use trusted data or documented assumptions</span>`;
+  const configs = summary.configurations.map((config) => row(config.benchmarkName, `${money(config.startingCapitalUsd)} from ${config.startDate} · ${config.rebalanceRule} · ${config.dataProvider}`)).join("");
+  return `${action}
+    <div class="mini-card"><div class="mini-head"><strong>${escapeHtml(summary.evidence.label)} evidence</strong><span class="pill">${escapeHtml(String(summary.evidence.days))} valuation days</span></div><div>${escapeHtml(summary.proofSummary)}</div><div class="muted">${escapeHtml(summary.evidence.description)}</div></div>
+    <div class="grid">${cards}</div>
+    ${renderBenchmarkComparisonChart(summary)}
+    <div class="two-col">
+      <div class="mini-card"><strong>Benchmark definitions</strong>${configs}</div>
+      <div class="mini-card"><strong>Monthly reports</strong>
+        ${row("Workflow", summary.monthlyReport.status === "available" ? "Report available" : "Available when a valid month has completed")}
+        <div class="row"><span>Preview</span><span><a href="${escapeHtml(summary.monthlyReport.previewUrl)}">Printable HTML</a></span></div>
+        <div class="row"><span>CSV</span><span><a href="${escapeHtml(summary.monthlyReport.csvUrl)}">Download CSV</a></span></div>
+        ${row("Privacy label", "IRA · Paper simulation · Conservative strategy")}
+      </div>
+    </div>
+    ${warning}`;
+}
+
+function renderBenchmarkComparisonChart(summary: BenchmarkComparisonSummary): string {
+  const grouped = new Map<string, { name: string; values: Array<{ date: string; value: number }> }>();
+  for (const config of summary.configurations) {
+    grouped.set(config.id, { name: config.benchmarkName, values: [] });
+  }
+  for (const point of summary.history) {
+    const group = grouped.get(point.benchmarkId);
+    if (group && point.pricingStatus !== "unavailable") {
+      group.values.push({ date: point.valuationDate, value: point.totalValueUsd });
+    }
+  }
+  const series = [...grouped.entries()].filter(([, item]) => item.values.length > 0);
+  if (series.length === 0) {
+    return `<div class="mini-card"><strong>Comparison chart</strong><div class="muted">Run a protected benchmark update to record the first comparison valuation.</div></div>`;
+  }
+  const width = 720;
+  const height = 190;
+  const colors = ["#246bfe", "#64748b", "#12633a", "#7a5400", "#9f2f22", "#6b3fa0"];
+  const allDates = [...new Set(series.flatMap(([, item]) => item.values.map((point) => point.date)))].sort();
+  const values = series.flatMap(([, item]) => item.values.map((point) => point.value));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const line = (points: Array<{ date: string; value: number }>) => points.map((point) => {
+    const x = allDates.length === 1 ? 0 : (allDates.indexOf(point.date) / (allDates.length - 1)) * width;
+    const y = height - ((point.value - min) / range) * (height - 24) - 12;
+    return `${round(x)},${round(y)}`;
+  }).join(" ");
+  const toggles = series.map(([id, item], index) => `<label class="series-toggle"><input type="checkbox" checked data-benchmark-toggle="${escapeHtml(id)}"><span style="color:${colors[index % colors.length]}">■</span>${escapeHtml(shortBenchmarkName(item.name))}</label>`).join("");
+  return `<div class="mini-card"><strong>Value comparison</strong><div class="filters">${toggles}</div><svg class="benchmark-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Kairox benchmark value comparison"><line class="axis" x1="0" y1="${height - 8}" x2="${width}" y2="${height - 8}"></line>${series.map(([id, item], index) => `<polyline class="benchmark-line" data-benchmark-series="${escapeHtml(id)}" stroke="${colors[index % colors.length]}" points="${line(item.values)}"></polyline>`).join("")}</svg><div class="muted">Series are plotted only for recorded valuation dates. Missing market data is not interpolated.</div></div>`;
+}
+
+function shortBenchmarkName(name: string): string {
+  return name.replace(" benchmark", "").replace("Kairox IRA paper portfolio", "Kairox").replace("Conservative 60/40", "60/40");
 }
 
 function renderRecommendationProposal(proposal: RecommendationProposal | null): string {

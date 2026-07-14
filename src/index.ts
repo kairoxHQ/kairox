@@ -50,6 +50,7 @@ import { MarketDataService } from "./market/service.ts";
 import { StrategyEngine } from "./strategy/engine.ts";
 import { ForwardTestService, runScheduledForwardTests } from "./forward/forwardTest.ts";
 import { DailyManagementCycleService, runScheduledDailyManagementCycles } from "./management/dailyCycle.ts";
+import { BenchmarkComparisonService, runScheduledBenchmarkComparisons } from "./benchmarks/comparison.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -142,14 +143,17 @@ export default {
       "/recommendation-proposals",
       "/strategy-runs",
       "/forward-test",
-      "/forward-test/monthly-report"
+      "/forward-test/monthly-report",
+      "/benchmark-comparison",
+      "/benchmark-comparison/monthly-report",
+      "/benchmark-comparison/history.csv"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create"]);
+    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -217,6 +221,17 @@ export default {
       if (url.pathname === "/forward-test/monthly-report/create") {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         return json(await new ForwardTestService(env.DB).monthlyReport(portfolioId, url.searchParams.get("month") ?? undefined, url.searchParams.get("reason")));
+      }
+
+      if (url.pathname === "/benchmark-comparison/run") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const result = await new BenchmarkComparisonService(env.DB).run(portfolioId, "manual");
+        return benchmarkComparisonActionResponse(request, portfolioId, result);
+      }
+
+      if (url.pathname === "/benchmark-comparison/monthly-report/create") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new BenchmarkComparisonService(env.DB).createMonthlyReport(portfolioId, url.searchParams.get("month") ?? undefined, url.searchParams.get("reason")));
       }
 
       const createReviewProposalMatch = url.pathname.match(/^\/daily-reviews\/([A-Za-z0-9_-]+)\/proposal$/);
@@ -643,6 +658,24 @@ export default {
         return json(await new ForwardTestService(env.DB).monthlyReportPreview(portfolioId, url.searchParams.get("month") ?? undefined));
       }
 
+      if (url.pathname === "/benchmark-comparison") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        return json(await new BenchmarkComparisonService(env.DB).summary(portfolioId));
+      }
+
+      if (url.pathname === "/benchmark-comparison/monthly-report") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const format = url.searchParams.get("format");
+        const report = await new BenchmarkComparisonService(env.DB).monthlyReportPreview(portfolioId, url.searchParams.get("month") ?? undefined, format === "html" ? "html" : format === "csv" ? "csv" : "json");
+        return report instanceof Response ? report : json(report);
+      }
+
+      if (url.pathname === "/benchmark-comparison/history.csv") {
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
+        const report = await new BenchmarkComparisonService(env.DB).monthlyReportPreview(portfolioId, url.searchParams.get("month") ?? undefined, "csv");
+        return report instanceof Response ? report : json(report);
+      }
+
       if (url.pathname === "/summaries") {
         return json(await getSummaries(env.DB));
       }
@@ -691,7 +724,8 @@ export default {
       runScheduledPaperStrategy(env, controller.cron, scheduledAt),
       runScheduledDailyReviews(env, scheduledAt),
       runScheduledDailyManagementCycles(env, scheduledAt),
-      runScheduledForwardTests(env, scheduledAt)
+      runScheduledForwardTests(env, scheduledAt),
+      runScheduledBenchmarkComparisons(env, scheduledAt)
     ]));
   }
 } satisfies ExportedHandler<Env>;
@@ -803,6 +837,17 @@ function forwardTestActionResponse(request: Request, portfolioId: string, payloa
     return new Response(null, {
       status: 303,
       headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#forward-test` }
+    });
+  }
+  return json(payload);
+}
+
+function benchmarkComparisonActionResponse(request: Request, portfolioId: string, payload: unknown): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    return new Response(null, {
+      status: 303,
+      headers: { location: `/dashboard?portfolioId=${encodeURIComponent(portfolioId)}#benchmark-comparison` }
     });
   }
   return json(payload);
