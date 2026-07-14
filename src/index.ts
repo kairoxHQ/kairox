@@ -2,6 +2,7 @@ import { getBenchmarks } from "./market/benchmarks.ts";
 import { getAssets, getWatchlists } from "./market/assets.ts";
 import { getPortfolio } from "./portfolio/service.ts";
 import { getDashboardData, renderDashboard } from "./dashboard/service.ts";
+import { renderHome } from "./home/service.ts";
 import { getDiagnostics, getOpportunities, getPerformance, getTrades, runAllPaperProfiles } from "./paper/service.ts";
 import { getProfileComparison, listPortfolioProfiles } from "./portfolio/profiles.ts";
 import {
@@ -384,7 +385,11 @@ export default {
         });
       }
 
-      if (url.pathname === "/" || url.pathname === "/status") {
+      if (url.pathname === "/") {
+        return renderHome(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined);
+      }
+
+      if (url.pathname === "/status") {
         return json({
           app: "Kairox",
           version: "0.1.0",
