@@ -533,6 +533,9 @@ function isPermittedPreviousClose(quote: NormalizedQuote, now: Date, policy: Fre
   if (!timestamp) {
     return false;
   }
+  if (quote.marketSession === "after_hours" || quote.marketSession === "pre_market" || quote.marketSession === "closed") {
+    return now.getTime() - timestamp.getTime() <= 4 * 24 * 60 * 60 * 1000;
+  }
   const calendar = calendarReason(now);
   return calendar !== null && now.getTime() - timestamp.getTime() <= 4 * 24 * 60 * 60 * 1000;
 }

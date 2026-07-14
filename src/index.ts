@@ -264,7 +264,8 @@ export default {
 
       if (url.pathname === "/market-data/quote-status") {
         const symbols = (url.searchParams.get("symbols") ?? "").split(",").map((item) => item.trim()).filter(Boolean);
-        return json({ quotes: await new MarketDataService(env.DB).getQuotes(symbols, "dashboard") });
+        const quotes = await new MarketDataService(env.DB).getQuotes(symbols, "dashboard");
+        return json({ quotes: quotes.map(sanitizeDiagnosticQuote) });
       }
 
       if (url.pathname === "/market-data/provider-health") {
@@ -726,6 +727,27 @@ async function getHistoricalCoverage(db: D1Database, symbol?: string) {
     : db.prepare(`${base} GROUP BY symbol, provider ORDER BY symbol ASC, provider ASC`);
   const result = await query.all();
   return result.results ?? [];
+}
+
+function sanitizeDiagnosticQuote(quote: Awaited<ReturnType<MarketDataService["getQuote"]>>) {
+  return {
+    symbol: quote.symbol,
+    securityName: quote.securityName,
+    assetType: quote.assetType,
+    exchange: quote.exchange,
+    currency: quote.currency,
+    lastPrice: quote.lastPrice,
+    previousClose: quote.previousClose,
+    marketSession: quote.marketSession,
+    providerTimestamp: quote.providerTimestamp,
+    receivedTimestamp: quote.receivedTimestamp,
+    providerName: quote.providerName,
+    dataQualityStatus: quote.dataQualityStatus,
+    source: quote.source,
+    cached: quote.cached,
+    warnings: quote.warnings,
+    validation: quote.validation
+  };
 }
 
 async function stagePaperOrdersOrConflict(db: D1Database, proposalId: string) {
