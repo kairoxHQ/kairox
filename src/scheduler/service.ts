@@ -1,6 +1,7 @@
 import { runPaperStrategy } from "../paper/service.ts";
 import { recordEquityHistory } from "../portfolio/performance.ts";
 import { listPortfolioProfiles } from "../portfolio/profiles.ts";
+import { generateFounderReport, type FounderReportInput, type FounderReportProfileInput } from "../reports/founderReport.ts";
 import { getSettings } from "../settings/service.ts";
 import { listRows } from "../shared/db.ts";
 import type { Env } from "../shared/types.ts";
@@ -56,14 +57,15 @@ export async function runScheduledPaperStrategy(
       await recordEquityHistory(env.DB, new Date().toISOString(), profile.portfolioId);
     }
     await generateSummaries(env.DB, scheduledDate);
-    const storedSummary = {
+    const storedSummary: FounderReportInput = {
       runKey,
       status: "completed",
       automationPaused: settings.automationPaused,
-      profiles: profileSummaries
+      profiles: profileSummaries as FounderReportProfileInput[]
     };
+    const founderReport = await generateFounderReport(env.DB, storedSummary, scheduledDate);
     await finishScheduledRun(env.DB, runKey, "completed", JSON.stringify(storedSummary), null);
-    return storedSummary;
+    return { ...storedSummary, founderReportId: founderReport.id };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown scheduled run error";
     await finishScheduledRun(env.DB, runKey, "failed", null, message);

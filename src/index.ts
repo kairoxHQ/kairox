@@ -60,6 +60,7 @@ import { StrategyEvaluationLabService } from "./lab/strategyEvaluationLab.ts";
 import { PortfolioResearchEngine, runScheduledResearch, type ResearchRankBy } from "./research/engine.ts";
 import { EventBus } from "./events/eventBus.ts";
 import { KnowledgeGraphService } from "./graph/knowledgeGraph.ts";
+import { listFounderReports } from "./reports/founderReport.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -166,6 +167,7 @@ export default {
       "/research/securities",
       "/research/rankings",
       "/research/candidates",
+      "/founder-reports",
       "/events",
       "/events/observability",
       "/events/dead-letters",
@@ -813,6 +815,10 @@ export default {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         const summary = await new PortfolioResearchEngine(env.DB).summary(portfolioId);
         return json({ candidates: summary.candidates });
+      }
+
+      if (url.pathname === "/founder-reports") {
+        return json(await listFounderReports(env.DB, safeLimit(url.searchParams.get("limit"), 20, 100)));
       }
 
       if (url.pathname === "/events") {
