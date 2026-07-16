@@ -1,4 +1,5 @@
 import { runPaperStrategy } from "../paper/service.ts";
+import { PaperObservationService } from "../paper/observation.ts";
 import { recordEquityHistory } from "../portfolio/performance.ts";
 import { listPortfolioProfiles } from "../portfolio/profiles.ts";
 import { generateFounderReport, type FounderReportInput, type FounderReportProfileInput } from "../reports/founderReport.ts";
@@ -10,6 +11,41 @@ import { generateSummaries } from "../summaries/service.ts";
 const OVERLAP_WINDOW_MS = 15 * 60 * 1000;
 
 export async function runScheduledPaperStrategy(
+  env: Env,
+  cron: string,
+  scheduledAt = new Date().toISOString()
+): Promise<unknown> {
+  return runScheduledPaperObservation(env, scheduledAt);
+}
+
+export async function runScheduledPaperObservation(env: Env, scheduledAt = new Date().toISOString()): Promise<unknown> {
+  const service = new PaperObservationService(env);
+  const scheduledDate = new Date(scheduledAt);
+  const continued = await service.processNextChild(undefined, scheduledDate);
+  if (continued) {
+    return { continued: true, child: continued };
+  }
+  const started = await service.start(scheduledDate, false);
+  const child = await service.processNextChild(started.parent.id, scheduledDate);
+  return { ...started, child };
+}
+
+export async function reconcileStaleScheduledRuns(
+  db: D1Database,
+  now = new Date(),
+  staleMs = OVERLAP_WINDOW_MS
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - staleMs).toISOString();
+  const message = "Scheduled run exceeded the Worker execution budget or did not reach a terminal state.";
+  const result = await db.prepare(
+    `UPDATE scheduled_runs
+     SET status = 'failed', error_details = ?, finished_at = ?
+     WHERE status = 'running' AND started_at < ?`
+  ).bind(message, now.toISOString(), cutoff).run();
+  return Number(result.meta?.changes ?? 0);
+}
+
+async function runLegacyScheduledPaperStrategy(
   env: Env,
   cron: string,
   scheduledAt = new Date().toISOString()

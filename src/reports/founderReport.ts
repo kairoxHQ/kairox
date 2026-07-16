@@ -35,6 +35,11 @@ export interface FounderReport {
     assetsEvaluated: number;
     tradesExecuted: number;
     decisionsLogged: number;
+    profilesCompleted: number;
+    profilesNoAction: number;
+    profilesFailed: number;
+    tradesPrevented: number;
+    policyFindings: number;
     providerFailures: number;
     staleDataRejections: number;
     actionCounts: Record<string, number>;
@@ -113,6 +118,7 @@ export function buildFounderReport(input: FounderReportInput, now = new Date()):
     `Autonomous paper cycle ${input.status} for ${input.runKey}.`,
     "Scope: paper simulation only. No live brokerage credentials or live order execution were used.",
     `Automation paused: ${input.automationPaused ? "yes" : "no"}.`,
+    `Profiles attempted: ${facts.profileCount}. Completed: ${facts.profilesCompleted}. No action: ${facts.profilesNoAction}. Failed: ${facts.profilesFailed}.`,
     ...profileLines,
     tradeLine,
     dataLine,
@@ -135,16 +141,27 @@ function summarizeFacts(input: FounderReportInput): FounderReport["facts"] {
   const safeguards: Array<{ profile: string; symbol: string; reason: string }> = [];
   let assetsEvaluated = 0;
   let tradesExecuted = 0;
+  let profilesCompleted = 0;
+  let profilesNoAction = 0;
+  let profilesFailed = 0;
+  let tradesPrevented = 0;
+  let policyFindings = 0;
   let providerFailures = 0;
   let staleDataRejections = 0;
   for (const profile of input.profiles) {
     const profileName = profile.profile?.displayName ?? profile.profile?.profileKey ?? "Unknown profile";
-    for (const symbol of profile.symbols ?? []) {
+    const symbols = profile.symbols ?? [];
+    if (symbols.some((symbol) => symbol.executed)) profilesCompleted += 1;
+    else if (symbols.some((symbol) => /failed|error|unavailable|provider|database/i.test(symbol.reason))) profilesFailed += 1;
+    else profilesNoAction += 1;
+    for (const symbol of symbols) {
       assetsEvaluated += 1;
       if (symbol.executed) tradesExecuted += 1;
       actionCounts[symbol.action] = (actionCounts[symbol.action] ?? 0) + 1;
       if (/provider|quote|market data|unavailable|failed|failure|malformed/i.test(symbol.reason)) providerFailures += 1;
       if (/stale/i.test(symbol.reason)) staleDataRejections += 1;
+      if (!symbol.executed && /blocked|prevented|risk checks|cash|drawdown|concentration|duplicate|market hours|paused|limit/i.test(symbol.reason)) tradesPrevented += 1;
+      if (/policy|risk checks|cash|drawdown|concentration|limit/i.test(symbol.reason)) policyFindings += 1;
       if (/risk checks|cash|drawdown|concentration|duplicate|market hours|paused|blocked|limit/i.test(symbol.reason)) {
         safeguards.push({ profile: profileName, symbol: symbol.symbol, reason: symbol.reason.slice(0, 240) });
       }
@@ -157,6 +174,11 @@ function summarizeFacts(input: FounderReportInput): FounderReport["facts"] {
     assetsEvaluated,
     tradesExecuted,
     decisionsLogged: assetsEvaluated,
+    profilesCompleted,
+    profilesNoAction,
+    profilesFailed,
+    tradesPrevented,
+    policyFindings,
     providerFailures,
     staleDataRejections,
     actionCounts,
@@ -178,6 +200,11 @@ function mapReportRow(row: FounderReportRow): FounderReport {
       assetsEvaluated: 0,
       tradesExecuted: 0,
       decisionsLogged: 0,
+      profilesCompleted: 0,
+      profilesNoAction: 0,
+      profilesFailed: 0,
+      tradesPrevented: 0,
+      policyFindings: 0,
       providerFailures: 0,
       staleDataRejections: 0,
       actionCounts: {},

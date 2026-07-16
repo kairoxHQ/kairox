@@ -3,7 +3,8 @@ import { getAssets, getWatchlists } from "./market/assets.ts";
 import { getPortfolio } from "./portfolio/service.ts";
 import { getDashboardData, renderDashboard } from "./dashboard/service.ts";
 import { renderHome } from "./home/service.ts";
-import { getDiagnostics, getOpportunities, getPerformance, getTrades, runAllPaperProfiles } from "./paper/service.ts";
+import { getDiagnostics, getOpportunities, getPerformance, getTrades } from "./paper/service.ts";
+import { PaperObservationService } from "./paper/observation.ts";
 import { getProfileComparison, listPortfolioProfiles } from "./portfolio/profiles.ts";
 import {
   getIntelligenceCategories,
@@ -12,7 +13,7 @@ import {
   getIntelligenceToday,
   getMarketStory
 } from "./intelligence/service.ts";
-import { runScheduledPaperStrategy, getScheduledRuns } from "./scheduler/service.ts";
+import { runScheduledPaperStrategy, getScheduledRuns, reconcileStaleScheduledRuns } from "./scheduler/service.ts";
 import { getSettings, setAutomationPaused } from "./settings/service.ts";
 import { checkDatabase } from "./shared/db.ts";
 import { json, notFound } from "./shared/http.ts";
@@ -211,7 +212,7 @@ export default {
       }
 
       if (url.pathname === "/paper/run") {
-        return json(await runAllPaperProfiles(env));
+        return json(await new PaperObservationService(env).start(new Date(), true));
       }
 
       if (url.pathname === "/settings/pause") {
@@ -942,16 +943,39 @@ export default {
 
   scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): void {
     const scheduledAt = new Date(controller.scheduledTime).toISOString();
-    ctx.waitUntil(Promise.all([
-      runScheduledPaperStrategy(env, controller.cron, scheduledAt),
-      runScheduledDailyOrchestrations(env, scheduledAt),
-      runScheduledForwardTests(env, scheduledAt),
-      runScheduledMarketIntelligence(env, scheduledAt),
-      runScheduledResearch(env, scheduledAt),
-      new EventBus(env.DB).processPending(100, new Date(scheduledAt))
-    ]));
+    ctx.waitUntil(runOneScheduledWorkload(env, controller.cron, scheduledAt));
   }
 } satisfies ExportedHandler<Env>;
+
+async function runOneScheduledWorkload(env: Env, cron: string, scheduledAt: string): Promise<unknown> {
+  const scheduledDate = new Date(scheduledAt);
+  await reconcileStaleScheduledRuns(env.DB, scheduledDate);
+  const continuedPaperObservation = await new PaperObservationService(env).processNextChild(undefined, scheduledDate);
+  if (continuedPaperObservation) {
+    return { prioritizedPaperObservation: true, child: continuedPaperObservation };
+  }
+  const halfHourIndex = Math.floor(scheduledDate.getTime() / (30 * 60 * 1000));
+  const slot = halfHourIndex % 6;
+  if (slot === 0) {
+    return runScheduledPaperStrategy(env, cron, scheduledAt);
+  }
+  if (slot === 1) {
+    return runScheduledDailyOrchestrations(env, scheduledAt);
+  }
+  if (slot === 2) {
+    return runScheduledForwardTests(env, scheduledAt);
+  }
+  if (slot === 3) {
+    return runScheduledMarketIntelligence(env, scheduledAt);
+  }
+  if (slot === 4) {
+    return runScheduledResearch(env, scheduledAt);
+  }
+  if (slot === 5) {
+    return new EventBus(env.DB).processPending(100, scheduledDate);
+  }
+  return new EventBus(env.DB).processPending(100, scheduledDate);
+}
 
 async function authorize(request: Request, env: Env): Promise<Response | null> {
   if (!env.PAPER_RUN_SECRET) {

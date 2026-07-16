@@ -1,6 +1,6 @@
 import { canExecuteAt } from "../market/hours.ts";
 import { listEnabledWatchlistAssets, type AssetRegistryRecord } from "../market/assets.ts";
-import { MarketDataService, quoteToMarketDataset } from "../market/service.ts";
+import { MarketDataService, quoteToMarketDataset, type MarketDataSnapshot } from "../market/service.ts";
 import {
   getCachedMarketData,
   getLastKnownGoodMarketData,
@@ -9,7 +9,7 @@ import {
   upsertMarketDataStatus
 } from "../market/status.ts";
 import { calculatePerformance, recordEquityHistory } from "../portfolio/performance.ts";
-import { getPortfolioProfile, listPortfolioProfiles, type PortfolioProfile } from "../portfolio/profiles.ts";
+import { getPortfolioProfile, type PortfolioProfile } from "../portfolio/profiles.ts";
 import { assessPaperTrade } from "../risk/checks.ts";
 import { decidePaperAction, estimateTransactionCost, type StrategyDecision } from "../strategy/paperStrategy.ts";
 import { calculateIndicators } from "../strategy/indicators.ts";
@@ -59,6 +59,21 @@ export interface PaperRunOptions {
   now?: Date;
   allowExecution?: boolean;
   portfolioId?: string;
+  marketDataSnapshot?: MarketDataSnapshot;
+  budget?: PaperRunBudget;
+}
+
+export interface PaperRunBudget {
+  outboundProviderRequests: number;
+  d1Reads: number;
+  d1Writes: number;
+  d1Batches: number;
+  cacheHits: number;
+  cacheMisses: number;
+  profilesProcessed: number;
+  symbolsProcessed: number;
+  retries: number;
+  fallbacks: number;
 }
 
 export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}): Promise<unknown> {
@@ -84,9 +99,12 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
   for (const asset of assets) {
     const symbol = asset.symbol;
-    const marketData = await getMarketData(env.DB, marketDataService, asset, now);
+    const marketData = await getMarketData(env.DB, marketDataService, asset, now, options.marketDataSnapshot, options.budget);
+    incrementBudget(options.budget, "symbolsProcessed");
     await recordMarketSnapshot(env.DB, marketData);
+    incrementBudget(options.budget, "d1Writes");
     await upsertMarketDataStatus(env.DB, marketStatusFromDataset(marketData, new Date().toISOString()));
+    incrementBudget(options.budget, "d1Writes");
 
     const portfolio = await getPortfolioRow(env.DB, portfolioId);
     const position = await getPosition(env.DB, portfolioId, symbol);
@@ -223,25 +241,6 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     .run();
 
   return summary;
-}
-
-export async function runAllPaperProfiles(env: Env, options: Omit<PaperRunOptions, "portfolioId" | "runKey"> = {}): Promise<unknown> {
-  const profiles = await listPortfolioProfiles(env.DB);
-  const startedAt = (options.now ?? new Date()).toISOString();
-  const results = [];
-  for (const profile of profiles) {
-    results.push(await runPaperStrategy(env, {
-      ...options,
-      portfolioId: profile.portfolioId,
-      runKey: `paper:${profile.profileKey}:${startedAt.slice(0, 16)}`
-    }));
-  }
-  return {
-    startedAt,
-    paperOnly: true,
-    liveTradingEnabled: false,
-    profiles: results
-  };
 }
 
 export async function getMarket(db: D1Database): Promise<unknown> {
@@ -423,14 +422,25 @@ async function getMarketData(
   db: D1Database,
   marketDataService: MarketDataService,
   asset: AssetRegistryRecord,
-  now: Date
+  now: Date,
+  sharedSnapshot?: MarketDataSnapshot,
+  budget?: PaperRunBudget
 ): Promise<MarketDataset> {
   const symbol = asset.symbol;
+  const snapshotQuote = sharedSnapshot?.quotes.get(asset.providerSymbol) ?? sharedSnapshot?.quotes.get(symbol);
+  if (snapshotQuote) {
+    incrementBudget(budget, "cacheHits");
+    return { ...quoteToMarketDataset(snapshotQuote), symbol: asset.symbol, assetClass: asset.assetType };
+  }
+  incrementBudget(budget, "d1Reads");
   const cached = await getCachedMarketData(db, symbol, now);
   if (cached) {
+    incrementBudget(budget, "cacheHits");
     return cached;
   }
 
+  incrementBudget(budget, "cacheMisses");
+  incrementBudget(budget, "outboundProviderRequests");
   const live = quoteToMarketDataset(await marketDataService.getQuote(asset.providerSymbol, "proposal", now));
   const normalizedLive = { ...live, symbol: asset.symbol, assetClass: asset.assetType };
   if (normalizedLive.validated) {
@@ -452,6 +462,11 @@ async function getMarketData(
     userMessage: normalizedLive.userMessage ?? userMessageForMarketData(symbol, normalizedLive.error),
     error: normalizedLive.userMessage ?? userMessageForMarketData(symbol, normalizedLive.error)
   };
+}
+
+function incrementBudget(budget: PaperRunBudget | undefined, key: keyof PaperRunBudget, amount = 1): void {
+  if (!budget) return;
+  budget[key] += amount;
 }
 
 function exposureForAsset(
