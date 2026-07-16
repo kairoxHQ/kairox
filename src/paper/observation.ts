@@ -5,7 +5,7 @@ import { listPortfolioProfiles, type PortfolioProfile } from "../portfolio/profi
 import { generateFounderReport, type FounderReportInput, type FounderReportProfileInput } from "../reports/founderReport.ts";
 import { listRows } from "../shared/db.ts";
 import type { Env } from "../shared/types.ts";
-import { runPaperStrategy, type PaperRunBudget, type PaperRunOptions } from "./service.ts";
+import { recoverPaperStrategyRunFromPersistedWork, runPaperStrategy, type PaperRunBudget, type PaperRunOptions } from "./service.ts";
 
 export type ObservationRunStatus = "queued" | "running" | "completed" | "no_action" | "failed" | "partial_failure" | "abandoned";
 export type ObservationChildStatus = "queued" | "running" | "completed" | "no_action" | "failed" | "abandoned";
@@ -54,6 +54,13 @@ export interface PaperObservationChildRun {
   errorMessage: string | null;
   retryCount: number;
   idempotencyKey: string;
+  phase: string;
+  phaseStartedAt: string | null;
+  phaseFinishedAt: string | null;
+  heartbeatAt: string | null;
+  phaseAttempts: number;
+  phaseErrorCategory: string | null;
+  phaseErrorMessage: string | null;
   startedAt: string | null;
   finishedAt: string | null;
 }
@@ -111,6 +118,13 @@ interface ChildRow {
   errorMessage: string | null;
   retryCount: number;
   idempotencyKey: string;
+  phase: string;
+  phaseStartedAt: string | null;
+  phaseFinishedAt: string | null;
+  heartbeatAt: string | null;
+  phaseAttempts: number;
+  phaseErrorCategory: string | null;
+  phaseErrorMessage: string | null;
   startedAt: string | null;
   finishedAt: string | null;
 }
@@ -167,12 +181,26 @@ export class PaperObservationService {
   async reconcileStaleRuns(now = new Date(), staleMs = STALE_RUNNING_MS): Promise<number> {
     const cutoff = new Date(now.getTime() - staleMs).toISOString();
     const message = "Observation run exceeded the Worker execution budget or did not reach a terminal state.";
-    const childResult = await this.db.prepare(
-      `UPDATE paper_observation_profile_runs
-       SET status = 'failed', error_category = 'stale_running', error_message = ?, finished_at = ?, updated_at = datetime('now')
-       WHERE status = 'running' AND started_at < ?`
-    ).bind(message, now.toISOString(), cutoff).run();
-    return Number(childResult.meta?.changes ?? 0);
+    const staleChildren = await listRows<ChildRow>(
+      this.db.prepare(`${CHILD_SELECT} WHERE status = 'running' AND COALESCE(heartbeat_at, started_at) < ? ORDER BY created_at ASC`).bind(cutoff)
+    );
+    let recoveredOrFailed = 0;
+    for (const childRow of staleChildren) {
+      const child = mapChild(childRow);
+      if (await this.recoverRunningChild(child, now)) {
+        recoveredOrFailed += 1;
+        continue;
+      }
+      const childResult = await this.db.prepare(
+        `UPDATE paper_observation_profile_runs
+         SET status = 'failed', phase = 'failed', phase_finished_at = ?, heartbeat_at = ?,
+           error_category = 'stale_running', error_message = ?, phase_error_category = 'stale_running',
+           phase_error_message = ?, finished_at = ?, updated_at = datetime('now')
+         WHERE id = ? AND status = 'running'`
+      ).bind(now.toISOString(), now.toISOString(), message, message, now.toISOString(), child.id).run();
+      recoveredOrFailed += Number(childResult.meta?.changes ?? 0);
+    }
+    return recoveredOrFailed;
   }
 
   private async createParent(runKey: string, window: string, now: Date): Promise<PaperObservationRun> {
@@ -213,8 +241,8 @@ export class PaperObservationService {
       return this.db.prepare(
         `INSERT OR IGNORE INTO paper_observation_profile_runs (
           id, parent_run_id, portfolio_id, profile_key, run_key, status, idempotency_key,
-          request_budget_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, datetime('now'), datetime('now'))`
+          request_budget_json, phase, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'queued', datetime('now'), datetime('now'))`
       ).bind(
         `paper_observation_child_${hashText(runKey)}`,
         parentId,
@@ -231,9 +259,10 @@ export class PaperObservationService {
     const claim = await this.db.prepare(
       `UPDATE paper_observation_profile_runs
        SET status = 'running', retry_count = retry_count + CASE WHEN started_at IS NULL THEN 0 ELSE 1 END,
-         started_at = COALESCE(started_at, ?), updated_at = datetime('now')
+         phase = 'evaluate', phase_attempts = phase_attempts + 1, phase_started_at = ?,
+         heartbeat_at = ?, started_at = COALESCE(started_at, ?), updated_at = datetime('now')
        WHERE id = ? AND status = 'queued'`
-    ).bind(now.toISOString(), child.id).run();
+    ).bind(now.toISOString(), now.toISOString(), now.toISOString(), child.id).run();
     if (Number(claim.meta?.changes ?? 0) !== 1) {
       return (await this.getChild(child.id)) ?? child;
     }
@@ -248,15 +277,19 @@ export class PaperObservationService {
         portfolioId: child.portfolioId,
         marketDataSnapshot: snapshot ?? undefined,
         budget,
-        runMaintenance: false
+        runMaintenance: false,
+        onProgress: async (progress) => {
+          await this.recordChildProgress(child.id, progress.phase, budget);
+        }
       } satisfies PaperRunOptions) as FounderReportProfileInput;
       const status: ObservationChildStatus = childStatusFromSummary(summary);
       await this.db.prepare(
         `UPDATE paper_observation_profile_runs
-         SET status = ?, summary_json = ?, request_budget_json = ?, error_category = NULL,
-           error_message = NULL, finished_at = ?, updated_at = datetime('now')
+         SET status = ?, phase = 'finalized', summary_json = ?, request_budget_json = ?,
+           phase_finished_at = ?, heartbeat_at = ?, error_category = NULL, error_message = NULL,
+           phase_error_category = NULL, phase_error_message = NULL, finished_at = ?, updated_at = datetime('now')
          WHERE id = ?`
-      ).bind(status, JSON.stringify(summary), JSON.stringify(budget), now.toISOString(), child.id).run();
+      ).bind(status, JSON.stringify(summary), JSON.stringify(budget), now.toISOString(), now.toISOString(), now.toISOString(), child.id).run();
       await new EventBus(this.db).publish({
         eventType: "PaperObservation.ProfileCompleted",
         correlationId: parent.id,
@@ -268,13 +301,68 @@ export class PaperObservationService {
     } catch (error) {
       await this.db.prepare(
         `UPDATE paper_observation_profile_runs
-         SET status = 'failed', request_budget_json = ?, error_category = ?, error_message = ?,
-           finished_at = ?, updated_at = datetime('now')
+         SET status = 'failed', phase = 'failed', request_budget_json = ?,
+           error_category = ?, error_message = ?, phase_error_category = ?, phase_error_message = ?,
+           phase_finished_at = ?, heartbeat_at = ?, finished_at = ?, updated_at = datetime('now')
          WHERE id = ?`
-      ).bind(JSON.stringify(budget), errorCategory(error), safeErrorMessage(error), now.toISOString(), child.id).run();
+      ).bind(
+        JSON.stringify(budget),
+        errorCategory(error),
+        safeErrorMessage(error),
+        errorCategory(error),
+        safeErrorMessage(error),
+        now.toISOString(),
+        now.toISOString(),
+        now.toISOString(),
+        child.id
+      ).run();
     }
     await this.finalizeParent(parent.id, now);
     return (await this.getChild(child.id)) as PaperObservationChildRun;
+  }
+
+  private async recoverRunningChild(child: PaperObservationChildRun, now: Date): Promise<boolean> {
+    if (!child.startedAt) return false;
+    const parent = await this.getParent(child.parentRunId);
+    if (!parent) return false;
+    const expectedSymbols = (await listEnabledWatchlistAssets(this.db, child.portfolioId)).length;
+    const budget: PaperRunBudget = { ...child.requestBudget, profilesProcessed: Math.max(1, child.requestBudget.profilesProcessed) };
+    const summary = await recoverPaperStrategyRunFromPersistedWork(this.env, {
+      runKey: child.runKey,
+      portfolioId: child.portfolioId,
+      startedAt: child.startedAt,
+      now,
+      expectedSymbols,
+      budget
+    }) as FounderReportProfileInput | null;
+    if (!summary) return false;
+    const status: ObservationChildStatus = childStatusFromSummary(summary);
+    await this.db.prepare(
+      `UPDATE paper_observation_profile_runs
+       SET status = ?, phase = 'recovered_finalized', summary_json = ?, request_budget_json = ?,
+         phase_finished_at = ?, heartbeat_at = ?, error_category = NULL, error_message = NULL,
+         phase_error_category = NULL, phase_error_message = NULL, finished_at = ?, updated_at = datetime('now')
+       WHERE id = ? AND status = 'running'`
+    ).bind(status, JSON.stringify(summary), JSON.stringify(budget), now.toISOString(), now.toISOString(), now.toISOString(), child.id).run();
+    await new EventBus(this.db).publish({
+      eventType: "PaperObservation.ProfileRecovered",
+      correlationId: parent.id,
+      portfolioId: child.portfolioId,
+      sourceService: "PaperObservationService",
+      payload: { parentRunId: parent.id, childRunId: child.id, status, phase: "recovered_finalized", budget },
+      occurredAt: now
+    });
+    await this.finalizeParent(parent.id, now);
+    return true;
+  }
+
+  private async recordChildProgress(childId: string, phase: string, budget: PaperRunBudget): Promise<void> {
+    budget.d1Writes += 1;
+    await this.db.prepare(
+      `UPDATE paper_observation_profile_runs
+       SET phase = ?, heartbeat_at = ?, request_budget_json = ?, updated_at = datetime('now')
+       WHERE id = ? AND status = 'running'`
+    ).bind(phase, new Date().toISOString(), JSON.stringify(budget), childId).run();
   }
 
   private async finalizeParent(parentId: string, now: Date): Promise<void> {
@@ -444,6 +532,13 @@ function mapChild(row: ChildRow): PaperObservationChildRun {
     errorMessage: row.errorMessage,
     retryCount: Number(row.retryCount),
     idempotencyKey: row.idempotencyKey,
+    phase: row.phase,
+    phaseStartedAt: row.phaseStartedAt,
+    phaseFinishedAt: row.phaseFinishedAt,
+    heartbeatAt: row.heartbeatAt,
+    phaseAttempts: Number(row.phaseAttempts),
+    phaseErrorCategory: row.phaseErrorCategory,
+    phaseErrorMessage: row.phaseErrorMessage,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt
   };
@@ -470,5 +565,8 @@ const CHILD_SELECT = `SELECT id, parent_run_id AS parentRunId, portfolio_id AS p
   profile_key AS profileKey, run_key AS runKey, status, summary_json AS summaryJson,
   request_budget_json AS requestBudgetJson, error_category AS errorCategory,
   error_message AS errorMessage, retry_count AS retryCount, idempotency_key AS idempotencyKey,
+  phase, phase_started_at AS phaseStartedAt, phase_finished_at AS phaseFinishedAt,
+  heartbeat_at AS heartbeatAt, phase_attempts AS phaseAttempts,
+  phase_error_category AS phaseErrorCategory, phase_error_message AS phaseErrorMessage,
   started_at AS startedAt, finished_at AS finishedAt
   FROM paper_observation_profile_runs`;

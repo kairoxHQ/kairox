@@ -62,6 +62,16 @@ export interface PaperRunOptions {
   marketDataSnapshot?: MarketDataSnapshot;
   budget?: PaperRunBudget;
   runMaintenance?: boolean;
+  onProgress?: (progress: PaperRunProgress) => Promise<void>;
+  progressIntervalSymbols?: number;
+}
+
+export interface PaperRunProgress {
+  phase: "evaluate" | "persist_decisions" | "execute" | "maintenance" | "finalize";
+  symbolsProcessed: number;
+  recommendationsPersisted: number;
+  tradesExecuted: number;
+  budget: PaperRunBudget | null;
 }
 
 export interface PaperRunBudget {
@@ -75,6 +85,20 @@ export interface PaperRunBudget {
   symbolsProcessed: number;
   retries: number;
   fallbacks: number;
+}
+
+interface PersistedRecommendationRow {
+  symbol: string;
+  action: string;
+  explanation: string;
+  signalKey: string;
+  screenRank: number | null;
+  screenScore: number | null;
+  createdAt: string;
+}
+
+interface PersistedTradeRow {
+  signalKey: string;
 }
 
 export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}): Promise<unknown> {
@@ -131,6 +155,9 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
   const ranked = rankOpportunities(evaluated);
   const summaries: RunSymbolSummary[] = [];
+  const progressInterval = Math.max(1, options.progressIntervalSymbols ?? 4);
+  let persistedRecommendations = 0;
+  let progressTradesExecuted = 0;
 
   for (const item of ranked) {
     const { asset, marketData, decision, screen } = item;
@@ -186,6 +213,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
         : baseRisk;
 
     await recordRecommendationAndJournal(env.DB, portfolioId, marketData, decision, risk, screen);
+    persistedRecommendations += 1;
 
     let executed = false;
     let reason = risk.reasons.join(" ");
@@ -194,6 +222,9 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
       const execution = await executePaperTrade(env.DB, portfolioId, marketData, decision, proposedTradeValueUsd, position);
       executed = execution.executed;
       reason = execution.reason;
+      if (executed) {
+        progressTradesExecuted += 1;
+      }
       if (executed && decision.action === "BUY" && !position) {
         openedNewPositionThisRun = true;
       }
@@ -208,9 +239,27 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
       rank: screen.rank,
       screenScore: screen.score
     });
+    if (options.onProgress && summaries.length % progressInterval === 0) {
+      await options.onProgress({
+        phase: progressTradesExecuted > 0 ? "execute" : "persist_decisions",
+        symbolsProcessed: summaries.length,
+        recommendationsPersisted: persistedRecommendations,
+        tradesExecuted: progressTradesExecuted,
+        budget: options.budget ?? null
+      });
+    }
   }
 
   const executedTradeCount = summaries.filter((summary) => summary.executed).length;
+  if (options.onProgress) {
+    await options.onProgress({
+      phase: executedTradeCount > 0 ? "maintenance" : "finalize",
+      symbolsProcessed: summaries.length,
+      recommendationsPersisted: persistedRecommendations,
+      tradesExecuted: executedTradeCount,
+      budget: options.budget ?? null
+    });
+  }
   const maintenanceResult = (options.runMaintenance ?? true) || executedTradeCount > 0
     ? await runPostStrategyMaintenance(env.DB, portfolioId, runStartedAt, now)
     : await lightweightPerformanceSummary(env.DB, portfolioId, runStartedAt);
@@ -236,6 +285,93 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   await env.DB.prepare("INSERT INTO strategy_runs (id, run_key, status, summary_json) VALUES (?, ?, ?, ?)")
     .bind(id("run", runKey), runKey, "completed", JSON.stringify(summary))
     .run();
+
+  return summary;
+}
+
+export async function recoverPaperStrategyRunFromPersistedWork(
+  env: Env,
+  options: {
+    runKey: string;
+    portfolioId: string;
+    startedAt: string;
+    now: Date;
+    expectedSymbols: number;
+    budget?: PaperRunBudget;
+  }
+): Promise<unknown | null> {
+  const existingRun = await env.DB.prepare("SELECT summary_json AS summaryJson FROM strategy_runs WHERE run_key = ?")
+    .bind(options.runKey)
+    .first<{ summaryJson: string }>();
+  if (existingRun) {
+    return { idempotent: true, ...JSON.parse(existingRun.summaryJson) };
+  }
+
+  const recommendations = await listRows<PersistedRecommendationRow>(
+    env.DB.prepare(
+      `SELECT symbol, action, explanation, signal_key AS signalKey,
+        screen_rank AS screenRank, screen_score AS screenScore, created_at AS createdAt
+       FROM recommendations
+       WHERE portfolio_id = ? AND created_at >= datetime(?)
+       ORDER BY created_at ASC`
+    ).bind(options.portfolioId, options.startedAt)
+  );
+  incrementBudget(options.budget, "d1Reads");
+
+  if (recommendations.length < options.expectedSymbols) {
+    return null;
+  }
+
+  const signalKeys = recommendations.map((row) => row.signalKey);
+  const placeholders = signalKeys.map(() => "?").join(",");
+  const trades = signalKeys.length
+    ? await listRows<PersistedTradeRow>(
+        env.DB.prepare(
+          `SELECT signal_key AS signalKey
+           FROM trades
+           WHERE portfolio_id = ? AND signal_key IN (${placeholders})`
+        ).bind(options.portfolioId, ...signalKeys)
+      )
+    : [];
+  incrementBudget(options.budget, "d1Reads");
+  const executedSignals = new Set(trades.map((row) => row.signalKey));
+  const profile = await getPortfolioProfile(env.DB, options.portfolioId);
+  const executedTradeCount = executedSignals.size;
+  const maintenanceResult = executedTradeCount > 0
+    ? await runPostStrategyMaintenance(env.DB, options.portfolioId, options.startedAt, options.now)
+    : await lightweightPerformanceSummary(env.DB, options.portfolioId, options.startedAt);
+  const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB, options.portfolioId), new Map(), options.portfolioId);
+  const summary = {
+    runKey: options.runKey,
+    recovered: true,
+    profile: {
+      portfolioId: options.portfolioId,
+      profileKey: profile.profileKey,
+      displayName: profile.displayName,
+      riskPosture: profile.riskPosture
+    },
+    startedAt: options.startedAt,
+    trigger: "scheduled",
+    paperOnly: true,
+    liveTradingEnabled: false,
+    symbols: recommendations.map((row) => ({
+      symbol: row.symbol,
+      action: row.action,
+      executed: executedSignals.has(row.signalKey),
+      reason: row.explanation,
+      signalKey: row.signalKey,
+      rank: row.screenRank,
+      screenScore: row.screenScore ?? undefined
+    })),
+    portfolio: finalPortfolio,
+    performance: maintenanceResult.performance,
+    maintenance: maintenanceResult.maintenance
+  };
+
+  await env.DB.prepare("INSERT OR IGNORE INTO strategy_runs (id, run_key, status, summary_json) VALUES (?, ?, ?, ?)")
+    .bind(id("run", options.runKey), options.runKey, "completed", JSON.stringify(summary))
+    .run();
+  incrementBudget(options.budget, "d1Writes");
 
   return summary;
 }
@@ -701,10 +837,12 @@ async function executePaperTrade(
       return { executed: false, reason: "Trade size too small after estimated costs." };
     }
 
-    await insertOrder(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision);
-    await insertTrade(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey);
-    await upsertPosition(db, portfolioId, marketData, quantity, fillPrice, position);
-    await updateCash(db, portfolioId, -(quantity * fillPrice + fee));
+    await db.batch([
+      insertOrderStatement(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision),
+      insertTradeStatement(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey),
+      upsertPositionStatement(db, portfolioId, marketData, quantity, fillPrice, position),
+      updateCashStatement(db, portfolioId, -(quantity * fillPrice + fee))
+    ]);
     return { executed: true, reason: "Paper buy filled at validated market price with estimated costs." };
   }
 
@@ -714,10 +852,12 @@ async function executePaperTrade(
     const gross = quantity * fillPrice;
     const fee = Math.max(0.01, gross * FEE_RATE);
 
-    await insertOrder(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision);
-    await insertTrade(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey);
-    await closePosition(db, position.id, marketData, fillPrice);
-    await updateCash(db, portfolioId, gross - fee);
+    await db.batch([
+      insertOrderStatement(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision),
+      insertTradeStatement(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey),
+      closePositionStatement(db, position.id, marketData, fillPrice),
+      updateCashStatement(db, portfolioId, gross - fee)
+    ]);
     return { executed: true, reason: "Paper sell filled at validated market price with estimated costs." };
   }
 
@@ -764,6 +904,45 @@ async function insertOrder(
     .run();
 }
 
+function insertOrderStatement(
+  db: D1Database,
+  portfolioId: string,
+  orderId: string,
+  marketData: MarketDataset,
+  side: "BUY" | "SELL",
+  quantity: number,
+  fillPrice: number,
+  fee: number,
+  idempotencyKey: string,
+  decision: StrategyDecision
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO orders (
+        id, portfolio_id, symbol, asset_class, side, order_type, quantity,
+        status, paper_only, risk_checked, explanation, signal_key,
+        estimated_fee_usd, fill_price_usd, idempotency_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      orderId,
+      portfolioId,
+      marketData.symbol,
+      marketData.assetClass,
+      side,
+      "market",
+      quantity,
+      "filled",
+      1,
+      1,
+      decision.explanation,
+      decision.signalKey,
+      fee,
+      fillPrice,
+      idempotencyKey
+    );
+}
+
 async function insertTrade(
   db: D1Database,
   portfolioId: string,
@@ -785,6 +964,28 @@ async function insertTrade(
     )
     .bind(tradeId, orderId, portfolioId, marketData.symbol, marketData.assetClass, side, quantity, fillPrice, fee, 1, signalKey)
     .run();
+}
+
+function insertTradeStatement(
+  db: D1Database,
+  portfolioId: string,
+  tradeId: string,
+  orderId: string,
+  marketData: MarketDataset,
+  side: "BUY" | "SELL",
+  quantity: number,
+  fillPrice: number,
+  fee: number,
+  signalKey: string
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO trades (
+        id, order_id, portfolio_id, symbol, asset_class, side,
+        quantity, price_usd, fees_usd, paper_only, signal_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(tradeId, orderId, portfolioId, marketData.symbol, marketData.assetClass, side, quantity, fillPrice, fee, 1, signalKey);
 }
 
 async function upsertPosition(
@@ -829,6 +1030,47 @@ async function upsertPosition(
     .run();
 }
 
+function upsertPositionStatement(
+  db: D1Database,
+  portfolioId: string,
+  marketData: MarketDataset,
+  quantity: number,
+  fillPrice: number,
+  existing: PositionRow | null
+): D1PreparedStatement {
+  const positionId = `pos_${portfolioId}_${marketData.symbol.replace(/[^A-Z0-9]/g, "_")}`;
+  const existingQuantity = existing?.quantity ?? 0;
+  const newQuantity = existingQuantity + quantity;
+  const newAverage =
+    newQuantity > 0
+      ? ((existingQuantity * (existing?.avgEntryPriceUsd ?? 0)) + quantity * fillPrice) / newQuantity
+      : fillPrice;
+
+  return db
+    .prepare(
+      `INSERT INTO positions (
+        id, portfolio_id, symbol, asset_class, quantity,
+        avg_entry_price_usd, current_price_usd, market_value_usd, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        quantity = excluded.quantity,
+        avg_entry_price_usd = excluded.avg_entry_price_usd,
+        current_price_usd = excluded.current_price_usd,
+        market_value_usd = excluded.market_value_usd,
+        updated_at = datetime('now')`
+    )
+    .bind(
+      positionId,
+      portfolioId,
+      marketData.symbol,
+      marketData.assetClass,
+      newQuantity,
+      newAverage,
+      marketData.priceUsd,
+      newQuantity * marketData.priceUsd
+    );
+}
+
 async function closePosition(db: D1Database, positionId: string, marketData: MarketDataset, fillPrice: number): Promise<void> {
   await db
     .prepare(
@@ -840,11 +1082,27 @@ async function closePosition(db: D1Database, positionId: string, marketData: Mar
     .run();
 }
 
+function closePositionStatement(db: D1Database, positionId: string, marketData: MarketDataset, fillPrice: number): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE positions
+       SET quantity = 0, current_price_usd = ?, market_value_usd = 0, updated_at = datetime('now')
+       WHERE id = ?`
+    )
+    .bind(fillPrice, positionId);
+}
+
 async function updateCash(db: D1Database, portfolioId: string, deltaUsd: number): Promise<void> {
   await db
     .prepare("UPDATE portfolios SET cash_usd = cash_usd + ?, updated_at = datetime('now') WHERE id = ?")
     .bind(deltaUsd, portfolioId)
     .run();
+}
+
+function updateCashStatement(db: D1Database, portfolioId: string, deltaUsd: number): D1PreparedStatement {
+  return db
+    .prepare("UPDATE portfolios SET cash_usd = cash_usd + ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(deltaUsd, portfolioId);
 }
 
 async function updateDailyAndBenchmarks(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<void> {
