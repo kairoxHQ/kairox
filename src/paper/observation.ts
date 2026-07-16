@@ -247,7 +247,8 @@ export class PaperObservationService {
         allowExecution: true,
         portfolioId: child.portfolioId,
         marketDataSnapshot: snapshot ?? undefined,
-        budget
+        budget,
+        runMaintenance: false
       } satisfies PaperRunOptions) as FounderReportProfileInput;
       const status: ObservationChildStatus = childStatusFromSummary(summary);
       await this.db.prepare(
@@ -298,10 +299,15 @@ export class PaperObservationService {
       runKey: parent.runKey,
       status,
       automationPaused: false,
-      profiles: children.map((child) => child.summary ?? {
-        profile: { portfolioId: child.portfolioId, profileKey: child.profileKey, displayName: child.profileKey },
-        symbols: child.errorMessage ? [{ symbol: "profile", action: "DO_NOTHING", executed: false, reason: child.errorMessage }] : []
-      })
+      profiles: children.map((child) => ({
+        ...(child.summary ?? {
+          profile: { portfolioId: child.portfolioId, profileKey: child.profileKey, displayName: child.profileKey },
+          symbols: child.errorMessage ? [{ symbol: "profile", action: "DO_NOTHING", executed: false, reason: child.errorMessage }] : []
+        }),
+        status: child.status,
+        errorCategory: child.errorCategory,
+        errorMessage: child.errorMessage
+      }))
     };
     const report = await generateFounderReport(this.db, reportInput, now);
     await new EventBus(this.db).publish({

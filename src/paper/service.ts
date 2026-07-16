@@ -61,6 +61,7 @@ export interface PaperRunOptions {
   portfolioId?: string;
   marketDataSnapshot?: MarketDataSnapshot;
   budget?: PaperRunBudget;
+  runMaintenance?: boolean;
 }
 
 export interface PaperRunBudget {
@@ -209,15 +210,10 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     });
   }
 
-  await updateDailyAndBenchmarks(env.DB, portfolioId);
-  const performance = await recordEquityHistory(env.DB, runStartedAt, portfolioId);
-  await ensureDailyStartSnapshot(env.DB, portfolioId, now);
-  const valuation = await getPortfolioValuation(env.DB, portfolioId, now);
-  await recordValuationSnapshot(env.DB, valuation);
-  await completeDailySnapshot(env.DB, portfolioId, now);
-  await evaluateAndAwardMilestones(env.DB, portfolioId, valuation);
-  await recordValuationJourneyEvents(env.DB, valuation);
-  await generateSummaries(env.DB, now);
+  const executedTradeCount = summaries.filter((summary) => summary.executed).length;
+  const maintenanceResult = (options.runMaintenance ?? true) || executedTradeCount > 0
+    ? await runPostStrategyMaintenance(env.DB, portfolioId, runStartedAt, now)
+    : await lightweightPerformanceSummary(env.DB, portfolioId, runStartedAt);
   const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB, portfolioId), new Map(), portfolioId);
   const summary = {
     runKey,
@@ -233,7 +229,8 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     liveTradingEnabled: false,
     symbols: summaries,
     portfolio: finalPortfolio,
-    performance
+    performance: maintenanceResult.performance,
+    maintenance: maintenanceResult.maintenance
   };
 
   await env.DB.prepare("INSERT INTO strategy_runs (id, run_key, status, summary_json) VALUES (?, ?, ?, ?)")
@@ -883,6 +880,51 @@ async function updateDailyAndBenchmarks(db: D1Database, portfolioId = TIM_PORTFO
   if (latestSpy) {
     await upsertBenchmark(db, "spy_buy_and_hold", snapshotDate, "SPY", latestSpy.priceUsd, latestSpy.source, latestSpy.priceAsOf);
   }
+}
+
+async function runPostStrategyMaintenance(
+  db: D1Database,
+  portfolioId: string,
+  runStartedAt: string,
+  now: Date
+): Promise<{ performance: unknown; maintenance: { mode: "full"; skipped: false } }> {
+  await updateDailyAndBenchmarks(db, portfolioId);
+  const performance = await recordEquityHistory(db, runStartedAt, portfolioId);
+  await ensureDailyStartSnapshot(db, portfolioId, now);
+  const valuation = await getPortfolioValuation(db, portfolioId, now);
+  await recordValuationSnapshot(db, valuation);
+  await completeDailySnapshot(db, portfolioId, now);
+  await evaluateAndAwardMilestones(db, portfolioId, valuation);
+  await recordValuationJourneyEvents(db, valuation);
+  await generateSummaries(db, now);
+  return { performance, maintenance: { mode: "full", skipped: false } };
+}
+
+async function lightweightPerformanceSummary(
+  db: D1Database,
+  portfolioId: string,
+  runStartedAt: string
+): Promise<{ performance: unknown; maintenance: { mode: "skipped_no_trade_observation"; skipped: true; reason: string } }> {
+  const portfolio = await getPortfolioRow(db, portfolioId);
+  const state = await calculatePortfolioState(db, portfolio, new Map(), portfolioId);
+  return {
+    performance: {
+      startingBalanceUsd: portfolio.startingBalanceUsd,
+      cashUsd: state.cashUsd,
+      positionsValueUsd: state.positionsValueUsd,
+      totalValueUsd: state.totalValueUsd,
+      totalReturnUsd: round(state.totalValueUsd - portfolio.startingBalanceUsd),
+      totalReturnPct: portfolio.startingBalanceUsd > 0 ? round((state.totalValueUsd - portfolio.startingBalanceUsd) / portfolio.startingBalanceUsd) : 0,
+      maxDrawdownPct: state.drawdownPct,
+      benchmarkReturns: [],
+      generatedAt: runStartedAt
+    },
+    maintenance: {
+      mode: "skipped_no_trade_observation",
+      skipped: true,
+      reason: "No paper trade executed; deferred valuation, milestone, journey, and summary maintenance to scheduled portfolio workflows."
+    }
+  };
 }
 
 async function latestValidatedMarket(

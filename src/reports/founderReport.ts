@@ -2,6 +2,9 @@ import { listRows } from "../shared/db.ts";
 
 export interface FounderReportProfileInput {
   idempotent?: boolean;
+  status?: "completed" | "no_action" | "failed" | string;
+  errorCategory?: string | null;
+  errorMessage?: string | null;
   profile?: {
     portfolioId: string;
     profileKey: string;
@@ -151,8 +154,11 @@ function summarizeFacts(input: FounderReportInput): FounderReport["facts"] {
   for (const profile of input.profiles) {
     const profileName = profile.profile?.displayName ?? profile.profile?.profileKey ?? "Unknown profile";
     const symbols = profile.symbols ?? [];
-    if (symbols.some((symbol) => symbol.executed)) profilesCompleted += 1;
-    else if (symbols.some((symbol) => /failed|error|unavailable|provider|database/i.test(symbol.reason))) profilesFailed += 1;
+    if (profile.status === "completed") profilesCompleted += 1;
+    else if (profile.status === "failed" || profile.status === "abandoned") profilesFailed += 1;
+    else if (profile.status === "no_action") profilesNoAction += 1;
+    else if (symbols.some((symbol) => symbol.executed)) profilesCompleted += 1;
+    else if (symbols.some((symbol) => /failed|error|unavailable|provider|database|stale_running/i.test(symbol.reason))) profilesFailed += 1;
     else profilesNoAction += 1;
     for (const symbol of symbols) {
       assetsEvaluated += 1;

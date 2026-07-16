@@ -41,6 +41,15 @@ test("profile execution has terminal statuses for no action, success, and failur
   assert.match(observationSource, /partial_failure/);
 });
 
+test("observation child skips heavy maintenance unless a paper trade executes", () => {
+  assert.match(observationSource, /runMaintenance: false/);
+  assert.match(paperSource, /runMaintenance\?: boolean/);
+  assert.match(paperSource, /executedTradeCount > 0/);
+  assert.match(paperSource, /runPostStrategyMaintenance/);
+  assert.match(paperSource, /lightweightPerformanceSummary/);
+  assert.match(paperSource, /skipped_no_trade_observation/);
+});
+
 test("stale running observations are reconciled without deletion", () => {
   assert.match(observationSource, /reconcileStaleRuns/);
   assert.match(observationSource, /WHERE status = 'running' AND started_at < \?/);

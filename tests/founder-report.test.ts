@@ -56,6 +56,45 @@ test("founder report explains executed paper trades and safeguards", () => {
   assert.match(report.body, /Safety safeguards recorded 1 block/);
 });
 
+test("founder report classifies stale child failure from terminal child status", () => {
+  const report = buildFounderReport({
+    runKey: "paper_observation:2026-07-16T11:24",
+    status: "partial_failure",
+    automationPaused: false,
+    profiles: [
+      {
+        status: "no_action",
+        profile: { portfolioId: "portfolio_kairox_conservative", profileKey: "kairox_conservative", displayName: "Kairox Conservative" },
+        symbols: [{ symbol: "BND", action: "DO_NOTHING", executed: false, reason: "No paper execution requested." }]
+      },
+      {
+        status: "no_action",
+        profile: { portfolioId: "portfolio_tim_paper", profileKey: "tim_balanced", displayName: "Tim Balanced" },
+        symbols: [{ symbol: "BTC-USD", action: "HOLD", executed: false, reason: "No paper execution requested." }]
+      },
+      {
+        status: "failed",
+        errorCategory: "stale_running",
+        errorMessage: "Observation run exceeded the Worker execution budget or did not reach a terminal state.",
+        profile: { portfolioId: "portfolio_kairox_high_risk", profileKey: "kairox_high_risk", displayName: "Kairox High Risk" },
+        symbols: [{ symbol: "profile", action: "DO_NOTHING", executed: false, reason: "Observation run exceeded the Worker execution budget or did not reach a terminal state." }]
+      },
+      {
+        status: "no_action",
+        profile: { portfolioId: "portfolio_ira", profileKey: "ira", displayName: "IRA" },
+        symbols: [{ symbol: "SPY", action: "DO_NOTHING", executed: false, reason: "No paper execution requested." }]
+      }
+    ]
+  }, new Date("2026-07-16T13:00:27.000Z"));
+
+  assert.equal(report.facts.status, "partial_failure");
+  assert.equal(report.facts.profilesCompleted, 0);
+  assert.equal(report.facts.profilesNoAction, 3);
+  assert.equal(report.facts.profilesFailed, 1);
+  assert.match(report.body, /Autonomous paper cycle partial_failure/);
+  assert.match(report.body, /Profiles attempted: 4\. Completed: 0\. No action: 3\. Failed: 1\./);
+});
+
 test("scheduled paper cycle writes a founder report without changing execution logic", () => {
   assert.match(schedulerSource, /generateFounderReport/);
   assert.match(schedulerSource, /founderReportId/);
