@@ -1,6 +1,6 @@
 import { getBenchmarks } from "./market/benchmarks.ts";
 import { getAssets, getWatchlists } from "./market/assets.ts";
-import { getPortfolio } from "./portfolio/service.ts";
+import { getPortfolio, renderPortfolioPage } from "./portfolio/service.ts";
 import { getDashboardData, renderDashboard } from "./dashboard/service.ts";
 import { renderHome } from "./home/service.ts";
 import { getDiagnostics, getOpportunities, getPerformance, getTrades } from "./paper/service.ts";
@@ -98,6 +98,18 @@ async function requestedExistingPortfolioId(db: D1Database, url: URL): Promise<s
     throw new PortfolioNotFoundError(portfolioId);
   }
   return portfolioId;
+}
+
+function wantsHtml(request: Request, url: URL): boolean {
+  const format = url.searchParams.get("format");
+  if (format === "json") {
+    return false;
+  }
+  if (format === "html") {
+    return true;
+  }
+  const accept = request.headers.get("accept") ?? "";
+  return accept.includes("text/html") && !accept.includes("application/json");
 }
 
 class RequestError extends Error {
@@ -410,7 +422,11 @@ export default {
       }
 
       if (url.pathname === "/portfolio") {
-        return json(await getPortfolio(env.DB, await requestedExistingPortfolioId(env.DB, url) ?? undefined));
+        const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? undefined;
+        if (wantsHtml(request, url)) {
+          return renderPortfolioPage(env.DB, portfolioId);
+        }
+        return json(await getPortfolio(env.DB, portfolioId));
       }
 
       if (url.pathname === "/recommendations") {

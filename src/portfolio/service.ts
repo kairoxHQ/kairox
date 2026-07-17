@@ -1,4 +1,22 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { roundMoney, roundRatio } from "../shared/money.ts";
+import { getPortfolioProfile } from "./profiles.ts";
+import { getPortfolioValuation, type PortfolioValuation, type ValuedPosition } from "./valuation.ts";
+
+interface PortfolioRow {
+  id: string;
+  userId: string;
+  brokerAccountId: string | null;
+  name: string;
+  cashUsd: number;
+  startingBalanceUsd: number;
+  currency: string;
+  mode: string;
+  createdAt: string;
+  updatedAt: string;
+  accountStatus: string | null;
+  accountType: string | null;
+}
 
 export async function getPortfolio(db: D1Database, portfolioId = TIM_PORTFOLIO_ID) {
   const portfolio = await db
@@ -12,7 +30,7 @@ export async function getPortfolio(db: D1Database, portfolioId = TIM_PORTFOLIO_I
        WHERE p.id = ?`
     )
     .bind(portfolioId)
-    .first<{ userId: string }>();
+    .first<PortfolioRow>();
   const user = portfolio
     ? await db.prepare("SELECT id, name, created_at AS createdAt FROM users WHERE id = ?").bind(portfolio.userId).first()
     : null;
@@ -45,4 +63,379 @@ export async function getPortfolio(db: D1Database, portfolioId = TIM_PORTFOLIO_I
     .first();
 
   return { user, portfolio, positions, goals, riskProfile };
+}
+
+interface PortfolioPageAsset {
+  symbol: string;
+  displayName: string;
+  assetType: string;
+}
+
+interface PortfolioPageActivityRow {
+  kind: string;
+  title: string;
+  detail: string;
+  createdAt: string;
+}
+
+interface PortfolioPagePriceHistory {
+  symbol: string;
+  candlesJson: string;
+}
+
+interface PortfolioPageHolding {
+  symbol: string;
+  displayName: string;
+  currentValueUsd: number;
+  todayChangeUsd: number | null;
+  todayChangePct: number | null;
+  allocationPct: number;
+}
+
+interface PortfolioPageData {
+  portfolioId: string;
+  accountName: string;
+  riskPosture: string;
+  valuation: PortfolioValuation;
+  holdings: PortfolioPageHolding[];
+  guardianSummary: string;
+  recentActivity: PortfolioPageActivityRow[];
+  generatedAt: string;
+}
+
+export async function renderPortfolioPage(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<Response> {
+  const data = await getPortfolioPageData(db, portfolioId);
+  return new Response(renderPortfolioHtml(data), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+async function getPortfolioPageData(db: D1Database, portfolioId: string): Promise<PortfolioPageData> {
+  const [portfolioData, profile, valuation, assetRows, priceHistoryRows, recentActivity] = await Promise.all([
+    getPortfolio(db, portfolioId),
+    getPortfolioProfile(db, portfolioId),
+    getPortfolioValuation(db, portfolioId),
+    listRows<PortfolioPageAsset>(
+      db.prepare(
+        `SELECT symbol, display_name AS displayName, asset_type AS assetType
+         FROM assets`
+      )
+    ),
+    listRows<PortfolioPagePriceHistory>(
+      db.prepare(
+        `SELECT ms.symbol, ms.candles_json AS candlesJson
+         FROM market_snapshots ms
+         JOIN (
+           SELECT symbol, MAX(created_at) AS createdAt
+           FROM market_snapshots
+           WHERE validation_status = 'validated' AND price_usd > 0
+           GROUP BY symbol
+         ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
+      )
+    ),
+    getRecentPortfolioActivity(db, portfolioId)
+  ]);
+  const assets = new Map(assetRows.map((asset) => [asset.symbol, asset]));
+  const previousCloseBySymbol = new Map(priceHistoryRows.map((row) => [row.symbol, previousCloseFromCandles(row.candlesJson)]));
+  const holdings = valuation.positions
+    .map((position) => portfolioHolding(position, assets.get(position.symbol), valuation.totalAccountValueUsd, previousCloseBySymbol.get(position.symbol) ?? null))
+    .sort((left, right) => right.currentValueUsd - left.currentValueUsd || left.symbol.localeCompare(right.symbol));
+
+  return {
+    portfolioId,
+    accountName: portfolioData.portfolio?.name ?? profile.displayName,
+    riskPosture: profile.riskPosture,
+    valuation,
+    holdings,
+    guardianSummary: guardianSummary(valuation, holdings),
+    recentActivity,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+async function getRecentPortfolioActivity(db: D1Database, portfolioId: string): Promise<PortfolioPageActivityRow[]> {
+  return listRows<PortfolioPageActivityRow>(
+    db
+      .prepare(
+        `SELECT kind, title, detail, createdAt FROM (
+          SELECT 'Trade' AS kind,
+            symbol || ' ' || side AS title,
+            'Paper trade for ' || quantity || ' shares at $' || printf('%.2f', price_usd) AS detail,
+            executed_at AS createdAt
+          FROM trades
+          WHERE portfolio_id = ?
+          UNION ALL
+          SELECT 'Decision' AS kind,
+            decision AS title,
+            explanation AS detail,
+            created_at AS createdAt
+          FROM decision_journal
+          WHERE portfolio_id = ?
+          UNION ALL
+          SELECT 'Recommendation' AS kind,
+            symbol || ' ' || action AS title,
+            explanation AS detail,
+            created_at AS createdAt
+          FROM recommendations
+          WHERE portfolio_id = ?
+        )
+        ORDER BY createdAt DESC
+        LIMIT 8`
+      )
+      .bind(portfolioId, portfolioId, portfolioId)
+  );
+}
+
+function portfolioHolding(position: ValuedPosition, asset: PortfolioPageAsset | undefined, totalAccountValueUsd: number, previousClose: number | null): PortfolioPageHolding {
+  const currentPrice = position.currentMarketPriceUsd;
+  const todayChangeUsd = currentPrice !== null && previousClose !== null ? roundMoney((currentPrice - previousClose) * position.quantity) : null;
+  return {
+    symbol: position.symbol,
+    displayName: asset?.displayName ?? friendlySymbolName(position.symbol),
+    currentValueUsd: position.currentPositionValueUsd,
+    todayChangeUsd,
+    todayChangePct: previousClose && previousClose > 0 && todayChangeUsd !== null ? roundRatio((currentPrice! - previousClose) / previousClose) : null,
+    allocationPct: totalAccountValueUsd > 0 ? roundRatio(position.currentPositionValueUsd / totalAccountValueUsd) : 0
+  };
+}
+
+function previousCloseFromCandles(value: string): number | null {
+  try {
+    const candles = JSON.parse(value) as Array<{ timestamp?: string; close?: number }>;
+    const valid = candles.filter((candle) => Number.isFinite(candle.close) && (candle.close ?? 0) > 0);
+    return valid.length > 1 ? valid[valid.length - 2].close ?? null : valid.at(-1)?.close ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function friendlySymbolName(symbol: string): string {
+  if (symbol === "BTC-USD") return "Bitcoin";
+  if (symbol === "SPY") return "SPDR S&P 500 ETF Trust";
+  return symbol;
+}
+
+function guardianSummary(valuation: PortfolioValuation, holdings: PortfolioPageHolding[]): string {
+  if (valuation.dataStatus === "unavailable" || valuation.dataStatus === "stale") {
+    return "Some market data is not current. Monitoring only until fresh prices are available.";
+  }
+  const largest = holdings[0];
+  if (largest && largest.allocationPct > 0.5) {
+    return `${largest.symbol} is more than half of this account. Monitoring concentration; no automatic action is being taken.`;
+  }
+  if (valuation.todayChangeUsd < 0) {
+    return "The account is down slightly today. No action is recommended until the strategy has stronger evidence.";
+  }
+  return "Everything looks healthy. No action is recommended today.";
+}
+
+export function renderPortfolioHtml(data: PortfolioPageData): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(data.accountName)} - Portfolio - Kairox</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #f7f8fa;
+      color: #17202a;
+      --page-max: 1120px;
+      --page-pad: clamp(16px, 4vw, 40px);
+      --line: #dde4ec;
+      --muted: #667488;
+      --panel: #ffffff;
+      --good: #12633a;
+      --bad: #9f2f22;
+      --ink-soft: #3b4758;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.45; }
+    header { background: #101827; color: white; padding-block: 22px 18px; }
+    .page-shell { width: 100%; max-width: var(--page-max); margin-inline: auto; padding-inline: var(--page-pad); }
+    .header-inner { display: grid; gap: 10px; }
+    h1 { margin: 0; font-size: clamp(1.35rem, 4vw, 2rem); letter-spacing: 0; }
+    h2 { margin: 0 0 12px; font-size: 1rem; letter-spacing: 0; }
+    p { margin: 0; }
+    .sub { color: #cbd5e1; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; }
+    nav a { color: white; text-decoration: none; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; padding: 6px 10px; }
+    main.page-shell { padding-block: 22px 44px; display: grid; gap: 16px; }
+    .hero { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: clamp(18px, 4vw, 28px); display: grid; gap: 18px; }
+    .hero-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(170px, .8fr)); gap: 14px; align-items: end; }
+    .value { font-size: clamp(2.1rem, 8vw, 4.4rem); font-weight: 780; letter-spacing: 0; line-height: 1; overflow-wrap: anywhere; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .metric, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
+    .label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    .metric-value { font-size: 1.22rem; font-weight: 740; overflow-wrap: anywhere; }
+    .muted { color: var(--muted); font-size: .9rem; }
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+    .flat { color: var(--ink-soft); }
+    .guardian { border-left: 4px solid #2a6fdb; background: #f8fbff; }
+    .holdings { display: grid; gap: 8px; }
+    .holding { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(110px, .7fr) minmax(110px, .7fr) minmax(90px, .45fr); gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid #edf1f5; }
+    .holding:first-child { border-top: 0; }
+    .symbol { font-weight: 760; }
+    .activity { position: relative; display: grid; gap: 0; }
+    .activity-item { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; padding: 0 0 16px; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; background: #2a6fdb; margin-top: 6px; box-shadow: 0 0 0 4px #e8f1ff; }
+    .activity-title { font-weight: 720; }
+    .empty { color: var(--muted); padding: 10px 0; }
+    details { background: transparent; border-top: 1px solid #edf1f5; padding-top: 12px; }
+    summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; }
+    .advanced-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .advanced-links a { color: #1f5ed8; text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; background: white; }
+    a:focus-visible, summary:focus-visible { outline: 3px solid #7db2ff; outline-offset: 3px; }
+    @media (max-width: 860px) { .hero-grid, .metric-grid { grid-template-columns: 1fr; } .holding { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 560px) { :root { --page-pad: 14px; } .holding { grid-template-columns: 1fr; gap: 4px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="page-shell header-inner">
+      <h1>${escapeHtml(data.accountName)}</h1>
+      <p class="sub">Investor-focused account view. Paper trading protections remain active.</p>
+      <nav aria-label="Primary navigation">
+        <a href="/">Home</a>
+        <a href="/dashboard?portfolioId=${encodeURIComponent(data.portfolioId)}">Dashboard</a>
+        <a href="/daily-reviews?portfolioId=${encodeURIComponent(data.portfolioId)}">Daily Review</a>
+        <a href="/research?portfolioId=${encodeURIComponent(data.portfolioId)}">Research</a>
+      </nav>
+    </div>
+  </header>
+  <main class="page-shell">
+    <section class="hero" aria-label="Account value">
+      <div class="hero-grid">
+        <div>
+          <div class="label">Current account value</div>
+          <div class="value">${escapeHtml(money(data.valuation.totalAccountValueUsd))}</div>
+          <div class="muted">${escapeHtml(paperModeLabel(data.riskPosture))}</div>
+        </div>
+        ${metric("Today's gain/loss", `${signedMoney(data.valuation.todayChangeUsd)} (${signedPct(data.valuation.todayChangePct)})`, "Since today's opening snapshot", signedClass(data.valuation.todayChangeUsd))}
+        ${metric("Lifetime return", `${signedMoney(data.valuation.overallReturnUsd)} (${signedPct(data.valuation.overallReturnPct)})`, "Since account funding", signedClass(data.valuation.overallReturnUsd))}
+      </div>
+      <div class="metric-grid">
+        ${metric("Cash available", money(data.valuation.cashUsd), "Available for future paper trades")}
+        ${metric("Holdings value", money(data.valuation.totalPortfolioValueUsd), `${data.holdings.length} holding${data.holdings.length === 1 ? "" : "s"}`)}
+        ${metric("Market data", plainDataStatus(data.valuation.dataStatus), "Used for account valuation")}
+      </div>
+    </section>
+    <section class="panel guardian" id="guardian-summary">
+      <h2>Guardian Summary</h2>
+      <p>${escapeHtml(data.guardianSummary)}</p>
+    </section>
+    <section class="panel" id="holdings">
+      <h2>Holdings</h2>
+      <div class="holdings">
+        ${data.holdings.length ? data.holdings.map(holdingRow).join("") : '<p class="empty">No holdings yet. This account is currently in cash.</p>'}
+      </div>
+    </section>
+    <section class="panel" id="recent-activity">
+      <h2>Recent Activity</h2>
+      <div class="activity">
+        ${data.recentActivity.length ? data.recentActivity.map(activityItem).join("") : '<p class="empty">No recent account activity has been recorded.</p>'}
+      </div>
+    </section>
+    <section class="panel">
+      <details>
+        <summary>Advanced data and diagnostics</summary>
+        <div class="advanced-links">
+          <a href="/portfolio?portfolioId=${encodeURIComponent(data.portfolioId)}&format=json">Raw portfolio data</a>
+          <a href="/valuation?portfolioId=${encodeURIComponent(data.portfolioId)}">Valuation API</a>
+          <a href="/historical-performance?portfolioId=${encodeURIComponent(data.portfolioId)}">Analytics</a>
+          <a href="/portfolio-decisions?portfolioId=${encodeURIComponent(data.portfolioId)}">Decisions</a>
+          <a href="/portfolio-briefings?portfolioId=${encodeURIComponent(data.portfolioId)}">Briefings</a>
+        </div>
+      </details>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function metric(label: string, value: string, detail: string, className = ""): string {
+  return `<div class="metric"><div class="label">${escapeHtml(label)}</div><div class="metric-value ${className}">${escapeHtml(value)}</div><div class="muted">${escapeHtml(detail)}</div></div>`;
+}
+
+function holdingRow(holding: PortfolioPageHolding): string {
+  const today = holding.todayChangeUsd === null || holding.todayChangePct === null
+    ? "No daily price change available"
+    : `${signedMoney(holding.todayChangeUsd)} (${signedPct(holding.todayChangePct)})`;
+  return `<article class="holding">
+    <div><div class="symbol">${escapeHtml(holding.symbol)}</div><div class="muted">${escapeHtml(holding.displayName)}</div></div>
+    <div><div class="label">Current value</div><div>${escapeHtml(money(holding.currentValueUsd))}</div></div>
+    <div><div class="label">Today</div><div class="${signedClass(holding.todayChangeUsd ?? 0)}">${escapeHtml(today)}</div></div>
+    <div><div class="label">Allocation</div><div>${escapeHtml(pct(holding.allocationPct))}</div></div>
+  </article>`;
+}
+
+function activityItem(item: PortfolioPageActivityRow): string {
+  return `<article class="activity-item">
+    <div class="dot" aria-hidden="true"></div>
+    <div><div class="activity-title">${escapeHtml(item.title)}</div><div class="muted">${escapeHtml(sanitizeActivity(item.detail))}</div><div class="muted">${escapeHtml(item.kind)} - ${formatDate(item.createdAt)}</div></div>
+  </article>`;
+}
+
+function sanitizeActivity(value: string): string {
+  return value.replace(/PAPER_RUN_SECRET|API_KEY|token|authorization/gi, "protected setting");
+}
+
+function paperModeLabel(riskPosture: string): string {
+  return `${titleCase(riskPosture)} paper account`;
+}
+
+function plainDataStatus(status: string): string {
+  if (status === "live") return "Current";
+  if (status === "delayed") return "Delayed";
+  if (status === "stale") return "Needs refresh";
+  return "Unavailable";
+}
+
+function money(value: number): string {
+  return `$${value.toFixed(4)}`;
+}
+
+function signedMoney(value: number): string {
+  return `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(4)}`;
+}
+
+function pct(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function signedPct(value: number): string {
+  return `${value >= 0 ? "+" : "-"}${Math.abs(value * 100).toFixed(2)}%`;
+}
+
+function signedClass(value: number): string {
+  if (value > 0) return "good";
+  if (value < 0) return "bad";
+  return "flat";
+}
+
+function titleCase(value: string): string {
+  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return "Time unavailable";
+  }
+  return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
