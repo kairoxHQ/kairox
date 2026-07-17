@@ -88,7 +88,7 @@ test("holding calculations remain isolated by portfolio profile", () => {
   assert.equal(highRisk.unrealizedGainLoss, 1.5);
 });
 
-test("dashboard no longer duplicates quote widgets or polling surfaces", () => {
+test("dashboard renders a compact market ticker after account cards without restoring duplicate sections", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
     performance: {
@@ -111,7 +111,12 @@ test("dashboard no longer duplicates quote widgets or polling surfaces", () => {
     marketTicker: {
       generatedAt: openMarket.toISOString(),
       instruments: [
-        normalizeQuoteFromDataset(instrument("^GSPC", "index", "index", 2), dataset("^GSPC", 6400, 6300, openMarket), { now: openMarket }),
+        namedQuote(normalizeQuoteFromDataset(instrument("^GSPC", "index", "index", 2), dataset("^GSPC", 6400, 6300, openMarket), { now: openMarket }), "S&P 500"),
+        namedQuote(normalizeQuoteFromDataset(instrument("^DJI", "index", "index", 2), dataset("^DJI", 45000, 44900, openMarket), { now: openMarket }), "Dow"),
+        namedQuote(normalizeQuoteFromDataset(instrument("^IXIC", "index", "index", 2), dataset("^IXIC", 21000, 21100, openMarket), { now: openMarket }), "Nasdaq"),
+        normalizeQuoteFromDataset(instrument("^VIX", "index", "index", 2), dataset("^VIX", 16, 16, openMarket), { now: openMarket }),
+        normalizeQuoteFromDataset(instrument("BTC-USD", "crypto", "usd", 2, "continuous"), dataset("BTC-USD", 65000, 64000, openMarket), { now: openMarket }),
+        normalizeQuoteFromDataset(instrument("^RUT", "index", "index", 2), dataset("^RUT", 2300, 2280, openMarket), { now: openMarket }),
         unavailableQuote("BAD")
       ]
     },
@@ -119,10 +124,65 @@ test("dashboard no longer duplicates quote widgets or polling surfaces", () => {
   });
 
   assert.match(html, /Kairox Dashboard/);
+  assert.match(html, /id="market-ticker"/);
+  assert.match(html, /data-dashboard-market-strip/);
+  assert.match(html, /S&amp;P 500/);
+  assert.match(html, /Dow/);
+  assert.match(html, /Nasdaq/);
+  assert.match(html, /VIX/);
+  assert.match(html, /BTC-USD/);
+  assert.match(html, /\+100\.00 \(\+1\.59%\)/);
+  assert.match(html, /-\$?100\.00 \(-0\.47%\)|-100\.00 \(-0\.47%\)/);
+  assert.match(html, /Flat/);
+  assert.match(html, /Open - Delayed|Closed - Market Closed|Continuous - Live/);
+  assert.ok(html.indexOf('id="accounts"') < html.indexOf('id="market-ticker"'));
+  assert.doesNotMatch(html, /\^RUT|BAD/);
+  assert.doesNotMatch(html, /ticker-item|ticker-strip|holding-quotes|data-holding-quotes/);
   assert.doesNotMatch(html, /data-market-ticker/);
   assert.doesNotMatch(html, /\/market-ticker/);
   assert.doesNotMatch(html, /\/profiles\/holdings\/quotes/);
+  assert.doesNotMatch(html, /Decision Journal|Latest Recommendations|Scheduled Runs|Portfolio History|Research Center|Strategy Analysis|Strategy Evaluation Lab|Forward Test|Performance Comparison|Knowledge Graph|Event Timeline|Pending Paper Orders/);
   assert.doesNotMatch(html, /\/paper\/run/);
+});
+
+test("dashboard compact ticker renders unavailable quote states safely", () => {
+  const html = renderDashboardHtml({
+    settings: { automationPaused: false },
+    performance: {
+      totalValueUsd: 20,
+      cashUsd: 20,
+      totalReturnUsd: 0,
+      priceReturnUsd: 0,
+      dividendReturnUsd: 0,
+      tradeCount: 0,
+      maxDrawdownPct: 0,
+      benchmarkReturns: []
+    },
+    positions: [],
+    recommendations: [],
+    journal: [],
+    trades: [],
+    scheduledRuns: [],
+    summaries: [],
+    rejectedOpportunities: [],
+    marketTicker: {
+      generatedAt: openMarket.toISOString(),
+      instruments: [
+        unavailableQuote("^GSPC"),
+        unavailableQuote("^DJI"),
+        unavailableQuote("^IXIC"),
+        unavailableQuote("^VIX"),
+        unavailableQuote("BTC-USD")
+      ]
+    }
+  });
+  const tickerSection = html.slice(html.indexOf('id="market-ticker"'), html.indexOf('<section class="two-col">'));
+
+  assert.match(html, /id="market-ticker"/);
+  assert.match(tickerSection, /Unavailable/);
+  assert.match(tickerSection, /Unavailable - Unavailable/);
+  assert.match(tickerSection, /Flat/);
+  assert.doesNotMatch(tickerSection, /null|undefined|NaN|Illegal invocation|HTTP 429/);
 });
 
 test("browser-local timestamp formatting is deferred to the viewer timezone", () => {
@@ -199,4 +259,8 @@ function unavailableQuote(symbol: string): NormalizedQuote {
     valuePrecision: 2,
     changePrecision: 2
   };
+}
+
+function namedQuote(quote: NormalizedQuote, shortName: string): NormalizedQuote {
+  return { ...quote, displayName: shortName, shortName };
 }

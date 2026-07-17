@@ -31,7 +31,7 @@ import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from
 import { KnowledgeGraphService, type KnowledgeGraphSummary } from "../graph/knowledgeGraph.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, profileComparison, todayEquityRows, latestObservation] = await Promise.all([
+  const [settings, profileComparison, todayEquityRows, latestObservation, marketTicker] = await Promise.all([
     getSettings(db),
     getProfileComparison(db) as Promise<DashboardComparison>,
     listRows<{ portfolioId: string; recordedAt: string; totalValueUsd: number }>(
@@ -50,7 +50,8 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
        FROM paper_observation_runs
        ORDER BY started_at DESC
        LIMIT 1`
-    ).first<DashboardObservationRun>()
+    ).first<DashboardObservationRun>(),
+    getMarketTickerQuotes(db)
   ]);
 
   const founderReport = latestObservation
@@ -109,6 +110,10 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
     settings,
     overallSummary,
     accounts,
+    marketTicker: {
+      generatedAt: marketTicker.generatedAt,
+      instruments: dashboardTickerInstruments(marketTicker.instruments)
+    },
     activity,
     attention,
     audit: dashboardSectionAudit
@@ -1059,6 +1064,7 @@ function renderSimpleDashboardHtml(data: {
   selectedPortfolioId?: string;
   overallSummary?: DashboardOverallSummary;
   accounts?: DashboardAccountCard[];
+  marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
   activity?: DashboardTodayActivity;
   attention?: DashboardAttention;
   audit?: DashboardSectionAudit[];
@@ -1123,6 +1129,16 @@ function renderSimpleDashboardHtml(data: {
     main.page-shell { padding-block: 22px 44px; display: grid; gap: 18px; }
     .summary { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(0, 1fr)); gap: 14px; }
     .accounts { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 14px; }
+    .market-strip { display: grid; gap: 10px; }
+    .market-strip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .market-strip-head h2 { margin: 0; }
+    .market-row { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 8px; scrollbar-width: thin; }
+    .market-quote { flex: 0 0 170px; border: 1px solid #edf1f5; border-radius: 8px; background: #fbfcfd; padding: 10px; color: inherit; text-decoration: none; display: grid; gap: 3px; }
+    .market-quote-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .market-symbol { font-weight: 760; font-size: .9rem; }
+    .market-value { font-weight: 760; font-size: .98rem; }
+    .market-change { font-weight: 700; font-size: .86rem; }
+    .freshness { color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
     .two-col { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr); gap: 14px; align-items: start; }
     .panel, .account-card, .metric-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.04); min-width: 0; }
     .metric-card { display: grid; gap: 4px; }
@@ -1173,6 +1189,7 @@ function renderSimpleDashboardHtml(data: {
       <h2>Accounts</h2>
       <div class="accounts">${accounts.map(accountSummaryCard).join("")}</div>
     </section>
+    ${renderCompactMarketTicker(data.marketTicker)}
     <section class="two-col">
       <section id="todays-activity" class="panel">
         <h2>Today's Activity</h2>
@@ -1215,6 +1232,53 @@ function renderSimpleDashboardHtml(data: {
   </script>
 </body>
 </html>`;
+}
+
+const DASHBOARD_TICKER_SYMBOLS = new Set(["^GSPC", "^DJI", "^IXIC", "^VIX", "BTC-USD"]);
+
+function dashboardTickerInstruments(instruments: NormalizedQuote[]): NormalizedQuote[] {
+  return instruments.filter((instrument) => DASHBOARD_TICKER_SYMBOLS.has(instrument.symbol));
+}
+
+function renderCompactMarketTicker(ticker?: { instruments: NormalizedQuote[]; generatedAt: string }): string {
+  const instruments = dashboardTickerInstruments(ticker?.instruments ?? []);
+  if (instruments.length === 0) {
+    return "";
+  }
+  return `<section id="market-ticker" class="panel market-strip" aria-label="Market ticker">
+    <div class="market-strip-head">
+      <h2>Markets</h2>
+      <a class="muted" href="/quotes?symbols=%5EGSPC,%5EDJI,%5EIXIC,%5EVIX,BTC-USD">Full quotes</a>
+    </div>
+    <div class="market-row" data-dashboard-market-strip>${instruments.map(compactTickerItem).join("")}</div>
+  </section>`;
+}
+
+function compactTickerItem(item: NormalizedQuote): string {
+  return `<a class="market-quote" href="/quotes?symbols=${encodeURIComponent(item.symbol)}" aria-label="${escapeHtml(item.displayName)} quote">
+    <div class="market-quote-top"><span class="market-symbol">${escapeHtml(item.shortName)}</span><span class="${escapeHtml(quoteDirectionClass(item.direction))}">${escapeHtml(quoteIndicator(item.direction))}</span></div>
+    <div class="market-value">${escapeHtml(formatQuoteValue(item))}</div>
+    <div class="market-change ${escapeHtml(quoteDirectionClass(item.direction))}">${escapeHtml(formatCompactQuoteChange(item))}</div>
+    <div class="freshness">${escapeHtml(item.marketStatus)} - ${escapeHtml(item.freshnessStatus)}</div>
+  </a>`;
+}
+
+function quoteIndicator(direction: string): string {
+  if (direction === "up") return "Up";
+  if (direction === "down") return "Down";
+  return "Flat";
+}
+
+function formatCompactQuoteChange(item: NormalizedQuote): string {
+  if (item.absoluteChange === null || item.percentageChange === null) {
+    return "Unavailable";
+  }
+  const sign = item.absoluteChange > 0 ? "+" : "";
+  const value = item.unit === "usd"
+    ? `${item.absoluteChange >= 0 ? "+" : "-"}$${Math.abs(item.absoluteChange).toFixed(item.changePrecision)}`
+    : `${sign}${item.absoluteChange.toFixed(item.changePrecision)}`;
+  const pctSign = item.percentageChange > 0 ? "+" : "";
+  return `${value} (${pctSign}${(item.percentageChange * 100).toFixed(2)}%)`;
 }
 
 function accountSummaryCard(account: DashboardAccountCard): string {
