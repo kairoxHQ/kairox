@@ -88,7 +88,7 @@ test("holding calculations remain isolated by portfolio profile", () => {
   assert.equal(highRisk.unrealizedGainLoss, 1.5);
 });
 
-test("dashboard polling uses read-only quote endpoints and tolerates individual unavailable quotes", () => {
+test("dashboard no longer duplicates quote widgets or polling surfaces", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
     performance: {
@@ -118,11 +118,11 @@ test("dashboard polling uses read-only quote endpoints and tolerates individual 
     profileHoldingQuotes: { generatedAt: openMarket.toISOString(), profiles: [{ portfolioId: "portfolio_tim_paper", holdings: [] }] }
   });
 
-  assert.match(html, /data-market-ticker/);
-  assert.match(html, /\/market-ticker/);
-  assert.match(html, /\/profiles\/holdings\/quotes/);
+  assert.match(html, /Kairox Dashboard/);
+  assert.doesNotMatch(html, /data-market-ticker/);
+  assert.doesNotMatch(html, /\/market-ticker/);
+  assert.doesNotMatch(html, /\/profiles\/holdings\/quotes/);
   assert.doesNotMatch(html, /\/paper\/run/);
-  assert.match(html, /Unavailable/);
 });
 
 test("browser-local timestamp formatting is deferred to the viewer timezone", () => {

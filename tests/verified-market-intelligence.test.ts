@@ -145,7 +145,7 @@ test("routes, scheduler, and protected action are wired", async () => {
   assert.match(managementSource, /VerifiedMarketIntelligenceService/);
 });
 
-test("dashboard exposes verified intelligence without unrelated news or secrets", () => {
+test("dashboard links away instead of duplicating verified intelligence details", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
     performance: { totalValueUsd: 2400, cashUsd: 958, totalReturnUsd: 0, priceReturnUsd: 0, dividendReturnUsd: 0, tradeCount: 0, maxDrawdownPct: 0, benchmarkReturns: [] },
@@ -174,9 +174,8 @@ test("dashboard exposes verified intelligence without unrelated news or secrets"
       providerHealth: [{ provider_name: "Kairox primary-source seed", outage_status: "operational", data_freshness: "current", last_success_at: "2026-07-14T21:00:00.000Z" }]
     }
   });
-  assert.match(html, /Verified Market Intelligence/);
-  assert.match(html, /BND distribution schedule/);
-  assert.match(html, /No recommendations/);
+  assert.match(html, /Kairox Dashboard/);
+  assert.doesNotMatch(html, /Verified Market Intelligence|BND distribution schedule|No recommendations/);
   assert.doesNotMatch(html, /PAPER_RUN_SECRET|API_KEY|full article/i);
 });
 

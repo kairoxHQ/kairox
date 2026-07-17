@@ -31,213 +31,89 @@ import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from
 import { KnowledgeGraphService, type KnowledgeGraphSummary } from "../graph/knowledgeGraph.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, performance, valuation, benchmarks, journal, recommendations, trades, scheduledRuns, summaries, rejected, marketStatuses, equityHistory, todayStart, assets, opportunityData, latestPrices, profileComparison, intelligence, verifiedIntelligence, marketTicker, profileHoldingQuotes, accountProfiles, investmentPolicy, allocationProposal, paperOrderBatch, strategyRun, strategyLab, researchCenter, forwardTest, dailyManagementCycles, benchmarkComparison, portfolioDecisions, portfolioBriefings, dailyOrchestration, eventTimeline, eventObservability, knowledgeGraph] =
-    await Promise.all([
-      getSettings(db),
-      calculatePerformance(db, portfolioId),
-      getPortfolioValuation(db, portfolioId),
-      getBenchmarks(db),
-      listRows(
-        db
-          .prepare(
-            `SELECT json_extract(price_data_json, '$.symbol') AS symbol,
-              decision, explanation, confidence_score AS confidenceScore,
-              risk_score AS riskScore, created_at AS createdAt
-             FROM decision_journal
-             WHERE portfolio_id = ?
-             ORDER BY created_at DESC
-             LIMIT 8`
-          )
-          .bind(portfolioId)
-      ),
-      listRows(
-        db
-          .prepare(
-            `SELECT symbol, action, explanation, confidence_score AS confidenceScore,
-              risk_score AS riskScore, price_usd AS priceUsd, price_as_of AS priceAsOf,
-              created_at AS createdAt
-             FROM recommendations
-             WHERE portfolio_id = ?
-             ORDER BY created_at DESC
-             LIMIT 8`
-          )
-          .bind(portfolioId)
-      ),
-      listRows(
-        db
-          .prepare(
-            `SELECT symbol, side, quantity, price_usd AS priceUsd, fees_usd AS feesUsd,
-              executed_at AS executedAt
-             FROM trades
-             WHERE portfolio_id = ?
-             ORDER BY executed_at DESC
-             LIMIT 8`
-          )
-          .bind(portfolioId)
-      ),
-      listRows(
-        db.prepare(
-          `SELECT run_key AS runKey, scheduled_at AS scheduledAt, started_at AS startedAt,
-            finished_at AS finishedAt, status, error_details AS errorDetails,
-            summary_json AS summaryJson, id, cron, created_at AS createdAt
-           FROM scheduled_runs
-           ORDER BY started_at DESC
-           LIMIT 8`
-        )
-      ),
-      listRows(
-        db.prepare(
-          `SELECT summary_type AS summaryType, summary_date AS summaryDate, title, body
-           FROM system_summaries
-           ORDER BY summary_date DESC, summary_type ASC
-           LIMIT 4`
-        )
-      ),
-      listRows(
-        db
-          .prepare(
-            `SELECT symbol, action, explanation, created_at AS createdAt
-             FROM recommendations
-             WHERE portfolio_id = ? AND action = 'DO_NOTHING'
-               AND explanation NOT LIKE 'Market data temporarily unavailable%'
-               AND explanation NOT LIKE '%latest quote was stale%'
-             ORDER BY created_at DESC
-             LIMIT 8`
-          )
-          .bind(portfolioId)
-      ),
-      getMarketDataStatuses(db),
-      listRows(
-        db
-          .prepare(
-            `SELECT recorded_at AS recordedAt, total_value_usd AS totalValueUsd
-             FROM portfolio_equity_history
-             WHERE portfolio_id = ?
-             ORDER BY recorded_at ASC
-             LIMIT 60`
-          )
-          .bind(portfolioId)
-      ),
-      db
-        .prepare(
-          `SELECT total_value_usd AS totalValueUsd
-           FROM portfolio_equity_history
-           WHERE portfolio_id = ? AND date(recorded_at) = date('now')
-           ORDER BY recorded_at ASC
-           LIMIT 1`
-        )
-        .bind(portfolioId)
-        .first<{ totalValueUsd: number }>(),
-      listEnabledWatchlistAssets(db, portfolioId),
-      getOpportunities(db, portfolioId) as Promise<{ opportunities: Array<DashboardOpportunity> }>,
-      listRows(
-        db.prepare(
-          `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf
-           FROM market_snapshots ms
-           JOIN (
-             SELECT symbol, MAX(created_at) AS createdAt
-             FROM market_snapshots
-             GROUP BY symbol
-           ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
-        )
-      ),
-      getProfileComparison(db),
-      getIntelligenceOverview(db),
-      getVerifiedIntelligenceDashboard(db, portfolioId),
-      getMarketTickerQuotes(db),
-      getAllProfileHoldingQuotes(db),
-      listPortfolioProfiles(db),
-      getInvestmentPolicy(db, portfolioId),
-      getLatestAllocationProposal(db, portfolioId),
-      getLatestPaperOrderBatch(db, portfolioId),
-      new StrategyEngine(db).latest(portfolioId),
-      new StrategyEvaluationLabService(db).summary(portfolioId),
-      new PortfolioResearchEngine(db).summary(portfolioId),
-      new ForwardTestService(db).summary(portfolioId),
-      new DailyManagementCycleService(db).list(portfolioId),
-      new BenchmarkComparisonService(db).summary(portfolioId),
-      new PortfolioDecisionService(db).list(portfolioId),
-      new PortfolioBriefingService(db).list(portfolioId),
-      new DailyPortfolioOrchestrator(db).latest(portfolioId),
-      new EventBus(db).timeline(portfolioId, 24),
-      new EventBus(db).observability(),
-      new KnowledgeGraphService(db).summary(portfolioId, 80).catch(() => null)
-    ]);
-  const todayGainLossUsd = performance.totalValueUsd - (todayStart?.totalValueUsd ?? performance.startingBalanceUsd);
-  const paperExecution = paperOrderBatch ? await getPaperExecutionByBatchId(db, paperOrderBatch.id) : null;
-  const dailyReviews = await listDailyReviews(db, portfolioId);
-  const recommendationProposals = await new RecommendationProposalService(db).list(portfolioId);
-  const positions = valuation.positions
-    .map((position) => ({
-      symbol: position.symbol,
-      assetClass: position.assetClass,
-      quantity: position.quantity,
-      marketValueUsd: position.currentPositionValueUsd,
-      updatedAt: position.priceTimestamp ?? valuation.valuationTimestamp
-    }))
-    .sort((left, right) => right.marketValueUsd - left.marketValueUsd || left.symbol.localeCompare(right.symbol));
-  const positionsBySymbol = new Map(positions.map((position) => [position.symbol, position.marketValueUsd]));
-  const statusBySymbol = new Map((marketStatuses as Array<{ symbol: string }>).map((status) => [status.symbol, status]));
-  const priceBySymbol = new Map((latestPrices as Array<{ symbol: string; priceUsd: number; priceAsOf: string }>).map((price) => [price.symbol, price]));
+  const [settings, profileComparison, todayEquityRows, latestObservation] = await Promise.all([
+    getSettings(db),
+    getProfileComparison(db) as Promise<DashboardComparison>,
+    listRows<{ portfolioId: string; recordedAt: string; totalValueUsd: number }>(
+      db.prepare(
+        `SELECT portfolio_id AS portfolioId, recorded_at AS recordedAt, total_value_usd AS totalValueUsd
+         FROM portfolio_equity_history
+         WHERE date(recorded_at) = date('now')
+         ORDER BY portfolio_id ASC, recorded_at ASC`
+      )
+    ),
+    db.prepare(
+      `SELECT id, run_key AS runKey, status, profiles_completed AS profilesCompleted,
+        profiles_no_action AS profilesNoAction, profiles_failed AS profilesFailed,
+        started_at AS startedAt, finished_at AS finishedAt, market_data_snapshot_id AS marketDataSnapshotId,
+        request_budget_json AS requestBudgetJson
+       FROM paper_observation_runs
+       ORDER BY started_at DESC
+       LIMIT 1`
+    ).first<DashboardObservationRun>()
+  ]);
+
+  const founderReport = latestObservation
+    ? await db.prepare(
+      `SELECT id, run_key AS runKey, body, facts_json AS factsJson, created_at AS createdAt
+       FROM founder_reports
+       WHERE run_key = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(latestObservation.runKey).first<DashboardFounderReportRow>()
+    : null;
+  const todayStartByPortfolio = new Map<string, number>();
+  for (const row of todayEquityRows) {
+    if (!todayStartByPortfolio.has(row.portfolioId)) {
+      todayStartByPortfolio.set(row.portfolioId, row.totalValueUsd);
+    }
+  }
+  const accounts = profileComparison.profiles.map((profile) => {
+    const todayStart = todayStartByPortfolio.get(profile.portfolioId);
+    const todayChangeUsd = roundCurrency(profile.actualEquityUsd - (todayStart ?? profile.actualEquityUsd));
+    const todayChangePct = roundRatioValue(todayStart && todayStart > 0 ? todayChangeUsd / todayStart : 0);
+    const totalReturnUsd = roundCurrency(profile.actualEquityUsd - profile.comparisonStartEquityUsd);
+    const totalReturnPct = roundRatioValue(profile.totalReturnPct ?? profile.normalizedReturnPct ?? 0);
+    return {
+      portfolioId: profile.portfolioId,
+      profileKey: profile.profileKey,
+      accountName: profile.displayName,
+      totalCurrentValueUsd: profile.actualEquityUsd,
+      todayChangeUsd,
+      todayChangePct,
+      totalReturnUsd,
+      totalReturnPct,
+      cashUsd: profile.cashUsd ?? 0,
+      positionCount: profile.openPositions ?? 0,
+      riskProfile: profile.riskPosture,
+      indicator: directionFor(todayChangeUsd),
+      paperLabel: profile.paperOnlyLabel ?? "Paper"
+    };
+  });
+  const activity = buildDashboardActivity(latestObservation ?? null, founderReport ?? null);
+  const attention = buildDashboardAttention(settings, latestObservation ?? null, activity);
+  const combinedValueUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0));
+  const todayChangeUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.todayChangeUsd, 0));
+  const totalGainLossUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.totalReturnUsd, 0));
+  const overallSummary = {
+    combinedValueUsd,
+    todayChangeUsd,
+    todayChangePct: roundRatioValue(combinedValueUsd - todayChangeUsd > 0 ? todayChangeUsd / (combinedValueUsd - todayChangeUsd) : 0),
+    totalGainLossUsd,
+    guardianStatus: attention.items.length === 0 ? "Clear" : "Attention needed",
+    paperLiveStatus: "Paper only"
+  };
 
   return {
     selectedPortfolioId: portfolioId,
-    accountProfiles,
-    investmentPolicy,
-    allocationProposal,
-    paperOrderBatch,
-    paperExecution,
-    dailyReviews,
-    dailyManagementCycles,
-    portfolioDecisions,
-    portfolioBriefings,
-    dailyOrchestration,
-    eventTimeline,
-    eventObservability,
-    knowledgeGraph,
-    recommendationProposals,
-    strategyRun,
-    strategyLab,
-    researchCenter,
-    forwardTest,
-    benchmarkComparison,
     settings,
-    automation: {
-      active: !settings.automationPaused,
-      paused: settings.automationPaused,
-      latestScheduledRun: scheduledRuns[0] ?? null
-    },
-    performance: { ...performance, todayGainLossUsd },
-    benchmarks,
-    positions,
-    recommendations,
-    journal,
-    trades,
-    scheduledRuns,
-    scheduledRunAudits: scheduledRuns.map((run) => summarizeScheduledRun(run as DashboardScheduledRunRow)),
-    summaries,
-    rejectedOpportunities: rejected,
-    marketDataStatus: marketStatuses,
-    equityHistory,
-    assetUniverse: assets.map((asset) => ({
-      symbol: asset.symbol,
-      assetType: asset.assetType,
-      enabled: asset.enabled,
-      tradable: asset.tradable,
-      priceUsd: priceBySymbol.get(asset.symbol)?.priceUsd ?? null,
-      priceAsOf: priceBySymbol.get(asset.symbol)?.priceAsOf ?? null,
-      freshness: statusLabel(statusBySymbol.get(asset.symbol) as DashboardMarketStatus | undefined),
-      status: statusMessage(statusLabel(statusBySymbol.get(asset.symbol) as DashboardMarketStatus | undefined), (statusBySymbol.get(asset.symbol) as DashboardMarketStatus | undefined)?.userMessage ?? ""),
-      currentPositionValueUsd: positionsBySymbol.get(asset.symbol) ?? 0
-    })),
-    opportunities: opportunityData.opportunities
-    ,
-    profileComparison,
-    intelligence,
-    verifiedIntelligence,
-    marketTicker,
-    profileHoldingQuotes
+    overallSummary,
+    accounts,
+    activity,
+    attention,
+    audit: dashboardSectionAudit
   };
+
 }
 
 interface DashboardOpportunity {
@@ -328,6 +204,11 @@ export async function renderDashboard(db: D1Database, portfolioId = TIM_PORTFOLI
 
 export function renderDashboardHtml(data: {
   selectedPortfolioId?: string;
+  overallSummary?: DashboardOverallSummary;
+  accounts?: DashboardAccountCard[];
+  activity?: DashboardTodayActivity;
+  attention?: DashboardAttention;
+  audit?: DashboardSectionAudit[];
   accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
   investmentPolicy?: InvestmentPolicy | null;
   allocationProposal?: AllocationProposal | null;
@@ -378,13 +259,15 @@ export function renderDashboardHtml(data: {
   marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
   profileHoldingQuotes?: { profiles: Array<{ portfolioId: string; holdings: HoldingQuote[] }>; generatedAt: string };
 }): string {
+  return renderSimpleDashboardHtml(data);
+
   const latestDecision = data.journal?.[0];
   const latestRecommendation = data.recommendations[0];
-  const latestDecisionText = latestDecision
-    ? `${latestDecision.symbol ?? latestRecommendation?.symbol ?? "Portfolio"} ${latestDecision.decision}`
-    : latestRecommendation
+  const latestDecisionText = latestDecision === undefined
+    ? latestRecommendation
       ? `${latestRecommendation.symbol} ${latestRecommendation.action}`
-      : "None";
+      : "None"
+    : `${latestDecision!.symbol ?? latestRecommendation?.symbol ?? "Portfolio"} ${latestDecision!.decision}`;
   const nextRun = nextScheduledRunLabel();
   const html = `<!doctype html>
 <html lang="en">
@@ -516,7 +399,7 @@ export function renderDashboardHtml(data: {
       ${summaryMetric("Today's gain/loss", signedMoney(data.performance.todayGainLossUsd ?? 0), "Since first snapshot today")}
       ${summaryMetric("Total gain/loss", signedMoney(data.performance.totalReturnUsd), `Max drawdown ${pct(data.performance.maxDrawdownPct)}`)}
       ${summaryMetric("Open positions", String(data.positions.length), data.positions.map((p) => p.symbol).join(", ") || "None")}
-      ${summaryMetric("Latest decision", latestDecisionText, latestDecision ? confidenceLabel(latestDecision.confidenceScore) : "No decision yet")}
+      ${summaryMetric("Latest decision", latestDecisionText, latestDecision?.confidenceScore !== undefined ? confidenceLabel(latestDecision!.confidenceScore) : "No decision yet")}
       ${summaryMetric("Next scheduled run", nextRun, "Every 30 minutes")}
       ${summaryMetric("Automation", data.settings.automationPaused ? "Paused" : "Active", "Paper trading only")}
     </section>
@@ -1068,6 +951,456 @@ interface DashboardVerifiedIntelligence {
   links: PortfolioIntelligenceLink[];
   summary: PortfolioIntelligenceSummary | null;
   providerHealth: unknown[];
+}
+
+interface DashboardOverallSummary {
+  combinedValueUsd: number;
+  todayChangeUsd: number;
+  todayChangePct: number;
+  totalGainLossUsd: number;
+  guardianStatus: string;
+  paperLiveStatus: string;
+}
+
+interface DashboardAccountCard {
+  portfolioId: string;
+  profileKey?: string;
+  accountName: string;
+  totalCurrentValueUsd: number;
+  todayChangeUsd: number;
+  todayChangePct: number;
+  totalReturnUsd: number;
+  totalReturnPct: number;
+  cashUsd: number;
+  positionCount: number;
+  riskProfile: string;
+  indicator: "up" | "down" | "flat";
+  paperLabel: string;
+}
+
+interface DashboardTodayActivity {
+  accountsReviewed: number;
+  securitiesEvaluated: number;
+  recommendationsLogged: number;
+  paperTradesExecuted: number;
+  tradesPrevented: number;
+  policyOrRiskFindings: number;
+  latestObservationStatus: string;
+  latestObservationRunKey: string | null;
+  latestObservationFinishedAt: string | null;
+  summary: string;
+}
+
+interface DashboardAttention {
+  items: Array<{ severity: "info" | "warning" | "critical"; title: string; detail: string }>;
+}
+
+interface DashboardObservationRun {
+  id: string;
+  runKey: string;
+  status: string;
+  profilesCompleted: number;
+  profilesNoAction: number;
+  profilesFailed: number;
+  startedAt: string;
+  finishedAt: string | null;
+  marketDataSnapshotId: string | null;
+  requestBudgetJson: string | null;
+}
+
+interface DashboardFounderReportRow {
+  id: string;
+  runKey: string;
+  body: string;
+  factsJson: string | null;
+  createdAt: string;
+}
+
+interface DashboardFounderFacts {
+  profileCount?: number;
+  assetsEvaluated?: number;
+  tradesExecuted?: number;
+  decisionsLogged?: number;
+  profilesCompleted?: number;
+  profilesNoAction?: number;
+  profilesFailed?: number;
+  tradesPrevented?: number;
+  policyFindings?: number;
+  providerFailures?: number;
+  staleDataRejections?: number;
+  status?: string;
+}
+
+interface DashboardSectionAudit {
+  section: string;
+  classification: "keep as compact dashboard summary" | "move to dedicated page only" | "founder/admin only" | "remove because obsolete or duplicated";
+  destination: string;
+}
+
+const dashboardSectionAudit: DashboardSectionAudit[] = [
+  { section: "Overall summary", classification: "keep as compact dashboard summary", destination: "/dashboard" },
+  { section: "Account cards", classification: "keep as compact dashboard summary", destination: "/dashboard" },
+  { section: "Today activity", classification: "keep as compact dashboard summary", destination: "/dashboard" },
+  { section: "Attention needed", classification: "keep as compact dashboard summary", destination: "/dashboard" },
+  { section: "Market ticker", classification: "move to dedicated page only", destination: "/market-ticker and /quotes" },
+  { section: "Simulation policy", classification: "move to dedicated page only", destination: "/portfolio, /settings, /daily-management-cycles" },
+  { section: "Portfolio operations", classification: "founder/admin only", destination: "/accounts/{id}/daily-orchestration" },
+  { section: "Knowledge Graph", classification: "move to dedicated page only", destination: "/knowledge-graph and /knowledge-graph/visualization" },
+  { section: "Event Timeline", classification: "founder/admin only", destination: "/events and /events/observability" },
+  { section: "Allocation proposal", classification: "move to dedicated page only", destination: "/allocation-proposals" },
+  { section: "Paper order batch", classification: "move to dedicated page only", destination: "/paper-order-batches" },
+  { section: "Daily review and management", classification: "move to dedicated page only", destination: "/daily-reviews and /daily-management-cycles" },
+  { section: "Decision, briefing, research, strategy, lab, forward test, benchmarks, intelligence", classification: "move to dedicated page only", destination: "Existing dedicated JSON/workflow endpoints" },
+  { section: "Diagnostics, scheduled runs, settings", classification: "founder/admin only", destination: "/diagnostics, /scheduled-runs, /settings" },
+  { section: "Duplicate asset universe/opportunities/tables/charts", classification: "remove because obsolete or duplicated", destination: "Dedicated feature pages and APIs" }
+];
+
+function renderSimpleDashboardHtml(data: {
+  selectedPortfolioId?: string;
+  overallSummary?: DashboardOverallSummary;
+  accounts?: DashboardAccountCard[];
+  activity?: DashboardTodayActivity;
+  attention?: DashboardAttention;
+  audit?: DashboardSectionAudit[];
+  accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
+  settings: { automationPaused: boolean };
+  performance: {
+    totalValueUsd: number;
+    cashUsd: number;
+    positionsValueUsd?: number;
+    todayGainLossUsd?: number;
+    totalReturnUsd: number;
+    priceReturnUsd: number;
+    dividendReturnUsd: number;
+    tradeCount: number;
+    maxDrawdownPct: number;
+    benchmarkReturns: Array<{ benchmarkName: string; returnPct: number; latestValueUsd: number }>;
+  };
+  positions: Array<{ symbol: string; assetClass?: string; quantity: number; marketValueUsd: number }>;
+  recommendations: Array<{ symbol: string; action: string; explanation: string }>;
+  journal?: Array<{ symbol?: string; decision: string; explanation: string; confidenceScore?: number; createdAt?: string }>;
+  trades: Array<{ symbol: string; side: string; quantity: number; priceUsd: number; executedAt?: string }>;
+  scheduledRuns: Array<{ runKey: string; status: string; startedAt: string; errorDetails?: string }>;
+  summaries: Array<{ summaryType: string; summaryDate?: string; title: string; body: string }>;
+  rejectedOpportunities: Array<{ symbol: string; explanation: string }>;
+}): string {
+  const accounts = data.accounts?.length ? data.accounts : fallbackDashboardAccounts(data);
+  const summary = data.overallSummary ?? fallbackDashboardSummary(data, accounts);
+  const activity = data.activity ?? fallbackDashboardActivity(data);
+  const attention = data.attention ?? fallbackDashboardAttention(data);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kairox Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #f6f7f9;
+      color: #17202a;
+      --page-max: 1120px;
+      --page-pad: clamp(16px, 4vw, 40px);
+      --line: #dde4ec;
+      --muted: #667488;
+      --ink: #17202a;
+      --panel: #ffffff;
+      --good: #12633a;
+      --bad: #9f2f22;
+      --flat: #475569;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.45; }
+    header { background: #101827; color: white; padding-block: 22px 18px; }
+    .page-shell { width: 100%; max-width: var(--page-max); margin-inline: auto; padding-inline: var(--page-pad); }
+    .header-inner { display: grid; gap: 10px; }
+    h1 { margin: 0; font-size: clamp(1.5rem, 4vw, 2.1rem); letter-spacing: 0; }
+    h2 { margin: 0 0 12px; font-size: 1rem; letter-spacing: 0; }
+    .sub { margin: 0; color: #cbd5e1; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; }
+    nav a { color: white; text-decoration: none; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; padding: 6px 10px; }
+    main.page-shell { padding-block: 22px 44px; display: grid; gap: 18px; }
+    .summary { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .accounts { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 14px; }
+    .two-col { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr); gap: 14px; align-items: start; }
+    .panel, .account-card, .metric-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.04); min-width: 0; }
+    .metric-card { display: grid; gap: 4px; }
+    .label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    .metric { font-weight: 760; font-size: clamp(1.35rem, 4vw, 2rem); overflow-wrap: anywhere; }
+    .metric-sm { font-weight: 740; font-size: 1.05rem; overflow-wrap: anywhere; }
+    .muted { color: var(--muted); font-size: .88rem; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid #edf1f5; padding: 10px 0; }
+    .row:first-child { border-top: 0; }
+    .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 9px; font-size: .76rem; font-weight: 760; background: #eef4ff; color: #123d75; white-space: nowrap; }
+    .up { color: var(--good); }
+    .down { color: var(--bad); }
+    .flat { color: var(--flat); }
+    .attention-list { display: grid; gap: 10px; }
+    .attention-item { border: 1px solid #edf1f5; border-radius: 8px; padding: 12px; background: #fbfcfd; }
+    .attention-item.warning { border-color: #f7d58a; background: #fffaf0; }
+    .attention-item.critical { border-color: #f5b5ae; background: #fff5f3; }
+    .account-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .account-card a { color: #1f5ed8; font-weight: 700; text-decoration: none; }
+    .activity-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    a:focus-visible { outline: 3px solid #7db2ff; outline-offset: 3px; }
+    @media (max-width: 900px) { .summary, .two-col { grid-template-columns: 1fr; } .activity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 560px) { :root { --page-pad: 14px; } .activity-grid { grid-template-columns: 1fr; } .row { align-items: flex-start; flex-direction: column; gap: 4px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="page-shell header-inner">
+      <h1>Kairox Dashboard</h1>
+      <p class="sub">Account summary. Paper mode remains active; live trading is disabled.</p>
+      <nav aria-label="Primary navigation">
+        <a href="/">Home</a>
+        <a href="/portfolio?portfolioId=${encodeURIComponent(data.selectedPortfolioId ?? accounts[0]?.portfolioId ?? TIM_PORTFOLIO_ID)}">Portfolio</a>
+        <a href="/daily-reviews?portfolioId=${encodeURIComponent(data.selectedPortfolioId ?? accounts[0]?.portfolioId ?? TIM_PORTFOLIO_ID)}">Daily Review</a>
+        <a href="/research?portfolioId=${encodeURIComponent(data.selectedPortfolioId ?? accounts[0]?.portfolioId ?? TIM_PORTFOLIO_ID)}">Research</a>
+        <a href="/founder-reports">Founder Reports</a>
+      </nav>
+    </div>
+  </header>
+  <main class="page-shell">
+    <section id="overall-summary" class="summary" aria-label="Overall summary">
+      ${compactMetric("Combined value", money(summary.combinedValueUsd), `${accounts.length} visible account${accounts.length === 1 ? "" : "s"}`)}
+      ${compactMetric("Today", `${signedMoney(summary.todayChangeUsd)} (${signedPct(summary.todayChangePct)})`, directionText(summary.todayChangeUsd))}
+      ${compactMetric("Total gain/loss", signedMoney(summary.totalGainLossUsd), "Across visible accounts")}
+      ${compactMetric("Guardian", summary.guardianStatus, `${summary.paperLiveStatus} - ${data.settings.automationPaused ? "Automation paused" : "Automation active"}`)}
+    </section>
+    <section id="accounts" class="panel">
+      <h2>Accounts</h2>
+      <div class="accounts">${accounts.map(accountSummaryCard).join("")}</div>
+    </section>
+    <section class="two-col">
+      <section id="todays-activity" class="panel">
+        <h2>Today's Activity</h2>
+        <div class="activity-grid">
+          ${compactMini("Accounts reviewed", String(activity.accountsReviewed))}
+          ${compactMini("Securities evaluated", String(activity.securitiesEvaluated))}
+          ${compactMini("Recommendations logged", String(activity.recommendationsLogged))}
+          ${compactMini("Paper trades executed", String(activity.paperTradesExecuted))}
+          ${compactMini("Trades prevented", String(activity.tradesPrevented))}
+          ${compactMini("Policy / risk findings", String(activity.policyOrRiskFindings))}
+        </div>
+        <div class="attention-item" style="margin-top:12px">
+          <div class="account-top"><strong>Latest observation</strong><span class="pill">${escapeHtml(activity.latestObservationStatus)}</span></div>
+          <div class="muted">${escapeHtml(activity.summary)}</div>
+          ${activity.latestObservationFinishedAt ? `<div class="muted">Finished ${formatTimestampElement(activity.latestObservationFinishedAt)}</div>` : ""}
+        </div>
+      </section>
+      <section id="attention-needed" class="panel">
+        <h2>Attention Needed</h2>
+        ${attention.items.length ? `<div class="attention-list">${attention.items.map(attentionItem).join("")}</div>` : '<div class="attention-item"><strong>Nothing urgent</strong><div class="muted">No failed observation, policy warning, stale-data block, or live-trading concern is currently surfaced here.</div></div>'}
+      </section>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+      function relativeAge(date) {
+        const diffMs = Math.max(0, Date.now() - date.getTime());
+        const units = [["day", 86400000], ["hour", 3600000], ["minute", 60000], ["second", 1000]];
+        const unit = units.find(([, size]) => diffMs >= size) || units[units.length - 1];
+        const amount = Math.floor(diffMs / unit[1]);
+        return "Updated " + amount + " " + unit[0] + (amount === 1 ? "" : "s") + " ago";
+      }
+      document.querySelectorAll("[data-kairox-time]").forEach((node) => {
+        const raw = node.getAttribute("data-kairox-time");
+        const date = raw ? new Date(raw) : null;
+        node.textContent = date && Number.isFinite(date.getTime()) ? formatter.format(date) + " - " + relativeAge(date) : "Timestamp unavailable";
+      });
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+function accountSummaryCard(account: DashboardAccountCard): string {
+  const className = account.indicator === "up" ? "up" : account.indicator === "down" ? "down" : "flat";
+  const arrow = account.indicator === "up" ? "+" : account.indicator === "down" ? "-" : "=";
+  return `<article class="account-card">
+    <div class="account-top"><div><strong>${escapeHtml(account.accountName)}</strong><div class="muted">${escapeHtml(account.riskProfile)}</div></div><span class="pill">${escapeHtml(account.paperLabel.includes("Paper") ? account.paperLabel : "Paper")}</span></div>
+    <div class="metric">${escapeHtml(money(account.totalCurrentValueUsd))}</div>
+    <div class="${className}">${escapeHtml(`${arrow} ${signedMoney(account.todayChangeUsd)} (${signedPct(account.todayChangePct)}) today`)}</div>
+    ${row("Total return", `${signedMoney(account.totalReturnUsd)} (${pct(account.totalReturnPct)})`)}
+    ${row("Cash", money(account.cashUsd))}
+    ${row("Positions", String(account.positionCount))}
+    <a href="/portfolio?portfolioId=${encodeURIComponent(account.portfolioId)}">Open account detail</a>
+  </article>`;
+}
+
+function compactMetric(label: string, value: string, detail: string): string {
+  return `<div class="metric-card"><div class="label">${escapeHtml(label)}</div><div class="metric">${escapeHtml(value)}</div><div class="muted">${escapeHtml(detail)}</div></div>`;
+}
+
+function compactMini(label: string, value: string): string {
+  return `<div class="metric-card"><div class="label">${escapeHtml(label)}</div><div class="metric-sm">${escapeHtml(value)}</div></div>`;
+}
+
+function attentionItem(item: DashboardAttention["items"][number]): string {
+  return `<div class="attention-item ${escapeHtml(item.severity)}"><strong>${escapeHtml(item.title)}</strong><div class="muted">${escapeHtml(item.detail)}</div></div>`;
+}
+
+function fallbackDashboardAccounts(data: {
+  selectedPortfolioId?: string;
+  accountProfiles?: Array<{ portfolioId: string; profileKey: string; displayName: string; riskPosture: string }>;
+  profileComparison?: DashboardComparison;
+  performance: { totalValueUsd: number; cashUsd: number; todayGainLossUsd?: number; totalReturnUsd: number };
+  positions: Array<unknown>;
+}): DashboardAccountCard[] {
+  if (data.profileComparison?.profiles.length) {
+    return data.profileComparison.profiles.map((profile) => {
+      const today = 0;
+      const totalReturnUsd = profile.actualEquityUsd - profile.comparisonStartEquityUsd;
+      return {
+        portfolioId: profile.portfolioId,
+        profileKey: profile.profileKey,
+        accountName: profile.displayName,
+        totalCurrentValueUsd: profile.actualEquityUsd,
+        todayChangeUsd: today,
+        todayChangePct: 0,
+        totalReturnUsd,
+        totalReturnPct: profile.totalReturnPct ?? profile.normalizedReturnPct,
+        cashUsd: profile.cashUsd ?? 0,
+        positionCount: profile.openPositions ?? 0,
+        riskProfile: profile.riskPosture,
+        indicator: "flat",
+        paperLabel: profile.paperOnlyLabel ?? "Paper"
+      };
+    });
+  }
+  const profiles = data.accountProfiles?.length
+    ? data.accountProfiles
+    : [{ portfolioId: data.selectedPortfolioId ?? TIM_PORTFOLIO_ID, profileKey: "selected", displayName: "Selected account", riskPosture: "Paper" }];
+  return profiles.map((profile, index) => {
+    const selected = profile.portfolioId === data.selectedPortfolioId || index === 0;
+    const value = selected ? data.performance.totalValueUsd : 0;
+    const today = selected ? data.performance.todayGainLossUsd ?? 0 : 0;
+    return {
+      portfolioId: profile.portfolioId,
+      profileKey: profile.profileKey,
+      accountName: profile.displayName,
+      totalCurrentValueUsd: value,
+      todayChangeUsd: today,
+      todayChangePct: value - today > 0 ? today / (value - today) : 0,
+      totalReturnUsd: selected ? data.performance.totalReturnUsd : 0,
+      totalReturnPct: value > 0 ? (selected ? data.performance.totalReturnUsd / value : 0) : 0,
+      cashUsd: selected ? data.performance.cashUsd : 0,
+      positionCount: selected ? data.positions.length : 0,
+      riskProfile: profile.riskPosture,
+      indicator: directionFor(today),
+      paperLabel: "Paper"
+    };
+  });
+}
+
+function fallbackDashboardSummary(data: { settings: { automationPaused: boolean }; performance: { totalValueUsd: number; todayGainLossUsd?: number; totalReturnUsd: number } }, accounts: DashboardAccountCard[]): DashboardOverallSummary {
+  const combinedValueUsd = accounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0) || data.performance.totalValueUsd;
+  const todayChangeUsd = accounts.reduce((sum, account) => sum + account.todayChangeUsd, 0) || (data.performance.todayGainLossUsd ?? 0);
+  return {
+    combinedValueUsd,
+    todayChangeUsd,
+    todayChangePct: combinedValueUsd - todayChangeUsd > 0 ? todayChangeUsd / (combinedValueUsd - todayChangeUsd) : 0,
+    totalGainLossUsd: accounts.reduce((sum, account) => sum + account.totalReturnUsd, 0) || data.performance.totalReturnUsd,
+    guardianStatus: "Clear",
+    paperLiveStatus: "Paper only"
+  };
+}
+
+function fallbackDashboardActivity(data: { recommendations: unknown[]; trades: unknown[]; scheduledRuns: Array<{ status: string; runKey: string; startedAt: string }> }): DashboardTodayActivity {
+  const latest = data.scheduledRuns[0];
+  return {
+    accountsReviewed: latest ? 1 : 0,
+    securitiesEvaluated: data.recommendations.length,
+    recommendationsLogged: data.recommendations.length,
+    paperTradesExecuted: data.trades.length,
+    tradesPrevented: 0,
+    policyOrRiskFindings: 0,
+    latestObservationStatus: latest?.status ?? "No run yet",
+    latestObservationRunKey: latest?.runKey ?? null,
+    latestObservationFinishedAt: latest?.startedAt ?? null,
+    summary: latest ? `Latest scheduled run ${latest.runKey} is ${latest.status}.` : "No observation has been recorded yet."
+  };
+}
+
+function fallbackDashboardAttention(data: { settings: { automationPaused: boolean } }): DashboardAttention {
+  return data.settings.automationPaused
+    ? { items: [{ severity: "warning", title: "Automation paused", detail: "Scheduled paper observation is paused." }] }
+    : { items: [] };
+}
+
+function buildDashboardActivity(observation: DashboardObservationRun | null, report: DashboardFounderReportRow | null): DashboardTodayActivity {
+  const facts = parseFounderFacts(report?.factsJson);
+  const budget = parseBudget(observation?.requestBudgetJson);
+  const accountsReviewed = facts.profileCount ?? ((observation?.profilesCompleted ?? 0) + (observation?.profilesNoAction ?? 0) + (observation?.profilesFailed ?? 0));
+  return {
+    accountsReviewed,
+    securitiesEvaluated: facts.assetsEvaluated ?? budget.symbolsProcessed ?? 0,
+    recommendationsLogged: facts.decisionsLogged ?? 0,
+    paperTradesExecuted: facts.tradesExecuted ?? 0,
+    tradesPrevented: facts.tradesPrevented ?? 0,
+    policyOrRiskFindings: facts.policyFindings ?? 0,
+    latestObservationStatus: observation?.status ?? "No observation yet",
+    latestObservationRunKey: observation?.runKey ?? null,
+    latestObservationFinishedAt: observation?.finishedAt ?? report?.createdAt ?? null,
+    summary: report?.body?.split("\n")[0] ?? (observation ? `Latest observation ${observation.runKey} is ${observation.status}.` : "No observation run has been recorded yet.")
+  };
+}
+
+function buildDashboardAttention(settings: { automationPaused: boolean }, observation: DashboardObservationRun | null, activity: DashboardTodayActivity): DashboardAttention {
+  const items: DashboardAttention["items"] = [];
+  if (settings.automationPaused) {
+    items.push({ severity: "warning", title: "Automation paused", detail: "Scheduled paper observation is currently paused." });
+  }
+  const failedObservation = observation && (observation.status === "partial_failure" || observation.status === "failed" || observation.profilesFailed > 0) ? observation : null;
+  if (failedObservation) {
+    items.push({ severity: "critical", title: "Observation needs review", detail: `${failedObservation.runKey} ended with status ${failedObservation.status}. Failed profiles: ${failedObservation.profilesFailed}.` });
+  }
+  if (activity.policyOrRiskFindings > 0) {
+    items.push({ severity: "warning", title: "Policy or risk finding", detail: `${activity.policyOrRiskFindings} finding${activity.policyOrRiskFindings === 1 ? "" : "s"} were recorded today.` });
+  }
+  if (activity.tradesPrevented > 0) {
+    items.push({ severity: "info", title: "Trade prevented", detail: `${activity.tradesPrevented} paper trade${activity.tradesPrevented === 1 ? "" : "s"} were prevented by safeguards.` });
+  }
+  return { items };
+}
+
+function parseFounderFacts(value: string | null | undefined): DashboardFounderFacts {
+  if (!value) return {};
+  try {
+    return JSON.parse(value) as DashboardFounderFacts;
+  } catch {
+    return {};
+  }
+}
+
+function parseBudget(value: string | null | undefined): { symbolsProcessed?: number } {
+  if (!value) return {};
+  try {
+    return JSON.parse(value) as { symbolsProcessed?: number };
+  } catch {
+    return {};
+  }
+}
+
+function directionFor(value: number): "up" | "down" | "flat" {
+  if (value > 0.0001) return "up";
+  if (value < -0.0001) return "down";
+  return "flat";
+}
+
+function directionText(value: number): string {
+  return value > 0 ? "Up today" : value < 0 ? "Down today" : "Flat today";
+}
+
+function roundCurrency(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+function roundRatioValue(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
 
 function metric(label: string, value: string): string {

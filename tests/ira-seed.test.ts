@@ -61,7 +61,7 @@ test("IRA seed adds an enabled portfolio profile so dashboard paths can discover
   assert.match(migration, /'watchlist_ira_core'/);
 });
 
-test("dashboard account selector can switch between Tim Balanced and IRA without frontend hardcoding", () => {
+test("dashboard renders visible paper account cards without frontend hardcoding", () => {
   const html = renderDashboardHtml({
     selectedPortfolioId: "portfolio_ira",
     accountProfiles: [
@@ -91,11 +91,11 @@ test("dashboard account selector can switch between Tim Balanced and IRA without
   });
 
   assert.match(html, /Accounts/);
-  assert.match(html, /href="\/dashboard\?portfolioId=portfolio_tim_paper"/);
-  assert.match(html, /href="\/dashboard\?portfolioId=portfolio_ira"/);
-  assert.match(html, /<strong>IRA<\/strong><span class="pill">Paper<\/span>/);
-  assert.match(html, /aria-current="true"/);
-  assert.match(html, /Portfolio value/);
+  assert.match(html, /href="\/portfolio\?portfolioId=portfolio_tim_paper"/);
+  assert.match(html, /href="\/portfolio\?portfolioId=portfolio_ira"/);
+  assert.match(html, /<strong>IRA<\/strong>/);
+  assert.match(html, /Paper/);
+  assert.match(html, /Combined value/);
   assert.match(html, /\$2400\.0000/);
-  assert.match(html, /No records yet/);
+  assert.match(html, /Attention Needed/);
 });

@@ -114,7 +114,9 @@ test("dashboard uses Kairox branding and keeps raw diagnostics out of normal UI"
   });
 
   assert.match(html, /<title>Kairox Dashboard<\/title>/);
-  assert.match(html, /Market Data Status/);
+  assert.match(html, /Kairox Dashboard/);
+  assert.match(html, /Attention Needed/);
+  assert.doesNotMatch(html, /Market Data Status/);
   assert.doesNotMatch(html, /Illegal invocation|developers.cloudflare.com|HTTP 429/);
 });
 

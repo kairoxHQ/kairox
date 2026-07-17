@@ -145,7 +145,7 @@ test("prohibited margin or short order is rejected", () => {
   assert.match(short.reasons.join(" "), /short selling/);
 });
 
-test("dashboard displays IRA conservative policy and paper badges", () => {
+test("dashboard displays IRA conservative account summary and paper badge", () => {
   const html = renderDashboardHtml({
     selectedPortfolioId: "portfolio_ira",
     accountProfiles: [{ portfolioId: "portfolio_ira", profileKey: "ira", displayName: "IRA", riskPosture: "Conservative" }],
@@ -173,10 +173,10 @@ test("dashboard displays IRA conservative policy and paper badges", () => {
     rejectedOpportunities: []
   });
 
-  assert.match(html, /Simulation Status/);
+  assert.match(html, /Accounts/);
   assert.match(html, /Conservative/);
   assert.match(html, /Paper/);
-  assert.match(html, /Capital preservation with moderate long-term growth/);
   assert.match(html, /\$2400\.0000/);
-  assert.match(html, /Max drawdown/);
+  assert.match(html, /Open account detail/);
+  assert.doesNotMatch(html, /Capital preservation with moderate long-term growth|Max drawdown/);
 });

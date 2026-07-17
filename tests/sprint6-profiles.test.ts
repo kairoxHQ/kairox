@@ -72,7 +72,7 @@ test("profile-scoped idempotency permits the same signal across virtual portfoli
   assert.match(sql, /ON trades\(portfolio_id, signal_key\)/);
 });
 
-test("dashboard renders actual and normalized profile comparison", () => {
+test("dashboard renders profile comparison as compact account cards", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
     performance: {
@@ -125,13 +125,12 @@ test("dashboard renders actual and normalized profile comparison", () => {
     }
   });
 
-  assert.match(html, /Simulation Profiles/);
+  assert.match(html, /Accounts/);
   assert.match(html, /Kairox Conservative/);
-  assert.match(html, /VIRTUAL \/ PAPER ONLY/);
-  assert.match(html, /Cash 100\.00%/);
-  assert.match(html, /Latest decision DO_NOTHING/);
-  assert.match(html, /Volatility Needs more history/);
-  assert.match(html, /Normalized 100\.00/);
+  assert.match(html, /Paper/);
+  assert.match(html, /Positions/);
+  assert.match(html, /Open account detail/);
+  assert.doesNotMatch(html, /Simulation Profiles|Latest decision DO_NOTHING|Volatility Needs more history|Normalized 100\.00/);
 });
 
 test("profile and comparison endpoints are public read routes", async () => {

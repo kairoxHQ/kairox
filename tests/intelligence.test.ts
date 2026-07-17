@@ -86,7 +86,7 @@ test("intelligence endpoints are public read routes", async () => {
   }
 });
 
-test("dashboard renders intelligence section without raw technical errors", () => {
+test("dashboard does not duplicate the intelligence page or expose raw technical errors", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
     performance: {
@@ -130,8 +130,7 @@ test("dashboard renders intelligence section without raw technical errors", () =
     }
   });
 
-  assert.match(html, /Intelligence/);
-  assert.match(html, /Today&#39;s Market Story/);
-  assert.match(html, /61\.0% evidence/);
+  assert.match(html, /Kairox Dashboard/);
+  assert.doesNotMatch(html, /Today's Market Story|61\.0% evidence|Sample Fixture/);
   assert.doesNotMatch(html, /Illegal invocation/);
 });

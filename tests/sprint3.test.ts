@@ -52,7 +52,7 @@ test("benchmark comparison uses the same period start and latest value", () => {
   assert.deepEqual(compareBenchmark(20, 22), { returnUsd: 2, returnPct: 0.1 });
 });
 
-test("dashboard HTML contains portfolio sections without exposing secrets", () => {
+test("dashboard HTML is a compact account summary without exposing secrets", () => {
   const html = renderDashboardHtml({
     settings: { automationPaused: false },
     performance: {
@@ -114,20 +114,14 @@ test("dashboard HTML contains portfolio sections without exposing secrets", () =
     ]
   });
 
-  assert.match(html, /Overview/);
+  assert.match(html, /Overall summary/);
+  assert.match(html, /Accounts/);
+  assert.match(html, /Today's Activity/);
+  assert.match(html, /Attention Needed/);
+  assert.match(html, /Combined value/);
+  assert.match(html, /Paper mode remains active; live trading is disabled/);
   assert.match(html, /Positions/);
-  assert.match(html, /Decision Journal/);
-  assert.match(html, /Latest Recommendations/);
-  assert.match(html, /Scheduled Runs/);
-  assert.match(html, /Assets attempted/);
-  assert.match(html, /Provider failures/);
-  assert.match(html, /Tim Balanced/);
-  assert.match(html, /0\.00003112 BTC/);
-  assert.match(html, /class="badge badge-buy">BUY/);
-  assert.match(html, /class="badge status-cached">Cached/);
-  assert.match(html, /data-kairox-time="2026-07-13T14:00:00.000Z"/);
-  assert.match(html, /data-kairox-time-mode="cached"/);
-  assert.match(html, /Portfolio History/);
+  assert.doesNotMatch(html, /Decision Journal|Latest Recommendations|Scheduled Runs|Portfolio History/);
   assert.doesNotMatch(html, /PAPER_RUN_SECRET/);
 });
 
@@ -153,14 +147,14 @@ test("dashboard layout uses one centered shell and predictable grid breakpoints"
     rejectedOpportunities: []
   });
 
-  assert.match(html, /--page-max: 1360px/);
+  assert.match(html, /--page-max: 1120px/);
   assert.match(html, /<div class="page-shell header-inner">/);
   assert.match(html, /<main class="page-shell">/);
   assert.match(html, /margin-inline: auto/);
-  assert.match(html, /grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(html, /@media \(max-width: 1100px\)/);
-  assert.match(html, /@media \(max-width: 640px\)/);
-  assert.match(html, /nav \{ display: flex; justify-content: center; flex-wrap: wrap/);
+  assert.match(html, /grid-template-columns: 1\.4fr repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(html, /@media \(max-width: 900px\)/);
+  assert.match(html, /@media \(max-width: 560px\)/);
+  assert.match(html, /nav \{ display: flex; flex-wrap: wrap/);
   assert.match(html, /a:focus-visible/);
 });
 
