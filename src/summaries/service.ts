@@ -5,6 +5,7 @@ import { getMarketDataStatuses } from "../market/status.ts";
 import { sanitizeForUser } from "../shared/messages.ts";
 import { getLatestDailySnapshots, type DailySnapshotSummary } from "../portfolio/dailySnapshots.ts";
 import { getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
+import { formatCurrency, formatPercent } from "../shared/displayFormat.ts";
 
 export async function generateSummaries(db: D1Database, now = new Date()): Promise<void> {
   const date = now.toISOString().slice(0, 10);
@@ -69,9 +70,9 @@ export async function generateSummaries(db: D1Database, now = new Date()): Promi
     : "none recorded";
 
   await upsertSummary(db, "morning", date, "Morning Kairox paper-trading summary", [
-    `Portfolio value: $${performance.totalValueUsd}.`,
+    `Portfolio value: ${formatCurrency(performance.totalValueUsd)}.`,
     `Overnight crypto activity is reflected in the latest crypto market snapshots when available.`,
-    `Previous result: total return $${performance.totalReturnUsd}.`,
+    `Previous result: total return ${formatCurrency(performance.totalReturnUsd)}.`,
     `Positions held: ${positions.length ? positions.map((position) => position.symbol).join(", ") : "none"}.`,
     `Market data status: ${marketStatusText}.`,
     `Watching ${watchedSymbols.length ? watchedSymbols.join(", ") : "the enabled asset watchlist"} for validated momentum, moving-average, RSI, risk, and market-hours conditions.`
@@ -80,10 +81,10 @@ export async function generateSummaries(db: D1Database, now = new Date()): Promi
   await upsertSummary(db, "end_of_day", date, "End-of-day Kairox paper-trading summary", [
     `Trades made: ${trades.length}.`,
     `Trades rejected or skipped: ${rejected.length}.`,
-    `Portfolio change: total return $${performance.totalReturnUsd}, price return $${performance.priceReturnUsd}, dividend return $${performance.dividendReturnUsd}.`,
+    `Portfolio change: total return ${formatCurrency(performance.totalReturnUsd)}, price return ${formatCurrency(performance.priceReturnUsd)}, dividend return ${formatCurrency(performance.dividendReturnUsd)}.`,
     `Benchmark comparison: ${performance.benchmarkReturns.map((b) => `${b.benchmarkName} ${formatPct(b.returnPct)}`).join(", ") || "unavailable"}.`,
-    `Fees/spreads charged: $${performance.estimatedTransactionCostsUsd}.`,
-    `Dividend activity: ${dividends.length ? dividends.map((d) => `${d.symbol} $${d.amountUsd}`).join(", ") : "none recorded"}.`,
+    `Fees/spreads charged: ${formatCurrency(performance.estimatedTransactionCostsUsd)}.`,
+    `Dividend activity: ${dividends.length ? dividends.map((d) => `${d.symbol} ${formatCurrency(d.amountUsd)}`).join(", ") : "none recorded"}.`,
     `Current positions: ${positions.length ? positions.map((position) => position.symbol).join(", ") : "none"}.`,
     `Market data status: ${marketStatusText}.`
   ], { performance, trades, rejected, dividends, positions, marketStatuses });
@@ -192,7 +193,7 @@ async function upsertSummary(
 }
 
 function formatPct(value: number): string {
-  return `${(value * 100).toFixed(2)}%`;
+  return formatPercent(value);
 }
 
 function summaryStatusMessage(status: { status?: string; isFresh?: boolean; userMessage: string }): string {

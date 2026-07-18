@@ -3,6 +3,7 @@ import { recordJourneyEvent } from "../journey/service.ts";
 import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { RecommendationProposalService } from "../recommendations/proposalService.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { formatPercent } from "../shared/displayFormat.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
 
 export type PortfolioDecisionRecommendation =
@@ -937,5 +938,5 @@ function id(prefix: string, key: string): string {
 }
 
 function formatPct(value: number): string {
-  return `${(value * 100).toFixed(2)}%`;
+  return formatPercent(value);
 }

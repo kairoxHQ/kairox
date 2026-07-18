@@ -176,7 +176,7 @@ test("dashboard displays IRA conservative account summary and paper badge", () =
   assert.match(html, /Accounts/);
   assert.match(html, /Conservative/);
   assert.match(html, /Paper/);
-  assert.match(html, /\$2400\.0000/);
+  assert.match(html, /\$2,400\.00/);
   assert.match(html, /Open account detail/);
   assert.doesNotMatch(html, /Capital preservation with moderate long-term growth|Max drawdown/);
 });

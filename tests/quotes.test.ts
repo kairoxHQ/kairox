@@ -257,11 +257,11 @@ test("dashboard overall today matches summed account daily market moves", () => 
   });
 
   assert.match(html, /Today/);
-  assert.match(html, /\+\$1\.0000 \(\+0\.29%\)/);
+  assert.match(html, /\+\$1\.00 \(\+0\.29%\)/);
   assert.match(html, /IRA/);
-  assert.match(html, /\+\$1\.0000 \(\+0\.71%\) today/);
+  assert.match(html, /Up \+\$1\.00 \(\+0\.71%\) today/);
   assert.match(html, /Partial daily price data/);
-  assert.doesNotMatch(html, /\+\$0\.0000 \(0\.00%\)<\/div><div class="muted">up/i);
+  assert.doesNotMatch(html, /-\$0\.00|-0\.00%/);
 });
 
 test("browser-local timestamp formatting is deferred to the viewer timezone", () => {

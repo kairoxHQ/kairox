@@ -6,7 +6,7 @@ import type { NormalizedQuote } from "../src/market/quotes.ts";
 const generatedAt = "2026-07-17T14:00:00.000Z";
 
 test("portfolio page renders an investor-focused primary view", () => {
-  const html = renderPortfolioHtml({
+  const data = {
     portfolioId: "portfolio_ira",
     accountName: "Kairox Conservative IRA",
     riskPosture: "conservative",
@@ -60,10 +60,11 @@ test("portfolio page renders an investor-focused primary view", () => {
         createdAt: "2026-07-17T13:30:00.000Z"
       }
     ]
-  } as never);
+  } as never;
+  const html = renderPortfolioHtml(data);
 
   assert.match(html, /Current account value/);
-  assert.match(html, /\$2398\.5594/);
+  assert.match(html, /\$2,398\.56/);
   assert.match(html, /Today&#39;s gain\/loss/);
   assert.match(html, /Lifetime return/);
   assert.match(html, /Cash available/);
@@ -76,6 +77,8 @@ test("portfolio page renders an investor-focused primary view", () => {
   assert.match(html, /No action was recommended today\./);
   assert.ok(html.indexOf('id="account-selector"') < html.indexOf('id="market-ticker"'));
   assert.ok(html.indexOf('id="market-ticker"') < html.indexOf('aria-label="Account value"'));
+  assert.equal(data.valuation.totalAccountValueUsd, 2398.5594);
+  assert.equal(data.valuation.cashUsd, 958.5594);
 });
 
 test("portfolio page keeps diagnostics and trading controls out of the primary view", () => {

@@ -1,6 +1,7 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { getMarketTickerQuotes, type NormalizedQuote } from "../market/quotes.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
+import { formatCurrency, formatPercent, formatPrice, formatSignedCurrency, formatSignedPercent } from "../shared/displayFormat.ts";
 import { getPortfolioProfile, listPortfolioProfiles } from "./profiles.ts";
 import { getPortfolioValuation, type PortfolioValuation, type ValuedPosition } from "./valuation.ts";
 
@@ -459,25 +460,17 @@ function formatQuoteValue(item: NormalizedQuote): string {
   if (item.price === null) {
     return "Unavailable";
   }
-  if (item.unit === "usd") {
-    return money(item.price);
-  }
-  if (item.unit === "percent") {
-    return `${item.price.toFixed(item.valuePrecision)}%`;
-  }
-  return item.price.toFixed(item.valuePrecision);
+  return formatPrice(item.price, { assetType: item.assetType, unit: item.unit });
 }
 
 function formatCompactQuoteChange(item: NormalizedQuote): string {
   if (item.absoluteChange === null || item.percentageChange === null) {
     return "Unavailable";
   }
-  const sign = item.absoluteChange > 0 ? "+" : "";
   const value = item.unit === "usd"
-    ? `${item.absoluteChange >= 0 ? "+" : "-"}$${Math.abs(item.absoluteChange).toFixed(item.changePrecision)}`
-    : `${sign}${item.absoluteChange.toFixed(item.changePrecision)}`;
-  const pctSign = item.percentageChange > 0 ? "+" : "";
-  return `${value} (${pctSign}${(item.percentageChange * 100).toFixed(2)}%)`;
+    ? formatSignedCurrency(item.absoluteChange)
+    : `${item.absoluteChange > 0 ? "+" : item.absoluteChange < 0 ? "-" : ""}${formatPrice(Math.abs(item.absoluteChange), { unit: item.unit })}`;
+  return `${value} (${formatSignedPercent(item.percentageChange)})`;
 }
 
 function quoteDirectionClass(direction: string): string {
@@ -534,19 +527,19 @@ function todayChangeDetail(valuation: PortfolioValuation): string {
 }
 
 function money(value: number): string {
-  return `$${value.toFixed(4)}`;
+  return formatCurrency(value);
 }
 
 function signedMoney(value: number): string {
-  return `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(4)}`;
+  return formatSignedCurrency(value);
 }
 
 function pct(value: number): string {
-  return `${(value * 100).toFixed(2)}%`;
+  return formatPercent(value);
 }
 
 function signedPct(value: number): string {
-  return `${value >= 0 ? "+" : "-"}${Math.abs(value * 100).toFixed(2)}%`;
+  return formatSignedPercent(value);
 }
 
 function signedClass(value: number): string {

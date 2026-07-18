@@ -5,6 +5,7 @@ import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investme
 import { getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
+import { formatCurrency, formatPercent } from "../shared/displayFormat.ts";
 import { canUseAsBriefingFact, VerifiedMarketIntelligenceService, type PortfolioIntelligenceLink } from "../intelligence/verifiedPipeline.ts";
 
 export type BriefingType = "daily_close" | "weekly_summary" | "monthly_report" | "risk_alert" | "rebalance_explanation" | "hold_explanation" | "data_unavailable" | "public_progress";
@@ -637,11 +638,11 @@ function mapBriefingRow(row: BriefingRow): PortfolioBriefing {
 }
 
 function money(value: number): string {
-  return `$${roundMoney(value).toFixed(4)}`;
+  return formatCurrency(value);
 }
 
 function pct(value: number): string {
-  return `${(value * 100).toFixed(2)}%`;
+  return formatPercent(value);
 }
 
 function parseJson<T>(value: string, fallback: T): T {

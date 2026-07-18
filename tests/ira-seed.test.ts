@@ -96,6 +96,6 @@ test("dashboard renders visible paper account cards without frontend hardcoding"
   assert.match(html, /<strong>IRA<\/strong>/);
   assert.match(html, /Paper/);
   assert.match(html, /Combined value/);
-  assert.match(html, /\$2400\.0000/);
+  assert.match(html, /\$2,400\.00/);
   assert.match(html, /Attention Needed/);
 });

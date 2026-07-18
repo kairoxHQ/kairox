@@ -28,8 +28,8 @@ test("briefing migration stores structured facts, narrative, prompt versions, va
 
 test("deterministic provider creates a daily hold briefing with exact numbers and disclosure", async () => {
   const narrative = await new DeterministicBriefingNarrativeProvider().generate(facts({ recommendation: "Hold" }), { length: "standard", tone: "plain" });
-  assert.match(narrative.displayText, /IRA closed at \$2401\.2500/);
-  assert.match(narrative.displayText, /\$958\.5594 in cash/);
+  assert.match(narrative.displayText, /IRA closed at \$2,401\.25/);
+  assert.match(narrative.displayText, /\$958\.56 in cash/);
   assert.match(narrative.displayText, /Kairox recommendation: Hold/);
   assert.match(narrative.displayText, /paper simulation/i);
   assert.equal(validateBriefingNarrative(facts({ recommendation: "Hold" }), narrative).valid, true);

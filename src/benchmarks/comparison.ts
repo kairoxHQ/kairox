@@ -2,6 +2,7 @@ import { MarketDataService, type MarketDataSnapshot, type NormalizedQuote } from
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { accountDate, getPortfolioValuation } from "../portfolio/valuation.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { formatCurrency, formatPercent } from "../shared/displayFormat.ts";
 import { addMoney, pctChange, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 import type { Env } from "../shared/types.ts";
 
@@ -907,7 +908,7 @@ function buildMonthlyReport(summary: BenchmarkComparisonSummary, month: string, 
     "benchmark,value_usd,return_pct,max_drawdown_pct,difference_vs_kairox_usd,pricing_status",
     ...rows.map((row) => [row.benchmark, row.valueUsd ?? "", row.returnPct ?? "", row.drawdownPct ?? "", row.differenceVsKairoxUsd ?? "", row.status].join(","))
   ].join("\n");
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Kairox IRA Benchmark Report ${escapeHtml(month)}</title></head><body><h1>Kairox IRA benchmark report</h1><p>Paper simulation. Conservative strategy. Not live brokerage performance.</p><p>${escapeHtml(summary.proofSummary)}</p><table><thead><tr><th>Benchmark</th><th>Value</th><th>Return</th><th>Drawdown</th><th>Status</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.benchmark)}</td><td>${row.valueUsd ?? "Unavailable"}</td><td>${row.returnPct ?? "Unavailable"}</td><td>${row.drawdownPct ?? "Unavailable"}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Kairox IRA Benchmark Report ${escapeHtml(month)}</title></head><body><h1>Kairox IRA benchmark report</h1><p>Paper simulation. Conservative strategy. Not live brokerage performance.</p><p>${escapeHtml(summary.proofSummary)}</p><table><thead><tr><th>Benchmark</th><th>Value</th><th>Return</th><th>Drawdown</th><th>Status</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.benchmark)}</td><td>${escapeHtml(formatCurrency(row.valueUsd))}</td><td>${escapeHtml(formatPercent(row.returnPct))}</td><td>${escapeHtml(formatPercent(row.drawdownPct))}</td><td>${escapeHtml(row.status)}</td></tr>`).join("")}</tbody></table></body></html>`;
   return {
     html,
     csv,

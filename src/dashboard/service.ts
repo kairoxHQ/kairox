@@ -30,6 +30,14 @@ import { PortfolioResearchEngine, type ResearchCenterSummary, type SecurityResea
 import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from "../events/eventBus.ts";
 import { KnowledgeGraphService, type KnowledgeGraphSummary } from "../graph/knowledgeGraph.ts";
 import { getUsEquityMarketStatus } from "../market/hours.ts";
+import {
+  formatCurrency,
+  formatPercent,
+  formatPrice,
+  formatQuantity as formatDisplayQuantity,
+  formatSignedCurrency,
+  formatSignedPercent
+} from "../shared/displayFormat.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   const [settings, profileComparison, latestObservation, marketTicker] = await Promise.all([
@@ -470,16 +478,29 @@ export function renderDashboardHtml(data: {
       });
       const marketTicker = document.querySelector("[data-market-ticker]");
       const holdingQuotes = document.querySelector("[data-holding-quotes]");
-      const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 8 });
-      const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
+      const money = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const number = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const quantity = new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 });
       function esc(value) {
         return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+      }
+      function signedMoney(value) {
+        if (!Number.isFinite(value)) return "Unavailable";
+        if (Object.is(value, -0) || value === 0) return "$0.00";
+        if (Math.abs(value) < 0.01) return value > 0 ? "< $0.01" : "> -$0.01";
+        return (value > 0 ? "+" : "") + money.format(value);
+      }
+      function signedPercent(value) {
+        if (!Number.isFinite(value)) return "Unavailable";
+        if (Object.is(value, -0) || value === 0) return "0.00%";
+        if (Math.abs(value) < 0.0001) return value > 0 ? "< 0.01%" : "> -0.01%";
+        return (value > 0 ? "+" : "") + number.format(value * 100) + "%";
       }
       function quoteChange(item) {
         if (item.absoluteChange === null || item.percentageChange === null) return "Unavailable";
         const arrow = item.direction === "up" ? "▲" : item.direction === "down" ? "▼" : "■";
-        const sign = item.absoluteChange > 0 ? "+" : "";
-        return arrow + " " + sign + number.format(item.absoluteChange) + " (" + sign + (item.percentageChange * 100).toFixed(2) + "%)";
+        const change = item.unit === "usd" ? signedMoney(item.absoluteChange) : (item.absoluteChange > 0 ? "+" : "") + number.format(item.absoluteChange);
+        return arrow + " " + change + " (" + signedPercent(item.percentageChange) + ")";
       }
       function quoteClass(item) {
         return item.direction === "up" ? "quote-up" : item.direction === "down" ? "quote-down" : "quote-flat";
@@ -501,7 +522,7 @@ export function renderDashboardHtml(data: {
       }
       function renderHoldings(profiles) {
         if (!holdingQuotes) return;
-        holdingQuotes.innerHTML = profiles.map((profile) => '<div class="holding-profile"><div class="mini-head"><strong>' + esc(profile.displayName || profile.portfolioId) + '</strong><span class="pill">PAPER ONLY</span></div><div class="holding-grid">' + (profile.holdings.length ? profile.holdings.map((item) => '<a class="mini-card holding-card" href="#asset-' + esc(item.symbol.replace(/[^A-Za-z0-9_-]/g, "-")) + '"><div class="mini-head"><strong>' + esc(item.symbol) + '</strong><span class="badge status-' + esc(item.freshnessStatus.toLowerCase().replace(/ /g, "-")) + '">' + esc(item.freshnessStatus) + '</span></div><div class="quote-line"><span>Qty</span><span>' + esc(number.format(item.quantity)) + '</span></div><div class="quote-line"><span>Price</span><span>' + esc(quoteValue(item)) + '</span></div><div class="' + quoteClass(item) + '">' + esc(quoteChange(item)) + '</div><div class="quote-line"><span>Value</span><span>' + esc(item.currentPositionValue === null ? "Unavailable" : money.format(item.currentPositionValue)) + '</span></div><div class="quote-line"><span>Avg cost</span><span>' + esc(money.format(item.averageCost)) + '</span></div><div class="quote-line"><span>Unrealized</span><span>' + esc(item.unrealizedGainLoss === null ? "Unavailable" : money.format(item.unrealizedGainLoss) + " (" + (item.unrealizedGainLossPercentage * 100).toFixed(2) + "%)") + '</span></div><div class="muted">' + esc(item.marketStatus) + " · " + esc(timeText(item.timestamp, item.freshnessStatus === "Cached" ? "cached" : "updated")) + '</div></a>').join("") : '<span class="pill">No open holdings</span>') + '</div></div>').join("");
+        holdingQuotes.innerHTML = profiles.map((profile) => '<div class="holding-profile"><div class="mini-head"><strong>' + esc(profile.displayName || profile.portfolioId) + '</strong><span class="pill">PAPER ONLY</span></div><div class="holding-grid">' + (profile.holdings.length ? profile.holdings.map((item) => '<a class="mini-card holding-card" href="#asset-' + esc(item.symbol.replace(/[^A-Za-z0-9_-]/g, "-")) + '"><div class="mini-head"><strong>' + esc(item.symbol) + '</strong><span class="badge status-' + esc(item.freshnessStatus.toLowerCase().replace(/ /g, "-")) + '">' + esc(item.freshnessStatus) + '</span></div><div class="quote-line"><span>Qty</span><span>' + esc(quantity.format(item.quantity)) + '</span></div><div class="quote-line"><span>Price</span><span>' + esc(quoteValue(item)) + '</span></div><div class="' + quoteClass(item) + '">' + esc(quoteChange(item)) + '</div><div class="quote-line"><span>Value</span><span>' + esc(item.currentPositionValue === null ? "Unavailable" : money.format(item.currentPositionValue)) + '</span></div><div class="quote-line"><span>Avg cost</span><span>' + esc(money.format(item.averageCost)) + '</span></div><div class="quote-line"><span>Unrealized</span><span>' + esc(item.unrealizedGainLoss === null ? "Unavailable" : signedMoney(item.unrealizedGainLoss) + " (" + signedPercent(item.unrealizedGainLossPercentage) + ")") + '</span></div><div class="muted">' + esc(item.marketStatus) + " · " + esc(timeText(item.timestamp, item.freshnessStatus === "Cached" ? "cached" : "updated")) + '</div></a>').join("") : '<span class="pill">No open holdings</span>') + '</div></div>').join("");
       }
       function profileNameMap() {
         const map = new Map();
@@ -1282,23 +1303,21 @@ function formatCompactQuoteChange(item: NormalizedQuote): string {
   if (item.absoluteChange === null || item.percentageChange === null) {
     return "Unavailable";
   }
-  const sign = item.absoluteChange > 0 ? "+" : "";
   const value = item.unit === "usd"
-    ? `${item.absoluteChange >= 0 ? "+" : "-"}$${Math.abs(item.absoluteChange).toFixed(item.changePrecision)}`
-    : `${sign}${item.absoluteChange.toFixed(item.changePrecision)}`;
-  const pctSign = item.percentageChange > 0 ? "+" : "";
-  return `${value} (${pctSign}${(item.percentageChange * 100).toFixed(2)}%)`;
+    ? formatSignedCurrency(item.absoluteChange)
+    : `${item.absoluteChange > 0 ? "+" : item.absoluteChange < 0 ? "-" : ""}${formatPrice(Math.abs(item.absoluteChange), { unit: item.unit })}`;
+  return `${value} (${formatSignedPercent(item.percentageChange)})`;
 }
 
 function accountSummaryCard(account: DashboardAccountCard): string {
   const className = account.indicator === "up" ? "up" : account.indicator === "down" ? "down" : "flat";
-  const arrow = account.indicator === "up" ? "+" : account.indicator === "down" ? "-" : "=";
+  const direction = account.indicator === "up" ? "Up" : account.indicator === "down" ? "Down" : "Flat";
   return `<article class="account-card">
     <div class="account-top"><div><strong>${escapeHtml(account.accountName)}</strong><div class="muted">${escapeHtml(account.riskProfile)}</div></div><span class="pill">${escapeHtml(account.paperLabel.includes("Paper") ? account.paperLabel : "Paper")}</span></div>
     <div class="metric">${escapeHtml(money(account.totalCurrentValueUsd))}</div>
-    <div class="${className}">${escapeHtml(`${arrow} ${signedMoney(account.todayChangeUsd)} (${signedPct(account.todayChangePct)}) today`)}</div>
+    <div class="${className}">${escapeHtml(`${direction} ${signedMoney(account.todayChangeUsd)} (${signedPct(account.todayChangePct)}) today`)}</div>
     <div class="muted">${escapeHtml(todayChangeDetail(account.todayChangeStatus, account.todayChangeDisclosure ?? "Daily market movement from open holdings."))}</div>
-    ${row("Total return", `${signedMoney(account.totalReturnUsd)} (${pct(account.totalReturnPct)})`)}
+    ${row("Total return", `${signedMoney(account.totalReturnUsd)} (${signedPct(account.totalReturnPct)})`)}
     ${row("Cash", money(account.cashUsd))}
     ${row("Positions", String(account.positionCount))}
     <a href="/portfolio?portfolioId=${encodeURIComponent(account.portfolioId)}">Open account detail</a>
@@ -2395,8 +2414,8 @@ function allocationLineCard(line: AllocationProposal["lines"][number]): string {
     <div class="mini-head"><strong>${escapeHtml(line.symbol)}</strong><span class="pill">${escapeHtml(line.assetCategory)}</span></div>
     <div class="muted">${escapeHtml(line.securityName)}</div>
     <div class="row"><span>Target</span><span>${escapeHtml(pct(line.targetAllocationPct))} · ${escapeHtml(money(line.targetAmountUsd))}</span></div>
-    <div class="row"><span>Price</span><span>${escapeHtml(line.currentPriceUsd === null ? "Unavailable" : money(line.currentPriceUsd))}</span></div>
-    <div class="row"><span>Estimated shares</span><span>${escapeHtml(line.estimatedShares === null ? "Unavailable" : line.estimatedShares.toFixed(6))}</span></div>
+    <div class="row"><span>Price</span><span>${escapeHtml(line.currentPriceUsd === null ? "Unavailable" : formatPrice(line.currentPriceUsd, { assetType: line.assetClass }))}</span></div>
+    <div class="row"><span>Estimated shares</span><span>${escapeHtml(formatDisplayQuantity(line.estimatedShares))}</span></div>
     <div class="row"><span>Confidence</span><span>${escapeHtml(pct(line.confidenceScore))}</span></div>
     <div class="muted">${escapeHtml(line.expectedRole)} · ${escapeHtml(line.riskContribution)}</div>
     <div class="muted">${escapeHtml(line.reason)}</div>
@@ -2408,29 +2427,27 @@ function row(left: string, right: string): string {
 }
 
 function money(value: number): string {
-  return `$${round(value).toFixed(4)}`;
+  return formatCurrency(value);
 }
 
 function signedMoney(value: number): string {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${money(value)}`;
+  return formatSignedCurrency(value);
 }
 
 function maybeMoney(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value) ? money(value) : "Unavailable";
+  return formatCurrency(value);
 }
 
 function pct(value: number): string {
-  return `${(value * 100).toFixed(2)}%`;
+  return formatPercent(value);
 }
 
 function signedPct(value: number): string {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${pct(value)}`;
+  return formatSignedPercent(value);
 }
 
 function maybePct(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value) ? pct(value) : "Unavailable";
+  return formatPercent(value);
 }
 
 function formatWeights(weights: Record<string, number>): string {
@@ -2455,10 +2472,7 @@ function positionRow(position: { symbol: string; assetClass?: string; quantity: 
 }
 
 function formatQuantity(quantity: number, symbol: string, assetClass?: string): string {
-  if (assetClass === "crypto" || symbol.includes("-")) {
-    return quantity.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
-  }
-  return quantity.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  return formatDisplayQuantity(quantity);
 }
 
 function marketStatusRow(status: { symbol: string; source: string; fetchedAt: string; isFresh: boolean; status: string; userMessage: string }): string {
@@ -2603,13 +2617,7 @@ function formatQuoteValue(item: NormalizedQuote): string {
   if (item.price === null) {
     return "Unavailable";
   }
-  if (item.unit === "usd") {
-    return money(item.price);
-  }
-  if (item.unit === "percent") {
-    return `${item.price.toFixed(item.valuePrecision)}%`;
-  }
-  return item.price.toFixed(item.valuePrecision);
+  return formatPrice(item.price, { assetType: item.assetType, unit: item.unit });
 }
 
 function formatQuoteChange(item: NormalizedQuote): string {
@@ -2617,15 +2625,17 @@ function formatQuoteChange(item: NormalizedQuote): string {
     return "Unavailable";
   }
   const arrow = item.direction === "up" ? "▲" : item.direction === "down" ? "▼" : "■";
-  const sign = item.absoluteChange > 0 ? "+" : "";
-  return `${arrow} ${sign}${item.absoluteChange.toFixed(item.changePrecision)} (${sign}${(item.percentageChange * 100).toFixed(2)}%)`;
+  const value = item.unit === "usd"
+    ? formatSignedCurrency(item.absoluteChange)
+    : `${item.absoluteChange > 0 ? "+" : item.absoluteChange < 0 ? "-" : ""}${formatPrice(Math.abs(item.absoluteChange), { unit: item.unit })}`;
+  return `${arrow} ${value} (${formatSignedPercent(item.percentageChange)})`;
 }
 
 function formatUnrealized(item: HoldingQuote): string {
   if (item.unrealizedGainLoss === null || item.unrealizedGainLossPercentage === null) {
     return "Unavailable";
   }
-  return `${signedMoney(item.unrealizedGainLoss)} (${pct(item.unrealizedGainLossPercentage)})`;
+  return `${signedMoney(item.unrealizedGainLoss)} (${signedPct(item.unrealizedGainLossPercentage)})`;
 }
 
 function quoteDirectionClass(direction: string): string {
