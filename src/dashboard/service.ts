@@ -1,6 +1,6 @@
 import { getBenchmarks } from "../market/benchmarks.ts";
 import { calculatePerformance } from "../portfolio/performance.ts";
-import { getPortfolioValuation } from "../portfolio/valuation.ts";
+import { getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
 import { getSettings } from "../settings/service.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { getMarketDataStatuses } from "../market/status.ts";
@@ -31,17 +31,9 @@ import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from
 import { KnowledgeGraphService, type KnowledgeGraphSummary } from "../graph/knowledgeGraph.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
-  const [settings, profileComparison, todayEquityRows, latestObservation, marketTicker] = await Promise.all([
+  const [settings, profileComparison, latestObservation, marketTicker] = await Promise.all([
     getSettings(db),
     getProfileComparison(db) as Promise<DashboardComparison>,
-    listRows<{ portfolioId: string; recordedAt: string; totalValueUsd: number }>(
-      db.prepare(
-        `SELECT portfolio_id AS portfolioId, recorded_at AS recordedAt, total_value_usd AS totalValueUsd
-         FROM portfolio_equity_history
-         WHERE date(recorded_at) = date('now')
-         ORDER BY portfolio_id ASC, recorded_at ASC`
-      )
-    ),
     db.prepare(
       `SELECT id, run_key AS runKey, status, profiles_completed AS profilesCompleted,
         profiles_no_action AS profilesNoAction, profiles_failed AS profilesFailed,
@@ -63,29 +55,34 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
        LIMIT 1`
     ).bind(latestObservation.runKey).first<DashboardFounderReportRow>()
     : null;
-  const todayStartByPortfolio = new Map<string, number>();
-  for (const row of todayEquityRows) {
-    if (!todayStartByPortfolio.has(row.portfolioId)) {
-      todayStartByPortfolio.set(row.portfolioId, row.totalValueUsd);
-    }
-  }
+  const valuationResults = await Promise.all(
+    profileComparison.profiles.map(async (profile) => ({
+      portfolioId: profile.portfolioId,
+      valuation: await getPortfolioValuation(db, profile.portfolioId).catch(() => null)
+    }))
+  );
+  const valuationsByPortfolio = new Map(valuationResults.map((result) => [result.portfolioId, result.valuation]));
   const accounts = profileComparison.profiles.map((profile) => {
-    const todayStart = todayStartByPortfolio.get(profile.portfolioId);
-    const todayChangeUsd = roundCurrency(profile.actualEquityUsd - (todayStart ?? profile.actualEquityUsd));
-    const todayChangePct = roundRatioValue(todayStart && todayStart > 0 ? todayChangeUsd / todayStart : 0);
+    const valuation = valuationsByPortfolio.get(profile.portfolioId) ?? null;
+    const totalCurrentValueUsd = valuation?.totalAccountValueUsd ?? profile.actualEquityUsd;
+    const todayChangeUsd = valuation?.todayChangeUsd ?? 0;
+    const todayChangePct = valuation?.todayChangePct ?? 0;
     const totalReturnUsd = roundCurrency(profile.actualEquityUsd - profile.comparisonStartEquityUsd);
     const totalReturnPct = roundRatioValue(profile.totalReturnPct ?? profile.normalizedReturnPct ?? 0);
     return {
       portfolioId: profile.portfolioId,
       profileKey: profile.profileKey,
       accountName: profile.displayName,
-      totalCurrentValueUsd: profile.actualEquityUsd,
+      totalCurrentValueUsd,
       todayChangeUsd,
       todayChangePct,
+      todayChangeStatus: valuation?.todayChangeStatus ?? "unavailable",
+      todayChangeDisclosure: valuation?.todayChangeDisclosure ?? "Daily market movement is unavailable for this account.",
+      todayPreviousCloseAccountValueUsd: valuation?.todayPreviousCloseAccountValueUsd ?? roundCurrency(totalCurrentValueUsd - todayChangeUsd),
       totalReturnUsd,
       totalReturnPct,
-      cashUsd: profile.cashUsd ?? 0,
-      positionCount: profile.openPositions ?? 0,
+      cashUsd: valuation?.cashUsd ?? profile.cashUsd ?? 0,
+      positionCount: valuation?.positions.length ?? profile.openPositions ?? 0,
       riskProfile: profile.riskPosture,
       indicator: directionFor(todayChangeUsd),
       paperLabel: profile.paperOnlyLabel ?? "Paper"
@@ -95,11 +92,15 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
   const attention = buildDashboardAttention(settings, latestObservation ?? null, activity);
   const combinedValueUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0));
   const todayChangeUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.todayChangeUsd, 0));
+  const todayPreviousCloseValueUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.todayPreviousCloseAccountValueUsd, 0));
   const totalGainLossUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.totalReturnUsd, 0));
+  const todayChangeStatus = combineTodayChangeStatuses(accounts.map((account) => account.todayChangeStatus));
   const overallSummary = {
     combinedValueUsd,
     todayChangeUsd,
-    todayChangePct: roundRatioValue(combinedValueUsd - todayChangeUsd > 0 ? todayChangeUsd / (combinedValueUsd - todayChangeUsd) : 0),
+    todayChangePct: roundRatioValue(todayPreviousCloseValueUsd > 0 ? todayChangeUsd / todayPreviousCloseValueUsd : 0),
+    todayChangeStatus,
+    todayPreviousCloseValueUsd,
     totalGainLossUsd,
     guardianStatus: attention.items.length === 0 ? "Clear" : "Attention needed",
     paperLiveStatus: "Paper only"
@@ -962,6 +963,8 @@ interface DashboardOverallSummary {
   combinedValueUsd: number;
   todayChangeUsd: number;
   todayChangePct: number;
+  todayChangeStatus?: "complete" | "partial" | "unavailable";
+  todayPreviousCloseValueUsd?: number;
   totalGainLossUsd: number;
   guardianStatus: string;
   paperLiveStatus: string;
@@ -974,6 +977,9 @@ interface DashboardAccountCard {
   totalCurrentValueUsd: number;
   todayChangeUsd: number;
   todayChangePct: number;
+  todayChangeStatus?: "complete" | "partial" | "unavailable";
+  todayChangeDisclosure?: string;
+  todayPreviousCloseAccountValueUsd?: number;
   totalReturnUsd: number;
   totalReturnPct: number;
   cashUsd: number;
@@ -1181,7 +1187,7 @@ function renderSimpleDashboardHtml(data: {
   <main class="page-shell">
     <section id="overall-summary" class="summary" aria-label="Overall summary">
       ${compactMetric("Combined value", money(summary.combinedValueUsd), `${accounts.length} visible account${accounts.length === 1 ? "" : "s"}`)}
-      ${compactMetric("Today", `${signedMoney(summary.todayChangeUsd)} (${signedPct(summary.todayChangePct)})`, directionText(summary.todayChangeUsd))}
+      ${compactMetric("Today", `${signedMoney(summary.todayChangeUsd)} (${signedPct(summary.todayChangePct)})`, todayChangeDetail(summary.todayChangeStatus, directionText(summary.todayChangeUsd)))}
       ${compactMetric("Total gain/loss", signedMoney(summary.totalGainLossUsd), "Across visible accounts")}
       ${compactMetric("Guardian", summary.guardianStatus, `${summary.paperLiveStatus} - ${data.settings.automationPaused ? "Automation paused" : "Automation active"}`)}
     </section>
@@ -1288,6 +1294,7 @@ function accountSummaryCard(account: DashboardAccountCard): string {
     <div class="account-top"><div><strong>${escapeHtml(account.accountName)}</strong><div class="muted">${escapeHtml(account.riskProfile)}</div></div><span class="pill">${escapeHtml(account.paperLabel.includes("Paper") ? account.paperLabel : "Paper")}</span></div>
     <div class="metric">${escapeHtml(money(account.totalCurrentValueUsd))}</div>
     <div class="${className}">${escapeHtml(`${arrow} ${signedMoney(account.todayChangeUsd)} (${signedPct(account.todayChangePct)}) today`)}</div>
+    <div class="muted">${escapeHtml(todayChangeDetail(account.todayChangeStatus, account.todayChangeDisclosure ?? "Daily market movement from open holdings."))}</div>
     ${row("Total return", `${signedMoney(account.totalReturnUsd)} (${pct(account.totalReturnPct)})`)}
     ${row("Cash", money(account.cashUsd))}
     ${row("Positions", String(account.positionCount))}
@@ -1325,6 +1332,9 @@ function fallbackDashboardAccounts(data: {
         totalCurrentValueUsd: profile.actualEquityUsd,
         todayChangeUsd: today,
         todayChangePct: 0,
+        todayChangeStatus: "unavailable",
+        todayChangeDisclosure: "Daily market movement is unavailable for this account.",
+        todayPreviousCloseAccountValueUsd: profile.actualEquityUsd,
         totalReturnUsd,
         totalReturnPct: profile.totalReturnPct ?? profile.normalizedReturnPct,
         cashUsd: profile.cashUsd ?? 0,
@@ -1349,6 +1359,9 @@ function fallbackDashboardAccounts(data: {
       totalCurrentValueUsd: value,
       todayChangeUsd: today,
       todayChangePct: value - today > 0 ? today / (value - today) : 0,
+      todayChangeStatus: "unavailable",
+      todayChangeDisclosure: "Daily market movement is unavailable for this account.",
+      todayPreviousCloseAccountValueUsd: value - today,
       totalReturnUsd: selected ? data.performance.totalReturnUsd : 0,
       totalReturnPct: value > 0 ? (selected ? data.performance.totalReturnUsd / value : 0) : 0,
       cashUsd: selected ? data.performance.cashUsd : 0,
@@ -1363,14 +1376,37 @@ function fallbackDashboardAccounts(data: {
 function fallbackDashboardSummary(data: { settings: { automationPaused: boolean }; performance: { totalValueUsd: number; todayGainLossUsd?: number; totalReturnUsd: number } }, accounts: DashboardAccountCard[]): DashboardOverallSummary {
   const combinedValueUsd = accounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0) || data.performance.totalValueUsd;
   const todayChangeUsd = accounts.reduce((sum, account) => sum + account.todayChangeUsd, 0) || (data.performance.todayGainLossUsd ?? 0);
+  const todayPreviousCloseValueUsd = accounts.reduce((sum, account) => sum + (account.todayPreviousCloseAccountValueUsd ?? account.totalCurrentValueUsd - account.todayChangeUsd), 0);
   return {
     combinedValueUsd,
     todayChangeUsd,
-    todayChangePct: combinedValueUsd - todayChangeUsd > 0 ? todayChangeUsd / (combinedValueUsd - todayChangeUsd) : 0,
+    todayChangePct: todayPreviousCloseValueUsd > 0 ? todayChangeUsd / todayPreviousCloseValueUsd : 0,
+    todayChangeStatus: combineTodayChangeStatuses(accounts.map((account) => account.todayChangeStatus ?? "unavailable")),
+    todayPreviousCloseValueUsd,
     totalGainLossUsd: accounts.reduce((sum, account) => sum + account.totalReturnUsd, 0) || data.performance.totalReturnUsd,
     guardianStatus: "Clear",
     paperLiveStatus: "Paper only"
   };
+}
+
+function combineTodayChangeStatuses(statuses: Array<"complete" | "partial" | "unavailable" | undefined>): "complete" | "partial" | "unavailable" {
+  if (statuses.length === 0 || statuses.every((status) => status === "unavailable" || status === undefined)) {
+    return "unavailable";
+  }
+  if (statuses.some((status) => status === "partial" || status === "unavailable" || status === undefined)) {
+    return "partial";
+  }
+  return "complete";
+}
+
+function todayChangeDetail(status: "complete" | "partial" | "unavailable" | undefined, detail: string): string {
+  if (status === "partial") {
+    return `Partial daily price data - ${detail}`;
+  }
+  if (status === "unavailable") {
+    return `Daily price data unavailable - ${detail}`;
+  }
+  return detail;
 }
 
 function fallbackDashboardActivity(data: { recommendations: unknown[]; trades: unknown[]; scheduledRuns: Array<{ status: string; runKey: string; startedAt: string }> }): DashboardTodayActivity {

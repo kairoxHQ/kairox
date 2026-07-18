@@ -185,6 +185,84 @@ test("dashboard compact ticker renders unavailable quote states safely", () => {
   assert.doesNotMatch(tickerSection, /null|undefined|NaN|Illegal invocation|HTTP 429/);
 });
 
+test("dashboard overall today matches summed account daily market moves", () => {
+  const html = renderDashboardHtml({
+    settings: { automationPaused: false },
+    overallSummary: {
+      combinedValueUsd: 351,
+      todayChangeUsd: 1,
+      todayChangePct: 0.002857,
+      todayChangeStatus: "partial",
+      todayPreviousCloseValueUsd: 350,
+      totalGainLossUsd: 11,
+      guardianStatus: "Clear",
+      paperLiveStatus: "Paper only"
+    },
+    accounts: [
+      {
+        portfolioId: "portfolio_ira",
+        profileKey: "ira",
+        accountName: "IRA",
+        totalCurrentValueUsd: 141,
+        todayChangeUsd: 1,
+        todayChangePct: 0.007143,
+        todayChangeStatus: "complete",
+        todayChangeDisclosure: "Daily market movement is summed from open holdings using current prices versus previous close; cash is unchanged.",
+        todayPreviousCloseAccountValueUsd: 140,
+        totalReturnUsd: 1,
+        totalReturnPct: 0.007143,
+        cashUsd: 100,
+        positionCount: 2,
+        riskProfile: "moderate",
+        indicator: "up",
+        paperLabel: "Paper"
+      },
+      {
+        portfolioId: "portfolio_tim_paper",
+        profileKey: "tim_balanced",
+        accountName: "Tim Balanced",
+        totalCurrentValueUsd: 210,
+        todayChangeUsd: 0,
+        todayChangePct: 0,
+        todayChangeStatus: "partial",
+        todayChangeDisclosure: "Daily market movement is partial because 1 open holding lacked a usable current price or previous close.",
+        todayPreviousCloseAccountValueUsd: 210,
+        totalReturnUsd: 10,
+        totalReturnPct: 0.05,
+        cashUsd: 20,
+        positionCount: 1,
+        riskProfile: "moderate",
+        indicator: "flat",
+        paperLabel: "Paper"
+      }
+    ],
+    performance: {
+      totalValueUsd: 351,
+      cashUsd: 120,
+      totalReturnUsd: 11,
+      priceReturnUsd: 0,
+      dividendReturnUsd: 0,
+      tradeCount: 0,
+      maxDrawdownPct: 0,
+      benchmarkReturns: []
+    },
+    positions: [],
+    recommendations: [],
+    journal: [],
+    trades: [],
+    scheduledRuns: [],
+    summaries: [],
+    rejectedOpportunities: []
+  });
+
+  assert.match(html, /Today/);
+  assert.match(html, /\+\$1\.0000 \(\+0\.29%\)/);
+  assert.match(html, /IRA/);
+  assert.match(html, /\+\$1\.0000 \(\+0\.71%\) today/);
+  assert.match(html, /Partial daily price data/);
+  assert.doesNotMatch(html, /\+\$0\.0000 \(0\.00%\)<\/div><div class="muted">up/i);
+});
+
 test("browser-local timestamp formatting is deferred to the viewer timezone", () => {
   const rendered = formatDashboardTimestamp("2026-07-13T14:45:00.000Z", new Date("2026-07-13T15:00:00.000Z"), "America/New_York");
 

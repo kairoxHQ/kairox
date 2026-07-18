@@ -358,7 +358,7 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
           <div class="value">${escapeHtml(money(data.valuation.totalAccountValueUsd))}</div>
           <div class="muted">${escapeHtml(paperModeLabel(data.riskPosture))}</div>
         </div>
-        ${metric("Today's gain/loss", `${signedMoney(data.valuation.todayChangeUsd)} (${signedPct(data.valuation.todayChangePct)})`, "Since today's opening snapshot", signedClass(data.valuation.todayChangeUsd))}
+        ${metric("Today's gain/loss", `${signedMoney(data.valuation.todayChangeUsd)} (${signedPct(data.valuation.todayChangePct)})`, todayChangeDetail(data.valuation), signedClass(data.valuation.todayChangeUsd))}
         ${metric("Lifetime return", `${signedMoney(data.valuation.overallReturnUsd)} (${signedPct(data.valuation.overallReturnPct)})`, "Since account funding", signedClass(data.valuation.overallReturnUsd))}
       </div>
       <div class="metric-grid">
@@ -520,6 +520,17 @@ function plainDataStatus(status: string): string {
   if (status === "delayed") return "Delayed";
   if (status === "stale") return "Needs refresh";
   return "Unavailable";
+}
+
+function todayChangeDetail(valuation: PortfolioValuation): string {
+  const disclosure = valuation.todayChangeDisclosure ?? "Open holding changes versus previous close; cash is unchanged.";
+  if (valuation.todayChangeStatus === "partial") {
+    return `Partial daily price data - ${disclosure}`;
+  }
+  if (valuation.todayChangeStatus === "unavailable") {
+    return `Daily price data unavailable - ${disclosure}`;
+  }
+  return disclosure;
 }
 
 function money(value: number): string {

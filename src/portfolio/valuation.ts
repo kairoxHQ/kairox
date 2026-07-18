@@ -12,6 +12,7 @@ export interface PositionInput {
   fallbackPriceUsd: number;
   fallbackMarketValueUsd: number;
   latestPriceUsd?: number | null;
+  latestPreviousCloseUsd?: number | null;
   latestPriceAsOf?: string | null;
   latestDataStatus?: ValuationDataStatus | null;
 }
@@ -22,7 +23,10 @@ export interface ValuedPosition {
   quantity: number;
   averageCostBasisUsd: number;
   currentMarketPriceUsd: number | null;
+  previousCloseUsd: number | null;
   currentPositionValueUsd: number;
+  todayChangeUsd: number | null;
+  todayChangePct: number | null;
   unrealizedProfitLossUsd: number;
   unrealizedProfitLossPct: number;
   realizedProfitLossUsd: number;
@@ -55,6 +59,9 @@ export interface PortfolioValuation {
   feesUsd: number;
   todayChangeUsd: number;
   todayChangePct: number;
+  todayChangeStatus?: "complete" | "partial" | "unavailable";
+  todayPreviousCloseAccountValueUsd?: number;
+  todayChangeDisclosure?: string;
   overallReturnUsd: number;
   overallReturnPct: number;
   lastSuccessfulMarketDataUpdateTime: string | null;
@@ -81,9 +88,11 @@ interface PositionRow {
 interface PriceRow {
   symbol: string;
   priceUsd: number;
+  previousCloseUsd: number | null;
   priceAsOf: string;
   validationStatus: string;
   createdAt: string;
+  candlesJson?: string;
 }
 
 interface TrustedQuoteRow {
@@ -155,6 +164,7 @@ export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PO
         fallbackPriceUsd: position.currentPriceUsd,
         fallbackMarketValueUsd: position.marketValueUsd,
         latestPriceUsd: latest?.priceUsd ?? null,
+        latestPreviousCloseUsd: latest?.previousCloseUsd ?? null,
         latestPriceAsOf: latest?.priceAsOf ?? null,
         latestDataStatus: latest ? classifyPriceStatus(latest, now) : "unavailable"
       };
@@ -172,7 +182,7 @@ export function calculatePortfolioValuation(input: PortfolioValuationInput): Por
   const totalAccountValueUsd = addMoney(input.availableCashUsd, portfolioValueUsd);
   const unrealizedProfitLossUsd = positions.reduce((sum, position) => addMoney(sum, position.unrealizedProfitLossUsd), 0);
   const overallReturnUsd = subtractMoney(totalAccountValueUsd, input.startingBalanceUsd);
-  const todayStart = input.todayStartingTotalAccountValueUsd ?? totalAccountValueUsd;
+  const todayMarketChange = accountTodayMarketChange(positions, input.availableCashUsd);
   const latestMarketTime = latestTimestamp(positions.map((position) => position.priceTimestamp).filter(Boolean) as string[]);
   const status = combineStatuses(positions.map((position) => position.dataStatus));
 
@@ -188,8 +198,11 @@ export function calculatePortfolioValuation(input: PortfolioValuationInput): Por
     realizedProfitLossUsd: roundMoney(input.realizedProfitLossUsd),
     unrealizedProfitLossUsd,
     feesUsd: roundMoney(input.feesUsd),
-    todayChangeUsd: subtractMoney(totalAccountValueUsd, todayStart),
-    todayChangePct: pctChange(todayStart, totalAccountValueUsd),
+    todayChangeUsd: todayMarketChange.changeUsd,
+    todayChangePct: todayMarketChange.previousCloseAccountValueUsd > 0 ? roundRatio(todayMarketChange.changeUsd / todayMarketChange.previousCloseAccountValueUsd) : 0,
+    todayChangeStatus: todayMarketChange.status,
+    todayPreviousCloseAccountValueUsd: todayMarketChange.previousCloseAccountValueUsd,
+    todayChangeDisclosure: todayMarketChange.disclosure,
     overallReturnUsd,
     overallReturnPct: pctChange(input.startingBalanceUsd, totalAccountValueUsd),
     lastSuccessfulMarketDataUpdateTime: latestMarketTime,
@@ -199,11 +212,14 @@ export function calculatePortfolioValuation(input: PortfolioValuationInput): Por
 }
 
 export function valuePosition(input: PositionInput): ValuedPosition {
-  const price = input.latestPriceUsd && input.latestPriceUsd > 0 ? input.latestPriceUsd : input.fallbackPriceUsd;
-  const status = input.latestPriceUsd && input.latestPriceUsd > 0 ? (input.latestDataStatus ?? "delayed") : "stale";
+  const hasLatestPrice = Boolean(input.latestPriceUsd && input.latestPriceUsd > 0);
+  const price = hasLatestPrice ? input.latestPriceUsd as number : input.fallbackPriceUsd;
+  const previousClose = input.latestPreviousCloseUsd && input.latestPreviousCloseUsd > 0 ? input.latestPreviousCloseUsd : null;
+  const status = hasLatestPrice ? (input.latestDataStatus ?? "delayed") : "stale";
   const value = multiplyMoney(price, input.quantity);
   const cost = multiplyMoney(input.avgEntryPriceUsd, input.quantity);
   const unrealized = subtractMoney(value, cost);
+  const todayChangeUsd = hasLatestPrice && previousClose !== null ? multiplyMoney(subtractMoney(price, previousClose), input.quantity) : null;
 
   return {
     symbol: input.symbol,
@@ -211,12 +227,64 @@ export function valuePosition(input: PositionInput): ValuedPosition {
     quantity: input.quantity,
     averageCostBasisUsd: roundMoney(input.avgEntryPriceUsd),
     currentMarketPriceUsd: price > 0 ? roundMoney(price) : null,
+    previousCloseUsd: previousClose === null ? null : roundMoney(previousClose),
     currentPositionValueUsd: value,
+    todayChangeUsd,
+    todayChangePct: previousClose !== null && todayChangeUsd !== null ? roundRatio((price - previousClose) / previousClose) : null,
     unrealizedProfitLossUsd: unrealized,
     unrealizedProfitLossPct: cost > 0 ? roundRatio(unrealized / cost) : 0,
     realizedProfitLossUsd: 0,
     dataStatus: status,
     priceTimestamp: input.latestPriceAsOf ?? null
+  };
+}
+
+function accountTodayMarketChange(positions: ValuedPosition[], cashUsd: number): {
+  changeUsd: number;
+  previousCloseAccountValueUsd: number;
+  status: "complete" | "partial" | "unavailable";
+  disclosure: string;
+} {
+  if (positions.length === 0) {
+    return {
+      changeUsd: 0,
+      previousCloseAccountValueUsd: roundMoney(cashUsd),
+      status: "complete",
+      disclosure: "No open holdings; cash is treated as unchanged for daily market movement."
+    };
+  }
+
+  let changeUsd = 0;
+  let previousKnownHoldingsValueUsd = 0;
+  let missingCurrentValueUsd = 0;
+  let missingCount = 0;
+  for (const position of positions) {
+    if (position.todayChangeUsd !== null && position.previousCloseUsd !== null && position.previousCloseUsd > 0) {
+      changeUsd = addMoney(changeUsd, position.todayChangeUsd);
+      previousKnownHoldingsValueUsd = addMoney(previousKnownHoldingsValueUsd, multiplyMoney(position.previousCloseUsd, position.quantity));
+    } else {
+      missingCount += 1;
+      missingCurrentValueUsd = addMoney(missingCurrentValueUsd, position.currentPositionValueUsd);
+    }
+  }
+
+  const previousCloseAccountValueUsd = addMoney(cashUsd, previousKnownHoldingsValueUsd, missingCurrentValueUsd);
+  if (missingCount === 0) {
+    return {
+      changeUsd,
+      previousCloseAccountValueUsd,
+      status: "complete",
+      disclosure: "Daily market movement is summed from open holdings using current prices versus previous close; cash is unchanged."
+    };
+  }
+
+  return {
+    changeUsd,
+    previousCloseAccountValueUsd,
+    status: missingCount === positions.length ? "unavailable" : "partial",
+    disclosure: missingCount === positions.length
+      ? "Daily holding-level price changes are unavailable; no market gain or loss was fabricated."
+      : `Daily market movement is partial because ${missingCount} open holding${missingCount === 1 ? "" : "s"} lacked a usable current price or previous close.`
   };
 }
 
@@ -272,7 +340,8 @@ async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<M
   const rows = await listRows<PriceRow>(
     db.prepare(
       `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf,
-        ms.validation_status AS validationStatus, ms.created_at AS createdAt
+        ms.validation_status AS validationStatus, ms.created_at AS createdAt,
+        ms.candles_json AS candlesJson
        FROM market_snapshots ms
        JOIN (
          SELECT symbol, MAX(created_at) AS createdAt
@@ -282,7 +351,7 @@ async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<M
        ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
     )
   );
-  const bySymbol = new Map(rows.map((row) => [row.symbol, row]));
+  const bySymbol = new Map(rows.map((row) => [row.symbol, { ...row, previousCloseUsd: previousCloseFromCandles(row.candlesJson ?? "") }]));
   const trustedRows = await listRows<TrustedQuoteRow>(
     db.prepare(
       `SELECT symbol, normalized_quote_json AS normalizedQuoteJson, quality_status AS qualityStatus,
@@ -300,6 +369,7 @@ async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<M
     const candidate: PriceRow = {
       symbol: row.symbol,
       priceUsd: price as number,
+      previousCloseUsd: quote.previousClose && quote.previousClose > 0 ? quote.previousClose : null,
       priceAsOf: quote.providerTimestamp ?? row.providerTimestamp ?? quote.receivedTimestamp ?? row.retrievalTimestamp,
       validationStatus: quote.dataQualityStatus ?? row.qualityStatus,
       createdAt: row.retrievalTimestamp
@@ -338,13 +408,26 @@ function classifyPriceStatus(row: PriceRow, now: Date): ValuationDataStatus {
   return ageSeconds <= 30 * 60 ? "delayed" : ageSeconds <= 4 * 24 * 60 * 60 ? "stale" : "unavailable";
 }
 
-function parseTrustedQuote(value: string): { lastPrice?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string } | null {
+function parseTrustedQuote(value: string): { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string } | null {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
-    return parsed as { lastPrice?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string };
+    return parsed as { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string };
+  } catch {
+    return null;
+  }
+}
+
+function previousCloseFromCandles(value: string): number | null {
+  try {
+    const candles = JSON.parse(value) as Array<{ timestamp?: string; close?: number }>;
+    const valid = candles.filter((candle) => Number.isFinite(candle.close) && (candle.close ?? 0) > 0);
+    if (valid.length === 0) {
+      return null;
+    }
+    return roundMoney(valid.length > 1 ? valid[valid.length - 2].close ?? 0 : valid[0]?.close ?? 0) || null;
   } catch {
     return null;
   }

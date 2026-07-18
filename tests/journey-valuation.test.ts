@@ -63,6 +63,127 @@ test("portfolio valuation calculates daily and total profit/loss without inventi
   assert.equal(valuation.dataStatus, "live");
 });
 
+test("account today gain loss sums open holding moves and leaves cash flat", () => {
+  const valuation = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 140,
+    availableCashUsd: 100,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-17T15:00:00.000Z",
+    positions: [
+      {
+        symbol: "BND",
+        assetClass: "bond_fund",
+        quantity: 2,
+        avgEntryPriceUsd: 9,
+        fallbackPriceUsd: 10,
+        fallbackMarketValueUsd: 20,
+        latestPriceUsd: 11,
+        latestPreviousCloseUsd: 10,
+        latestPriceAsOf: "2026-07-17T14:55:00.000Z",
+        latestDataStatus: "delayed"
+      },
+      {
+        symbol: "VTI",
+        assetClass: "etf",
+        quantity: 1,
+        avgEntryPriceUsd: 20,
+        fallbackPriceUsd: 20,
+        fallbackMarketValueUsd: 20,
+        latestPriceUsd: 19,
+        latestPreviousCloseUsd: 20,
+        latestPriceAsOf: "2026-07-17T14:55:00.000Z",
+        latestDataStatus: "delayed"
+      }
+    ]
+  });
+
+  assert.equal(valuation.positions[0].todayChangeUsd, 2);
+  assert.equal(valuation.positions[1].todayChangeUsd, -1);
+  assert.equal(valuation.todayChangeUsd, 1);
+  assert.equal(valuation.todayPreviousCloseAccountValueUsd, 140);
+  assert.equal(valuation.todayChangePct, 0.007143);
+  assert.equal(valuation.todayChangeStatus, "complete");
+  assert.equal(valuation.totalAccountValueUsd, 141);
+  assert.equal(valuation.overallReturnUsd, 1);
+  assert.equal(valuation.overallReturnPct, 0.007143);
+});
+
+test("missing holding quote data marks account today as partial without fabricating movement", () => {
+  const valuation = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 100,
+    availableCashUsd: 50,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-17T15:00:00.000Z",
+    positions: [
+      {
+        symbol: "SCHD",
+        assetClass: "etf",
+        quantity: 1,
+        avgEntryPriceUsd: 20,
+        fallbackPriceUsd: 20,
+        fallbackMarketValueUsd: 20,
+        latestPriceUsd: 22,
+        latestPreviousCloseUsd: 21,
+        latestPriceAsOf: "2026-07-17T14:55:00.000Z",
+        latestDataStatus: "delayed"
+      },
+      {
+        symbol: "VTI",
+        assetClass: "etf",
+        quantity: 1,
+        avgEntryPriceUsd: 30,
+        fallbackPriceUsd: 30,
+        fallbackMarketValueUsd: 30,
+        latestPriceUsd: null,
+        latestPreviousCloseUsd: null,
+        latestPriceAsOf: null,
+        latestDataStatus: "unavailable"
+      }
+    ]
+  });
+
+  assert.equal(valuation.todayChangeUsd, 1);
+  assert.equal(valuation.todayPreviousCloseAccountValueUsd, 101);
+  assert.equal(valuation.todayChangePct, 0.009901);
+  assert.equal(valuation.todayChangeStatus, "partial");
+  assert.match(valuation.todayChangeDisclosure ?? "", /1 open holding lacked/);
+  assert.equal(valuation.positions[1].todayChangeUsd, null);
+});
+
+test("fully missing holding quote data is unavailable instead of a confident zero", () => {
+  const valuation = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 100,
+    availableCashUsd: 70,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-17T15:00:00.000Z",
+    positions: [
+      {
+        symbol: "VTI",
+        assetClass: "etf",
+        quantity: 1,
+        avgEntryPriceUsd: 30,
+        fallbackPriceUsd: 30,
+        fallbackMarketValueUsd: 30,
+        latestPriceUsd: null,
+        latestPreviousCloseUsd: null,
+        latestPriceAsOf: null,
+        latestDataStatus: "unavailable"
+      }
+    ]
+  });
+
+  assert.equal(valuation.todayChangeUsd, 0);
+  assert.equal(valuation.todayChangePct, 0);
+  assert.equal(valuation.todayChangeStatus, "unavailable");
+  assert.match(valuation.todayChangeDisclosure ?? "", /no market gain or loss was fabricated/i);
+});
+
 test("stale or missing market data uses last valid position price and marks status", () => {
   const stale = valuePosition({
     symbol: "AAPL",
