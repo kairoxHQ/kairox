@@ -135,6 +135,7 @@ test("dashboard renders a compact market ticker after account cards without rest
   assert.match(html, /-\$?100\.00 \(-0\.47%\)|-100\.00 \(-0\.47%\)/);
   assert.match(html, /Flat/);
   assert.match(html, /Open - Delayed|Closed - Market Closed|Continuous - Live/);
+  assert.match(html, /Markets are open\. Regular trading ends at 4:00 PM ET\./);
   assert.ok(html.indexOf('id="accounts"') < html.indexOf('id="market-ticker"'));
   assert.doesNotMatch(html, /\^RUT|BAD/);
   assert.doesNotMatch(html, /ticker-item|ticker-strip|holding-quotes|data-holding-quotes/);

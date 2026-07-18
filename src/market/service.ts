@@ -2,6 +2,7 @@ import type { AssetClass, MarketCandle, MarketDataset } from "../shared/types.ts
 import { listRows } from "../shared/db.ts";
 import { YahooFinanceMarketDataProvider, normalizeSymbol } from "./yahooFinanceProvider.ts";
 import type { MarketDataProvider } from "./provider.ts";
+import { getUsEquityMarketStatus, isUsEquityMarketHoliday } from "./hours.ts";
 
 export type MarketDataUseCase = "dashboard" | "valuation" | "daily_review" | "proposal" | "order_staging" | "paper_execution";
 export type QuoteQualityStatus =
@@ -236,7 +237,7 @@ export class MarketDataService {
     for (let date = new Date(`${startDate}T00:00:00Z`); date.toISOString().slice(0, 10) <= endDate; date.setUTCDate(date.getUTCDate() + 1)) {
       const day = date.getUTCDay();
       const iso = date.toISOString().slice(0, 10);
-      const holiday = US_MARKET_HOLIDAYS.has(iso);
+      const holiday = isUsEquityMarketHoliday(iso);
       days.push({ date: iso, open: day !== 0 && day !== 6 && !holiday, reason: holiday ? "U.S. market holiday" : day === 0 || day === 6 ? "Weekend" : undefined });
     }
     return days;
@@ -614,38 +615,19 @@ function marketSession(now: Date, assetClass: AssetClass | string): NormalizedQu
   if (assetClass === "crypto") {
     return "continuous";
   }
-  if (calendarReason(now)) {
-    return "closed";
-  }
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now);
-  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-  const minutes = hour * 60 + minute;
-  if (minutes >= 9 * 60 + 30 && minutes < 16 * 60) return "regular";
-  if (minutes < 9 * 60 + 30) return "pre_market";
-  return "after_hours";
+  const status = getUsEquityMarketStatus(now);
+  if (status.phase === "weekend" || status.phase === "holiday") return "closed";
+  if (status.phase === "regular") return "regular";
+  return status.phase;
 }
 
 function calendarReason(now: Date): string | null {
-  const iso = now.toISOString().slice(0, 10);
-  const day = now.getUTCDay();
+  const iso = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(now);
+  const day = new Date(`${iso}T12:00:00.000Z`).getUTCDay();
   if (day === 0 || day === 6) return "Weekend";
-  if (US_MARKET_HOLIDAYS.has(iso)) return "U.S. market holiday";
+  if (isUsEquityMarketHoliday(iso)) return "U.S. market holiday";
   return null;
 }
-
-const US_MARKET_HOLIDAYS = new Set([
-  "2026-01-01",
-  "2026-01-19",
-  "2026-02-16",
-  "2026-04-03",
-  "2026-05-25",
-  "2026-06-19",
-  "2026-07-03",
-  "2026-09-07",
-  "2026-11-26",
-  "2026-12-25"
-]);
 
 function safeProviderValue(quote: NormalizedQuote): unknown {
   return { provider: quote.providerName, price: quote.lastPrice, timestamp: quote.providerTimestamp, status: quote.dataQualityStatus };

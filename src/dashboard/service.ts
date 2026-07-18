@@ -29,6 +29,7 @@ import { StrategyEvaluationLabService, type StrategyLabSummary } from "../lab/st
 import { PortfolioResearchEngine, type ResearchCenterSummary, type SecurityResearchProfile } from "../research/engine.ts";
 import { EventBus, type EventObservabilitySummary, type EventTimelineItem } from "../events/eventBus.ts";
 import { KnowledgeGraphService, type KnowledgeGraphSummary } from "../graph/knowledgeGraph.ts";
+import { getUsEquityMarketStatus } from "../market/hours.ts";
 
 export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<unknown> {
   const [settings, profileComparison, latestObservation, marketTicker] = await Promise.all([
@@ -1100,6 +1101,7 @@ function renderSimpleDashboardHtml(data: {
   const summary = data.overallSummary ?? fallbackDashboardSummary(data, accounts);
   const activity = data.activity ?? fallbackDashboardActivity(data);
   const attention = data.attention ?? fallbackDashboardAttention(data);
+  const marketStatusMessage = getUsEquityMarketStatus(data.marketTicker?.generatedAt ? new Date(data.marketTicker.generatedAt) : new Date()).message;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1195,7 +1197,7 @@ function renderSimpleDashboardHtml(data: {
       <h2>Accounts</h2>
       <div class="accounts">${accounts.map(accountSummaryCard).join("")}</div>
     </section>
-    ${renderCompactMarketTicker(data.marketTicker)}
+    ${renderCompactMarketTicker(data.marketTicker, marketStatusMessage)}
     <section class="two-col">
       <section id="todays-activity" class="panel">
         <h2>Today's Activity</h2>
@@ -1246,7 +1248,7 @@ function dashboardTickerInstruments(instruments: NormalizedQuote[]): NormalizedQ
   return instruments.filter((instrument) => DASHBOARD_TICKER_SYMBOLS.has(instrument.symbol));
 }
 
-function renderCompactMarketTicker(ticker?: { instruments: NormalizedQuote[]; generatedAt: string }): string {
+function renderCompactMarketTicker(ticker: { instruments: NormalizedQuote[]; generatedAt: string } | undefined, marketStatusMessage: string): string {
   const instruments = dashboardTickerInstruments(ticker?.instruments ?? []);
   if (instruments.length === 0) {
     return "";
@@ -1256,6 +1258,7 @@ function renderCompactMarketTicker(ticker?: { instruments: NormalizedQuote[]; ge
       <h2>Markets</h2>
       <a class="muted" href="/quotes?symbols=%5EGSPC,%5EDJI,%5EIXIC,%5EVIX,BTC-USD">Full quotes</a>
     </div>
+    <div class="muted">${escapeHtml(marketStatusMessage)}</div>
     <div class="market-row" data-dashboard-market-strip>${instruments.map(compactTickerItem).join("")}</div>
   </section>`;
 }

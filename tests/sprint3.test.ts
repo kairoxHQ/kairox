@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { formatDashboardTimestamp, relativeAge, renderDashboardHtml } from "../src/dashboard/service.ts";
 import { assessDividendQuality, calculateReinvestedQuantity } from "../src/dividends/service.ts";
-import { canExecuteAt, isRegularUsMarketHours } from "../src/market/hours.ts";
+import { canExecuteAt, getUsEquityMarketStatus, isRegularUsMarketHours } from "../src/market/hours.ts";
 import { calculateMaxDrawdownFromSeries, compareBenchmark } from "../src/portfolio/performance.ts";
 import { buildScheduledRunKey, hasOverlappingRun, shouldAllowScheduledExecution, summarizeScheduledRun } from "../src/scheduler/service.ts";
 
@@ -29,6 +29,44 @@ test("pause and resume behavior controls scheduled execution", () => {
 test("stock-market-hours enforcement blocks SPY outside regular US hours", () => {
   assert.equal(isRegularUsMarketHours(new Date("2026-07-13T14:00:00.000Z")), true);
   assert.equal(canExecuteAt("etf", new Date("2026-07-13T22:00:00.000Z")).allowed, false);
+});
+
+test("US equities market messaging follows exchange calendar sessions", () => {
+  const preMarket = getUsEquityMarketStatus(new Date("2026-07-13T11:30:00.000Z"));
+  assert.equal(preMarket.phase, "pre_market");
+  assert.equal(preMarket.message, "Markets open today at 9:30 AM ET.");
+
+  const openingSoon = getUsEquityMarketStatus(new Date("2026-07-13T12:48:00.000Z"));
+  assert.equal(openingSoon.phase, "pre_market");
+  assert.equal(openingSoon.message, "Markets open in 42 minutes.");
+
+  const regular = getUsEquityMarketStatus(new Date("2026-07-13T15:00:00.000Z"));
+  assert.equal(regular.phase, "regular");
+  assert.equal(regular.message, "Markets are open. Regular trading ends at 4:00 PM ET.");
+
+  const afterHours = getUsEquityMarketStatus(new Date("2026-07-14T21:30:00.000Z"));
+  assert.equal(afterHours.phase, "after_hours");
+  assert.equal(afterHours.message, "Markets reopen tomorrow at 9:30 AM ET.");
+
+  const fridayNight = getUsEquityMarketStatus(new Date("2026-07-17T23:00:00.000Z"));
+  assert.equal(fridayNight.phase, "after_hours");
+  assert.equal(fridayNight.message, "Markets reopen Monday at 9:30 AM ET.");
+
+  const weekendBeforeMondayHoliday = getUsEquityMarketStatus(new Date("2026-01-18T17:00:00.000Z"));
+  assert.equal(weekendBeforeMondayHoliday.phase, "weekend");
+  assert.equal(weekendBeforeMondayHoliday.message, "U.S. markets are closed for the weekend. They reopen Tuesday at 9:30 AM ET.");
+
+  const holiday = getUsEquityMarketStatus(new Date("2026-01-19T15:00:00.000Z"));
+  assert.equal(holiday.phase, "holiday");
+  assert.equal(holiday.message, "U.S. markets are closed today for Martin Luther King, Jr. Day. They reopen Tuesday at 9:30 AM ET.");
+
+  const earlyClose = getUsEquityMarketStatus(new Date("2026-11-27T16:00:00.000Z"));
+  assert.equal(earlyClose.phase, "regular");
+  assert.equal(earlyClose.message, "Markets close early today at 1:00 PM ET.");
+
+  const postEarlyClose = getUsEquityMarketStatus(new Date("2026-11-27T19:00:00.000Z"));
+  assert.equal(postEarlyClose.phase, "after_hours");
+  assert.equal(postEarlyClose.message, "Markets closed early today at 1:00 PM ET. Markets reopen Monday at 9:30 AM ET.");
 });
 
 test("BTC evaluation remains available outside stock-market hours", () => {

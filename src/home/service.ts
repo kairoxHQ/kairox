@@ -2,6 +2,7 @@ import { PortfolioDecisionService, type PortfolioDecision, type PortfolioDecisio
 import { calculatePerformance, type PerformanceMetrics } from "../portfolio/performance.ts";
 import { listPortfolioProfiles } from "../portfolio/profiles.ts";
 import { TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { getUsEquityMarketStatus } from "../market/hours.ts";
 
 const IRA_PORTFOLIO_ID = "portfolio_ira";
 
@@ -21,6 +22,7 @@ export interface HomeData {
   userName: string;
   portfolioId: string;
   portfolioName: string;
+  marketStatusMessage: string;
   summary: HomeSummary;
 }
 
@@ -49,6 +51,7 @@ export async function getHomeData(db: D1Database, requestedPortfolioId?: string)
     userName: "Tim",
     portfolioId,
     portfolioName: selectedProfile?.displayName ?? "Portfolio",
+    marketStatusMessage: getUsEquityMarketStatus(new Date()).message,
     summary: buildHomeSummary(performance, decision)
   };
 }
@@ -403,6 +406,7 @@ export function renderHomeHtml(data: HomeData): string {
         <div class="summary-grid">
           ${summaryRow("Portfolio Health", data.summary.portfolioHealth)}
           ${summaryRow("Today's Recommendation", data.summary.todaysRecommendation)}
+          ${summaryRow("Market Status", data.marketStatusMessage)}
           ${summaryRow("Portfolio Value", money(data.summary.portfolioValueUsd))}
         </div>
         <p>${escapeHtml(data.summary.explanation)}</p>

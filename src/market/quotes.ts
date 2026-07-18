@@ -1,4 +1,4 @@
-import { isRegularUsMarketHours } from "./hours.ts";
+import { getUsEquityMarketStatus } from "./hours.ts";
 import { lastKnownGoodMaxAgeSeconds, shouldUseLastKnownGood } from "./status.ts";
 import { YahooFinanceMarketDataProvider } from "./yahooFinanceProvider.ts";
 import { listRows } from "../shared/db.ts";
@@ -397,7 +397,7 @@ function marketStatusForInstrument(instrument: TickerInstrument, now: Date, hasP
   if (instrument.marketHoursMode === "continuous") {
     return "Continuous";
   }
-  return isRegularUsMarketHours(now) ? "Open" : "Closed";
+  return getUsEquityMarketStatus(now).isRegularOpen ? "Open" : "Closed";
 }
 
 function unavailableQuote(instrument: TickerInstrument, now: Date): NormalizedQuote {

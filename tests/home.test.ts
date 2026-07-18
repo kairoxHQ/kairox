@@ -49,6 +49,8 @@ test("home page renders conversation-first greeting, input, quick actions, and b
   assert.doesNotMatch(html, /Today&#39;s Summary|Today's Summary/);
   assert.match(html, /Portfolio Health/);
   assert.match(html, /Today&#39;s Recommendation|Today's Recommendation/);
+  assert.match(html, /Market Status/);
+  assert.match(html, /Markets reopen Monday at 9:30 AM ET\./);
   assert.match(html, /Portfolio Value/);
   assert.match(html, /\$2,400\.00/);
   assert.match(html, /<details>/);
@@ -168,6 +170,7 @@ function homeData(summary: ReturnType<typeof buildHomeSummary>) {
     userName: "Tim",
     portfolioId: "portfolio_ira",
     portfolioName: "IRA",
+    marketStatusMessage: "Markets reopen Monday at 9:30 AM ET.",
     summary
   };
 }
