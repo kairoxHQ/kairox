@@ -110,7 +110,7 @@ export async function getSummaries(db: D1Database): Promise<unknown> {
   return {
     summaries: rows.map((row) => ({
       ...row,
-      body: sanitizeForUser(row.body, "Summary includes only user-safe market and portfolio information.")
+      body: normalizeSummaryDisplayText(sanitizeForUser(row.body, "Summary includes only user-safe market and portfolio information."))
     }))
   };
 }
@@ -194,6 +194,18 @@ async function upsertSummary(
 
 function formatPct(value: number): string {
   return formatPercent(value);
+}
+
+export function normalizeSummaryDisplayText(value: string): string {
+  return value.replace(/\$-?\d[\d,]*(?:\.\d+)?/g, (match) => {
+    const negative = match.startsWith("$-");
+    const numericText = match.replace(/[$,]/g, "");
+    const amount = Number(numericText);
+    if (!Number.isFinite(amount)) {
+      return match;
+    }
+    return formatCurrency(negative ? -Math.abs(amount) : amount);
+  });
 }
 
 function summaryStatusMessage(status: { status?: string; isFresh?: boolean; userMessage: string }): string {

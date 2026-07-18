@@ -8,6 +8,7 @@ import {
   formatSignedCurrency,
   formatSignedPercent
 } from "../src/shared/displayFormat.ts";
+import { normalizeSummaryDisplayText } from "../src/summaries/service.ts";
 
 test("display currency formatting handles signs, separators, zero, and tiny values", () => {
   assert.equal(formatCurrency(2408.7333), "$2,408.73");
@@ -43,4 +44,11 @@ test("display price and quantity formatting adapts for crypto and fractional sha
   assert.equal(formatQuantity(1.25), "1.25");
   assert.equal(formatQuantity(0.003842), "0.003842");
   assert.equal(formatQuantity(null), "Unavailable");
+});
+
+test("stored summary display text is normalized without changing numeric fields", () => {
+  assert.equal(
+    normalizeSummaryDisplayText("Portfolio change: total return $-0.1783, fees $0.08, value $20.071."),
+    "Portfolio change: total return -$0.18, fees $0.08, value $20.07."
+  );
 });
