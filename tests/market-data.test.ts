@@ -129,8 +129,10 @@ function btcCandles(): Array<[number, number, number, number, number, number]> {
 }
 
 function stooqHistoryCsv(): string {
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const latestCompleteDay = Date.now() - 2 * oneDayMs;
   const rows = Array.from({ length: 45 }, (_, index) => {
-    const date = new Date(Date.UTC(2026, 4, 27 + index)).toISOString().slice(0, 10);
+    const date = new Date(latestCompleteDay - (44 - index) * oneDayMs).toISOString().slice(0, 10);
     const close = 600 + index;
     return `${date},${close - 1},${close + 2},${close - 2},${close},${1000000 + index}`;
   });

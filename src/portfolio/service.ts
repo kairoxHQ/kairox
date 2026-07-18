@@ -1,6 +1,7 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { getMarketTickerQuotes, type NormalizedQuote } from "../market/quotes.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
-import { getPortfolioProfile } from "./profiles.ts";
+import { getPortfolioProfile, listPortfolioProfiles } from "./profiles.ts";
 import { getPortfolioValuation, type PortfolioValuation, type ValuedPosition } from "./valuation.ts";
 
 interface PortfolioRow {
@@ -92,10 +93,19 @@ interface PortfolioPageHolding {
   allocationPct: number;
 }
 
+interface PortfolioPageAccountOption {
+  portfolioId: string;
+  displayName: string;
+  riskPosture: string;
+  selected: boolean;
+}
+
 interface PortfolioPageData {
   portfolioId: string;
   accountName: string;
   riskPosture: string;
+  accountOptions?: PortfolioPageAccountOption[];
+  marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
   valuation: PortfolioValuation;
   holdings: PortfolioPageHolding[];
   guardianSummary: string;
@@ -114,9 +124,11 @@ export async function renderPortfolioPage(db: D1Database, portfolioId = TIM_PORT
 }
 
 async function getPortfolioPageData(db: D1Database, portfolioId: string): Promise<PortfolioPageData> {
-  const [portfolioData, profile, valuation, assetRows, priceHistoryRows, recentActivity] = await Promise.all([
+  const [portfolioData, profile, profiles, marketTicker, valuation, assetRows, priceHistoryRows, recentActivity] = await Promise.all([
     getPortfolio(db, portfolioId),
     getPortfolioProfile(db, portfolioId),
+    listPortfolioProfiles(db),
+    getMarketTickerQuotes(db),
     getPortfolioValuation(db, portfolioId),
     listRows<PortfolioPageAsset>(
       db.prepare(
@@ -148,6 +160,16 @@ async function getPortfolioPageData(db: D1Database, portfolioId: string): Promis
     portfolioId,
     accountName: portfolioData.portfolio?.name ?? profile.displayName,
     riskPosture: profile.riskPosture,
+    accountOptions: profiles.map((item) => ({
+      portfolioId: item.portfolioId,
+      displayName: item.displayName,
+      riskPosture: item.riskPosture,
+      selected: item.portfolioId === portfolioId
+    })),
+    marketTicker: {
+      generatedAt: marketTicker.generatedAt,
+      instruments: portfolioTickerInstruments(marketTicker.instruments)
+    },
     valuation,
     holdings,
     guardianSummary: guardianSummary(valuation, holdings),
@@ -287,6 +309,23 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
     .dot { width: 10px; height: 10px; border-radius: 999px; background: #2a6fdb; margin-top: 6px; box-shadow: 0 0 0 4px #e8f1ff; }
     .activity-title { font-weight: 720; }
     .empty { color: var(--muted); padding: 10px 0; }
+    .account-selector { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 8px; scrollbar-width: thin; }
+    .account-choice { flex: 0 0 178px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; color: inherit; text-decoration: none; background: #fbfcfd; display: grid; gap: 3px; }
+    .account-choice[aria-current="page"] { border-color: #2a6fdb; background: #f4f8ff; box-shadow: inset 0 0 0 1px #2a6fdb; }
+    .account-choice-name { font-weight: 740; }
+    .account-choice-state { color: #1f5ed8; font-size: .78rem; font-weight: 720; }
+    .market-strip { display: grid; gap: 10px; }
+    .market-strip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .market-strip-head h2 { margin: 0; }
+    .market-row { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 8px; scrollbar-width: thin; }
+    .market-quote { flex: 0 0 170px; border: 1px solid #edf1f5; border-radius: 8px; background: #fbfcfd; padding: 10px; color: inherit; text-decoration: none; display: grid; gap: 3px; }
+    .market-quote-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .market-symbol { font-weight: 740; }
+    .market-value { font-weight: 760; }
+    .market-change, .freshness { font-size: .84rem; }
+    .quote-up { color: var(--good); }
+    .quote-down { color: var(--bad); }
+    .quote-flat { color: var(--ink-soft); }
     details { background: transparent; border-top: 1px solid #edf1f5; padding-top: 12px; }
     summary { cursor: pointer; color: var(--ink-soft); font-weight: 700; }
     .advanced-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -310,6 +349,8 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
     </div>
   </header>
   <main class="page-shell">
+    ${renderAccountSelector(data.accountOptions, data.portfolioId)}
+    ${renderCompactMarketTicker(data.marketTicker)}
     <section class="hero" aria-label="Account value">
       <div class="hero-grid">
         <div>
@@ -357,6 +398,90 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
   </main>
 </body>
 </html>`;
+}
+
+const PORTFOLIO_TICKER_SYMBOLS = new Set(["^GSPC", "^DJI", "^IXIC", "^VIX", "BTC-USD"]);
+
+function portfolioTickerInstruments(instruments: NormalizedQuote[]): NormalizedQuote[] {
+  return instruments.filter((instrument) => PORTFOLIO_TICKER_SYMBOLS.has(instrument.symbol));
+}
+
+function renderAccountSelector(options: PortfolioPageAccountOption[] | undefined, selectedPortfolioId: string): string {
+  const choices = (options ?? []).filter((option) => option.portfolioId);
+  if (choices.length === 0) {
+    return "";
+  }
+  return `<section class="panel" id="account-selector" aria-label="Account selector">
+    <h2>Accounts</h2>
+    <div class="account-selector" data-account-selector>${choices.map((option) => accountChoice(option, selectedPortfolioId)).join("")}</div>
+  </section>`;
+}
+
+function accountChoice(option: PortfolioPageAccountOption, selectedPortfolioId: string): string {
+  const selected = option.selected || option.portfolioId === selectedPortfolioId;
+  return `<a class="account-choice" href="/portfolio?portfolioId=${encodeURIComponent(option.portfolioId)}" ${selected ? 'aria-current="page"' : ""}>
+    <span class="account-choice-name">${escapeHtml(option.displayName)}</span>
+    <span class="muted">${escapeHtml(titleCase(option.riskPosture))}</span>
+    <span class="account-choice-state">${selected ? "Selected" : "View account"}</span>
+  </a>`;
+}
+
+function renderCompactMarketTicker(ticker?: { instruments: NormalizedQuote[]; generatedAt: string }): string {
+  const instruments = portfolioTickerInstruments(ticker?.instruments ?? []);
+  if (instruments.length === 0) {
+    return "";
+  }
+  return `<section id="market-ticker" class="panel market-strip" aria-label="Market ticker">
+    <div class="market-strip-head">
+      <h2>Markets</h2>
+      <a class="muted" href="/quotes?symbols=%5EGSPC,%5EDJI,%5EIXIC,%5EVIX,BTC-USD">Full quotes</a>
+    </div>
+    <div class="market-row" data-portfolio-market-strip>${instruments.map(compactTickerItem).join("")}</div>
+  </section>`;
+}
+
+function compactTickerItem(item: NormalizedQuote): string {
+  return `<a class="market-quote" href="/quotes?symbols=${encodeURIComponent(item.symbol)}" aria-label="${escapeHtml(item.displayName)} quote">
+    <div class="market-quote-top"><span class="market-symbol">${escapeHtml(item.shortName)}</span><span class="${escapeHtml(quoteDirectionClass(item.direction))}">${escapeHtml(quoteIndicator(item.direction))}</span></div>
+    <div class="market-value">${escapeHtml(formatQuoteValue(item))}</div>
+    <div class="market-change ${escapeHtml(quoteDirectionClass(item.direction))}">${escapeHtml(formatCompactQuoteChange(item))}</div>
+    <div class="freshness">${escapeHtml(item.marketStatus)} - ${escapeHtml(item.freshnessStatus)}</div>
+  </a>`;
+}
+
+function quoteIndicator(direction: string): string {
+  if (direction === "up") return "Up";
+  if (direction === "down") return "Down";
+  return "Flat";
+}
+
+function formatQuoteValue(item: NormalizedQuote): string {
+  if (item.price === null) {
+    return "Unavailable";
+  }
+  if (item.unit === "usd") {
+    return money(item.price);
+  }
+  if (item.unit === "percent") {
+    return `${item.price.toFixed(item.valuePrecision)}%`;
+  }
+  return item.price.toFixed(item.valuePrecision);
+}
+
+function formatCompactQuoteChange(item: NormalizedQuote): string {
+  if (item.absoluteChange === null || item.percentageChange === null) {
+    return "Unavailable";
+  }
+  const sign = item.absoluteChange > 0 ? "+" : "";
+  const value = item.unit === "usd"
+    ? `${item.absoluteChange >= 0 ? "+" : "-"}$${Math.abs(item.absoluteChange).toFixed(item.changePrecision)}`
+    : `${sign}${item.absoluteChange.toFixed(item.changePrecision)}`;
+  const pctSign = item.percentageChange > 0 ? "+" : "";
+  return `${value} (${pctSign}${(item.percentageChange * 100).toFixed(2)}%)`;
+}
+
+function quoteDirectionClass(direction: string): string {
+  return direction === "up" ? "quote-up" : direction === "down" ? "quote-down" : "quote-flat";
 }
 
 function metric(label: string, value: string, detail: string, className = ""): string {
