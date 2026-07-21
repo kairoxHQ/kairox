@@ -117,8 +117,8 @@ test("API exposes read-only timeline diagnostics and protected replay or queue p
   assert.match(indexSource, /"\/events\/dead-letters"/);
   assert.match(indexSource, /"\/events\/process"/);
   assert.match(indexSource, /"\/events\/replay"/);
-  assert.match(indexSource, /stateChangingRoutes[\s\S]*\/events\/process/);
-  assert.match(indexSource, /stateChangingRoutes[\s\S]*\/events\/replay/);
+  assert.match(indexSource, /protectedPostRoutes[\s\S]*\/events\/process/);
+  assert.match(indexSource, /protectedPostRoutes[\s\S]*\/events\/replay/);
   assert.match(indexSource, /const auth = await authorize\(request, env\)/);
   assert.match(indexSource, /new EventBus\(env\.DB\)\.processPending/);
 });

@@ -103,7 +103,7 @@ test("knowledge graph APIs include read queries and protected sync", () => {
   assert.match(indexSource, /"\/knowledge-graph"/);
   assert.match(indexSource, /"\/knowledge-graph\/visualization"/);
   assert.match(indexSource, /"\/knowledge-graph\/sync"/);
-  assert.match(indexSource, /stateChangingRoutes[\s\S]*\/knowledge-graph\/sync/);
+  assert.match(indexSource, /protectedPostRoutes[\s\S]*\/knowledge-graph\/sync/);
   assert.match(indexSource, /new KnowledgeGraphService\(env\.DB\)\.syncPortfolio/);
   assert.match(indexSource, /service\.traverse/);
   assert.match(indexSource, /service\.summary/);

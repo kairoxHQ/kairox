@@ -123,6 +123,46 @@ class RequestError extends Error {
   }
 }
 
+const protectedPostRoutes = new Set([
+  "/paper/run",
+  "/settings/pause",
+  "/settings/resume",
+  "/daily-reviews/run",
+  "/strategy/run",
+  "/strategy-lab/run",
+  "/research/run",
+  "/forward-test/run",
+  "/forward-test/monthly-report/create",
+  "/benchmark-comparison/run",
+  "/benchmark-comparison/monthly-report/create",
+  "/portfolio-decisions/run",
+  "/portfolio-briefings/run",
+  "/market-intelligence/run",
+  "/events/process",
+  "/events/replay",
+  "/knowledge-graph/sync",
+  "/allocation-proposals/generate",
+  "/paper-order-batches/stage",
+  "/daily-management-cycles/run"
+]);
+
+const protectedMutationRoutePatterns = [
+  /^\/allocation-proposals\/[A-Za-z0-9_-]+\/(approve|reject)$/,
+  /^\/daily-reviews\/[A-Za-z0-9_-]+\/proposal$/,
+  /^\/recommendation-proposals\/[A-Za-z0-9_-]+\/(ready|regenerate|reject|supersede)$/,
+  /^\/paper-order-batches\/[A-Za-z0-9_-]+\/(ready|reject|cancel|refresh|execute)$/,
+  /^\/portfolio-decisions\/[A-Za-z0-9_-]+\/(accept|reject|defer|review)$/,
+  /^\/accounts\/[A-Za-z0-9_-]+\/daily-orchestration$/,
+  /^\/linked-portfolios\/[A-Za-z0-9_-]+\/manual-holdings$/
+];
+
+export function requiresMutationAuth(method: string, pathname: string): boolean {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) {
+    return false;
+  }
+  return protectedPostRoutes.has(pathname) || protectedMutationRoutePatterns.some((pattern) => pattern.test(pathname));
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -193,7 +233,6 @@ export default {
       return json({ error: "Method not allowed" }, 405);
     }
 
-    const stateChangingRoutes = new Set(["/paper/run", "/settings/pause", "/settings/resume", "/daily-reviews/run", "/strategy/run", "/strategy-lab/run", "/research/run", "/forward-test/run", "/forward-test/monthly-report/create", "/benchmark-comparison/run", "/benchmark-comparison/monthly-report/create", "/portfolio-decisions/run", "/portfolio-briefings/run", "/market-intelligence/run", "/events/process", "/events/replay", "/knowledge-graph/sync"]);
     const protectedGetRoutes = new Set([
       "/diagnostics",
       "/market-data/provider-health",
@@ -202,12 +241,12 @@ export default {
       "/market-data/quote-status",
       "/market-data/historical-coverage"
     ]);
-    if (stateChangingRoutes.has(url.pathname) && request.method !== "POST") {
+    if (protectedPostRoutes.has(url.pathname) && request.method !== "POST") {
       return json({ error: "Method not allowed" }, 405);
     }
 
     try {
-      if (stateChangingRoutes.has(url.pathname)) {
+      if (requiresMutationAuth(request.method, url.pathname)) {
         const auth = await authorize(request, env);
         if (auth) {
           return auth;
