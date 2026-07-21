@@ -23,6 +23,7 @@ import { getPortfolioValuation, recordValuationSnapshot } from "../portfolio/val
 import { evaluateAndAwardMilestones } from "../milestones/service.ts";
 import { recordValuationJourneyEvents } from "../journey/service.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 const SPREAD_RATE = 0.0025;
 const FEE_RATE = 0.001;
@@ -106,6 +107,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   const runStartedAt = now.toISOString();
   const portfolioId = options.portfolioId ?? TIM_PORTFOLIO_ID;
   const profile = await getPortfolioProfile(env.DB, portfolioId);
+  await assertPortfolioAllowsTradingActions(env.DB, portfolioId, "run paper strategy");
   const investmentPolicy = await getInvestmentPolicy(env.DB, portfolioId);
   const runKey = options.runKey ?? `paper:${profile.profileKey}:${runStartedAt.slice(0, 16)}`;
   const executionAllowedBySystem = options.allowExecution ?? true;

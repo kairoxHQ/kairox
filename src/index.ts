@@ -22,6 +22,7 @@ import { getJournal, getRecommendations } from "./journal/service.ts";
 import { getMarket } from "./paper/service.ts";
 import { getSummaries } from "./summaries/service.ts";
 import { getPortfolioValuation, PortfolioNotFoundError } from "./portfolio/valuation.ts";
+import { updateReadOnlyWatchlistManualHoldings, type UpdateReadOnlyWatchlistManualInput } from "./portfolio/accountTypes.ts";
 import { getLatestDailySnapshots } from "./portfolio/dailySnapshots.ts";
 import { getHistoricalMetrics } from "./portfolio/historicalMetrics.ts";
 import { getDashboardContract } from "./dashboard/contract.ts";
@@ -389,6 +390,20 @@ export default {
           : await service.markReviewed(decisionId, reason);
         const portfolioId = "decision" in result ? result.decision.portfolioId : result.portfolioId;
         return portfolioDecisionActionResponse(request, portfolioId, result);
+      }
+
+      const readOnlyManualHoldingsMatch = url.pathname.match(/^\/linked-portfolios\/([A-Za-z0-9_-]+)\/manual-holdings$/);
+      if (readOnlyManualHoldingsMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const auth = await authorize(request, env);
+        if (auth) {
+          return auth;
+        }
+        const portfolioId = readOnlyManualHoldingsMatch[1];
+        await assertExistingPortfolio(env.DB, portfolioId);
+        return json(await updateReadOnlyWatchlistManualHoldings(env.DB, portfolioId, await manualHoldingsBody(request)));
       }
 
       if (url.pathname === "/health") {
@@ -1025,6 +1040,35 @@ async function orchestrationBody(request: Request): Promise<{ marketDate?: strin
     return body && typeof body === "object" ? body : {};
   } catch {
     return {};
+  }
+}
+
+async function manualHoldingsBody(request: Request): Promise<UpdateReadOnlyWatchlistManualInput> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new RequestError(400, "Manual holdings updates require a JSON body.");
+  }
+  try {
+    const body = await request.json<UpdateReadOnlyWatchlistManualInput>();
+    if (!body || typeof body !== "object") {
+      throw new Error("Invalid JSON object.");
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof RequestError) {
+      throw error;
+    }
+    throw new RequestError(400, "Invalid manual holdings update body.");
+  }
+}
+
+async function assertExistingPortfolio(db: D1Database, portfolioId: string): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{1,96}$/.test(portfolioId)) {
+    throw new RequestError(400, "Invalid portfolio identifier.");
+  }
+  const row = await db.prepare("SELECT id FROM portfolios WHERE id = ?").bind(portfolioId).first<{ id: string }>();
+  if (!row) {
+    throw new PortfolioNotFoundError(portfolioId);
   }
 }
 

@@ -12,6 +12,7 @@ import { VerifiedMarketIntelligenceService } from "../intelligence/verifiedPipel
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { addMoney, roundRatio } from "../shared/money.ts";
 import type { AssetClass, Env } from "../shared/types.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export type DailyManagementOutcome =
   | "Hold"
@@ -226,6 +227,7 @@ export class DailyManagementCycleService {
       if (portfolio.mode !== "paper") {
         throw new Error("Daily management cycles are restricted to paper portfolios.");
       }
+      await assertPortfolioAllowsTradingActions(this.db, portfolioId, "run daily management cycles");
 
       const policy = await getInvestmentPolicy(this.db, portfolioId);
       const config = await this.getConfig(policy);

@@ -4,6 +4,7 @@ import { roundMoney, roundRatio } from "../shared/money.ts";
 import { formatCurrency, formatPercent, formatPrice, formatSignedCurrency, formatSignedPercent } from "../shared/displayFormat.ts";
 import { getPortfolioProfile, listPortfolioProfiles } from "./profiles.ts";
 import { getPortfolioValuation, type PortfolioValuation, type ValuedPosition } from "./valuation.ts";
+import { getLinkedPortfolioAccount, type LinkedPortfolioAccount } from "./accountTypes.ts";
 
 interface PortfolioRow {
   id: string;
@@ -18,6 +19,7 @@ interface PortfolioRow {
   updatedAt: string;
   accountStatus: string | null;
   accountType: string | null;
+  linkedAccount?: LinkedPortfolioAccount;
 }
 
 export async function getPortfolio(db: D1Database, portfolioId = TIM_PORTFOLIO_ID) {
@@ -64,7 +66,9 @@ export async function getPortfolio(db: D1Database, portfolioId = TIM_PORTFOLIO_I
     .bind(portfolioId)
     .first();
 
-  return { user, portfolio, positions, goals, riskProfile };
+  const linkedAccount = portfolio ? await getLinkedPortfolioAccount(db, portfolio.id) : null;
+
+  return { user, portfolio: portfolio ? { ...portfolio, linkedAccount } : null, positions, goals, riskProfile };
 }
 
 interface PortfolioPageAsset {
@@ -107,6 +111,7 @@ interface PortfolioPageData {
   riskPosture: string;
   accountOptions?: PortfolioPageAccountOption[];
   marketTicker?: { instruments: NormalizedQuote[]; generatedAt: string };
+  account: LinkedPortfolioAccount;
   valuation: PortfolioValuation;
   holdings: PortfolioPageHolding[];
   guardianSummary: string;
@@ -125,11 +130,12 @@ export async function renderPortfolioPage(db: D1Database, portfolioId = TIM_PORT
 }
 
 async function getPortfolioPageData(db: D1Database, portfolioId: string): Promise<PortfolioPageData> {
-  const [portfolioData, profile, profiles, marketTicker, valuation, assetRows, priceHistoryRows, recentActivity] = await Promise.all([
+  const [portfolioData, profile, profiles, marketTicker, account, valuation, assetRows, priceHistoryRows, recentActivity] = await Promise.all([
     getPortfolio(db, portfolioId),
     getPortfolioProfile(db, portfolioId),
     listPortfolioProfiles(db),
     getMarketTickerQuotes(db),
+    getLinkedPortfolioAccount(db, portfolioId),
     getPortfolioValuation(db, portfolioId),
     listRows<PortfolioPageAsset>(
       db.prepare(
@@ -171,6 +177,7 @@ async function getPortfolioPageData(db: D1Database, portfolioId: string): Promis
       generatedAt: marketTicker.generatedAt,
       instruments: portfolioTickerInstruments(marketTicker.instruments)
     },
+    account,
     valuation,
     holdings,
     guardianSummary: guardianSummary(valuation, holdings),
@@ -297,6 +304,11 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
     .label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
     .metric-value { font-size: 1.22rem; font-weight: 740; overflow-wrap: anywhere; }
     .muted { color: var(--muted); font-size: .9rem; }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+    .account-badge { display: inline-flex; align-items: center; border-radius: 999px; border: 1px solid var(--line); padding: 4px 9px; font-size: .78rem; font-weight: 780; }
+    .account-badge.read-only { color: #5751a3; background: #f6f4ff; border-color: #d8d2ff; }
+    .account-badge.paper-managed { color: #0f5c3d; background: #f0fbf6; border-color: #c7ecd8; }
+    .account-badge.paper { color: #3b4758; background: #f7f8fa; }
     .good { color: var(--good); }
     .bad { color: var(--bad); }
     .flat { color: var(--ink-soft); }
@@ -354,16 +366,17 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
     ${renderCompactMarketTicker(data.marketTicker)}
     <section class="hero" aria-label="Account value">
       <div class="hero-grid">
-        <div>
+      <div>
           <div class="label">Current account value</div>
           <div class="value">${escapeHtml(money(data.valuation.totalAccountValueUsd))}</div>
           <div class="muted">${escapeHtml(paperModeLabel(data.riskPosture))}</div>
+          <div class="badge-row">${accountBadge(data.account)}${data.account.linkedPortfolioId ? `<span class="muted">Linked to ${escapeHtml(data.account.linkedPortfolioId)}</span>` : ""}</div>
         </div>
         ${metric("Today's gain/loss", `${signedMoney(data.valuation.todayChangeUsd)} (${signedPct(data.valuation.todayChangePct)})`, todayChangeDetail(data.valuation), signedClass(data.valuation.todayChangeUsd))}
         ${metric("Lifetime return", `${signedMoney(data.valuation.overallReturnUsd)} (${signedPct(data.valuation.overallReturnPct)})`, "Since account funding", signedClass(data.valuation.overallReturnUsd))}
       </div>
       <div class="metric-grid">
-        ${metric("Cash available", money(data.valuation.cashUsd), "Available for future paper trades")}
+        ${metric("Cash available", money(data.valuation.cashUsd), data.account.readOnly ? "Entered manually for comparison" : "Available for future paper trades")}
         ${metric("Holdings value", money(data.valuation.totalPortfolioValueUsd), `${data.holdings.length} holding${data.holdings.length === 1 ? "" : "s"}`)}
         ${metric("Market data", plainDataStatus(data.valuation.dataStatus), "Used for account valuation")}
       </div>
@@ -391,7 +404,7 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
           <a href="/portfolio?portfolioId=${encodeURIComponent(data.portfolioId)}&format=json">Raw portfolio data</a>
           <a href="/valuation?portfolioId=${encodeURIComponent(data.portfolioId)}">Valuation API</a>
           <a href="/historical-performance?portfolioId=${encodeURIComponent(data.portfolioId)}">Analytics</a>
-          <a href="/portfolio-decisions?portfolioId=${encodeURIComponent(data.portfolioId)}">Decisions</a>
+          ${data.account.readOnly ? "" : `<a href="/portfolio-decisions?portfolioId=${encodeURIComponent(data.portfolioId)}">Decisions</a>`}
           <a href="/portfolio-briefings?portfolioId=${encodeURIComponent(data.portfolioId)}">Briefings</a>
         </div>
       </details>
@@ -399,6 +412,11 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
   </main>
 </body>
 </html>`;
+}
+
+function accountBadge(account: LinkedPortfolioAccount): string {
+  const className = account.readOnly ? "read-only" : account.accountType === "paper_portfolio_twin" ? "paper-managed" : "paper";
+  return `<span class="account-badge ${className}">${escapeHtml(account.badgeLabel)}</span>`;
 }
 
 const PORTFOLIO_TICKER_SYMBOLS = new Set(["^GSPC", "^DJI", "^IXIC", "^VIX", "BTC-USD"]);

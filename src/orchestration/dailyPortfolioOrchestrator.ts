@@ -5,6 +5,7 @@ import { safePublishDomainEvent } from "../events/eventBus.ts";
 import { MarketDataService, type NormalizedQuote } from "../market/service.ts";
 import { DailyManagementCycleService, type DailyManagementCycle } from "../management/dailyCycle.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 import { completeDailySnapshot, type DailySnapshotSummary } from "../portfolio/dailySnapshots.ts";
 import { accountDate, getPortfolioValuation, type PortfolioValuation } from "../portfolio/valuation.ts";
 import { shouldRunScheduledDailyReview } from "../reviews/dailyReview.ts";
@@ -196,6 +197,7 @@ export class DailyPortfolioOrchestrator {
         if (!portfolio) throw new Error("Account does not exist.");
         if (portfolio.mode !== "paper") throw new Error("Daily orchestration is restricted to paper accounts.");
         if (portfolio.brokerStatus && portfolio.brokerStatus !== "active") throw new Error("Paper account is not active.");
+        await assertPortfolioAllowsTradingActions(this.db, portfolioId, "run daily orchestration");
         const policy = await getInvestmentPolicy(this.db, portfolioId);
         if (!policy || policy.status !== "active") throw new Error("Active investment policy is required.");
       }, stageResults, true, now);

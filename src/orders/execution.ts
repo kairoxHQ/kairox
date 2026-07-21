@@ -8,6 +8,7 @@ import { addMoney, roundMoney, roundRatio, subtractMoney } from "../shared/money
 import type { AssetClass } from "../shared/types.ts";
 import { getPaperOrderBatchById, type PaperOrderBatch, type PaperOrderLine } from "./staging.ts";
 import { recordJourneyEvent } from "../journey/service.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export interface PaperExecutionOptions {
   now?: Date;
@@ -183,6 +184,7 @@ export async function executePaperOrderBatch(
   if (batch.status !== "Ready to Execute") {
     throw new Error("Only Ready to Execute paper order batches can be executed.");
   }
+  await assertPortfolioAllowsTradingActions(db, batch.portfolioId, "execute paper orders");
 
   const now = options.now ?? new Date();
   const nowIso = now.toISOString();

@@ -51,6 +51,7 @@ test("portfolio page renders an investor-focused primary view", () => {
       }
     ],
     accountOptions: accountOptions("portfolio_ira"),
+    account: paperManagedAccount("portfolio_ira"),
     marketTicker: marketTicker(),
     recentActivity: [
       {
@@ -109,6 +110,7 @@ test("portfolio page keeps diagnostics and trading controls out of the primary v
       dataMode: "paper"
     },
     accountOptions: accountOptions("portfolio_tim_paper"),
+    account: paperAccount("portfolio_tim_paper"),
     marketTicker: marketTicker(),
     holdings: [],
     recentActivity: []
@@ -128,6 +130,7 @@ test("portfolio page offers mobile-friendly account switching without combining 
     guardianSummary: "Everything looks healthy. No action is recommended today.",
     valuation: valuation("portfolio_ira"),
     accountOptions: accountOptions("portfolio_ira"),
+    account: paperManagedAccount("portfolio_ira"),
     marketTicker: marketTicker(),
     holdings: [
       {
@@ -165,6 +168,7 @@ test("portfolio page renders the compact five-item market ticker safely", () => 
     guardianSummary: "Everything looks healthy. No action is recommended today.",
     valuation: valuation("portfolio_tim_paper"),
     accountOptions: accountOptions("portfolio_tim_paper"),
+    account: paperAccount("portfolio_tim_paper"),
     marketTicker: {
       generatedAt,
       instruments: [
@@ -207,6 +211,7 @@ test("portfolio ticker unavailable quote states do not leak unsafe values", () =
     guardianSummary: "Some market data is not current. Monitoring only until fresh prices are available.",
     valuation: valuation("portfolio_ira"),
     accountOptions: accountOptions("portfolio_ira"),
+    account: paperManagedAccount("portfolio_ira"),
     marketTicker: {
       generatedAt,
       instruments: [
@@ -226,6 +231,27 @@ test("portfolio ticker unavailable quote states do not leak unsafe values", () =
   assert.match(ticker, /Unavailable - Unavailable/);
   assert.match(ticker, /Flat/);
   assert.doesNotMatch(ticker, /null|undefined|NaN|Illegal invocation|HTTP 429/);
+});
+
+test("portfolio page marks read-only watchlists and hides decision controls", () => {
+  const html = renderPortfolioHtml({
+    portfolioId: "portfolio_real_watchlist",
+    accountName: "Real Brokerage Watchlist",
+    riskPosture: "baseline",
+    generatedAt,
+    guardianSummary: "This real account is being monitored for comparison only.",
+    valuation: valuation("portfolio_real_watchlist"),
+    accountOptions: accountOptions("portfolio_real_watchlist"),
+    account: readOnlyAccount("portfolio_real_watchlist"),
+    marketTicker: marketTicker(),
+    holdings: [],
+    recentActivity: []
+  } as never);
+
+  assert.match(html, /Read Only/);
+  assert.match(html, /Entered manually for comparison/);
+  assert.doesNotMatch(html, /portfolio-decisions\?portfolioId=portfolio_real_watchlist/);
+  assert.doesNotMatch(html, /data-run-|Execute Paper Orders|Run Portfolio Decision/);
 });
 
 function accountOptions(selectedPortfolioId: string) {
@@ -270,6 +296,48 @@ function valuation(portfolioId: string) {
     lastSuccessfulMarketDataUpdateTime: null,
     dataStatus: "unavailable",
     dataMode: "paper"
+  };
+}
+
+function paperAccount(portfolioId: string) {
+  return {
+    portfolioId,
+    accountType: "paper",
+    linkedPortfolioId: null,
+    relationshipLabel: "Standalone paper portfolio",
+    manualEntryEnabled: false,
+    managedByKairox: true,
+    readOnly: false,
+    badgeLabel: "Paper",
+    tradingAllowed: true,
+    orderGenerationAllowed: true,
+    rebalanceAllowed: true
+  };
+}
+
+function paperManagedAccount(portfolioId: string) {
+  return {
+    ...paperAccount(portfolioId),
+    accountType: "paper_portfolio_twin",
+    linkedPortfolioId: "portfolio_real_watchlist",
+    relationshipLabel: "Twin of read-only watchlist",
+    badgeLabel: "Paper Managed"
+  };
+}
+
+function readOnlyAccount(portfolioId: string) {
+  return {
+    portfolioId,
+    accountType: "read_only_watchlist",
+    linkedPortfolioId: null,
+    relationshipLabel: "Read-only real holdings baseline",
+    manualEntryEnabled: true,
+    managedByKairox: false,
+    readOnly: true,
+    badgeLabel: "Read Only",
+    tradingAllowed: false,
+    orderGenerationAllowed: false,
+    rebalanceAllowed: false
   };
 }
 

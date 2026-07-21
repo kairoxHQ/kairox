@@ -9,6 +9,7 @@ import { recordJourneyEvent } from "../journey/service.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { addMoney, pctChange, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 import type { AssetClass, Env, MarketDataset } from "../shared/types.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export type DailyDecisionStatus =
   | "Hold"
@@ -166,6 +167,7 @@ export class DailyPortfolioReviewService {
       if (portfolio.mode !== "paper") {
         throw new Error("Daily reviews are currently restricted to paper portfolios.");
       }
+      await assertPortfolioAllowsTradingActions(this.db, portfolioId, "run daily reviews");
 
       const positionsBefore = await this.getPositions(portfolioId);
       const reviewSymbols = [...new Set([...positionsBefore.map((position) => position.symbol), "SPY", "BND"])];

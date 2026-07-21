@@ -3,6 +3,7 @@ import { MarketDataService } from "../market/service.ts";
 import { getInvestmentPolicy, validateInvestmentPolicy, type InvestmentPolicyValidationResult } from "../policies/investmentPolicy.ts";
 import { listRows } from "../shared/db.ts";
 import type { AssetClass } from "../shared/types.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export type PaperOrderBatchStatus =
   | "Pending Review"
@@ -186,6 +187,7 @@ export async function stagePaperOrdersForProposal(
   if (proposal.status !== "approved") {
     throw new Error("Only approved allocation proposals can be staged as paper orders.");
   }
+  await assertPortfolioAllowsTradingActions(db, proposal.portfolioId, "stage paper orders");
 
   const now = options.now ?? new Date();
   const [portfolio, policy, positions, assets, prices] = await Promise.all([
@@ -474,6 +476,7 @@ export async function getPaperOrderBatchByProposalId(db: D1Database, proposalId:
 
 export async function markPaperOrderBatchReady(db: D1Database, batchId: string, now = new Date()): Promise<PaperOrderBatch> {
   const batch = await getPaperOrderBatchById(db, batchId);
+  await assertPortfolioAllowsTradingActions(db, batch.portfolioId, "mark paper order batches ready");
   if (batch.validationStatus !== "passed") {
     throw new Error("Paper order batch cannot be marked ready until validation passes.");
   }
@@ -530,6 +533,7 @@ export async function cancelPaperOrderBatch(db: D1Database, batchId: string, rea
 
 export async function refreshPaperOrderBatchPrices(db: D1Database, batchId: string, now = new Date()): Promise<PaperOrderBatch> {
   const batch = await getPaperOrderBatchById(db, batchId);
+  await assertPortfolioAllowsTradingActions(db, batch.portfolioId, "refresh paper order batches");
   const proposal = await getAllocationProposalById(db, batch.proposalId);
   if (!proposal) {
     throw new Error("Allocation proposal not found.");

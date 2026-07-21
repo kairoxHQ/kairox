@@ -2,6 +2,7 @@ import { getInvestmentPolicy, validateInvestmentPolicy, type InvestmentPolicy } 
 import { listRows } from "../shared/db.ts";
 import type { AssetClass } from "../shared/types.ts";
 import { MarketDataService } from "../market/service.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export type ProposalStatus = "draft" | "ready_for_review" | "approved" | "rejected" | "expired" | "executed";
 
@@ -179,6 +180,7 @@ const CATEGORY_METADATA: Record<string, Omit<ProposalAsset, "symbol" | "security
 };
 
 export async function generateAllocationProposal(db: D1Database, portfolioId: string, now = new Date()): Promise<AllocationProposal> {
+  await assertPortfolioAllowsTradingActions(db, portfolioId, "generate allocation proposals");
   const [portfolio, policy, assets, positions, existingOrders, versionRow] = await Promise.all([
     getPortfolioSummary(db, portfolioId),
     getInvestmentPolicy(db, portfolioId),
@@ -404,6 +406,7 @@ export async function approveAllocationProposal(db: D1Database, proposalIdValue:
   if (!row) {
     throw new Error("Allocation proposal not found.");
   }
+  await assertPortfolioAllowsTradingActions(db, row.portfolioId, "approve allocation proposals");
   const currentProposal = await hydrateProposal(db, row);
   if (row.status !== "ready_for_review" || !row.approvalAllowed || !hasCurrentPricing(currentProposal, now.toISOString())) {
     throw new Error("Allocation proposal is not approvable until policy and pricing checks pass.");

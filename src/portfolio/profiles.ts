@@ -1,5 +1,6 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { calculatePerformance } from "./performance.ts";
+import { listLinkedPortfolioAccounts, type LinkedPortfolioAccount } from "./accountTypes.ts";
 
 export interface PortfolioProfile {
   id: string;
@@ -12,6 +13,7 @@ export interface PortfolioProfile {
   comparisonStartEquityUsd: number;
   normalizedStartIndex: number;
   parameters: ProfileParameters;
+  account: LinkedPortfolioAccount;
 }
 
 export interface ProfileParameters {
@@ -70,7 +72,8 @@ export async function listPortfolioProfiles(db: D1Database): Promise<PortfolioPr
   );
 
   if (rows.length > 0) {
-    return rows.map(parseProfileRow);
+    const accounts = await listLinkedPortfolioAccounts(db, rows.map((row) => row.portfolioId));
+    return rows.map((row) => parseProfileRow(row, accounts.get(row.portfolioId)));
   }
 
   return [{
@@ -83,7 +86,20 @@ export async function listPortfolioProfiles(db: D1Database): Promise<PortfolioPr
     comparisonStartTimestamp: new Date().toISOString(),
     comparisonStartEquityUsd: 20,
     normalizedStartIndex: 100,
-    parameters: DEFAULT_PARAMETERS
+    parameters: DEFAULT_PARAMETERS,
+    account: {
+      portfolioId: TIM_PORTFOLIO_ID,
+      accountType: "paper",
+      linkedPortfolioId: null,
+      relationshipLabel: "Standalone paper portfolio",
+      manualEntryEnabled: false,
+      managedByKairox: true,
+      readOnly: false,
+      badgeLabel: "Paper",
+      tradingAllowed: true,
+      orderGenerationAllowed: true,
+      rebalanceAllowed: true
+    }
   }];
 }
 
@@ -123,7 +139,12 @@ export async function getProfileComparison(db: D1Database): Promise<unknown> {
         recommendationCount: readiness?.recommendationCount ?? 0,
         journalEntryCount: readiness?.journalEntryCount ?? 0,
         equityHistoryCount: readiness?.equityHistoryCount ?? 0,
-        paperOnlyLabel: "VIRTUAL / PAPER ONLY",
+        paperOnlyLabel: profile.account.badgeLabel,
+        accountType: profile.account.accountType,
+        linkedPortfolioId: profile.account.linkedPortfolioId,
+        accountRelationship: profile.account.relationshipLabel,
+        readOnly: profile.account.readOnly,
+        managedByKairox: profile.account.managedByKairox,
         normalizedIndex: round(normalizedIndex),
         normalizedReturnPct: round(normalizedIndex / profile.normalizedStartIndex - 1)
       };
@@ -208,7 +229,7 @@ function calculateSimpleVolatility(values: number[]): number | null {
   return round(Math.sqrt(variance));
 }
 
-function parseProfileRow(row: ProfileRow): PortfolioProfile {
+function parseProfileRow(row: ProfileRow, account?: LinkedPortfolioAccount): PortfolioProfile {
   return {
     id: row.id,
     portfolioId: row.portfolioId,
@@ -219,7 +240,20 @@ function parseProfileRow(row: ProfileRow): PortfolioProfile {
     comparisonStartTimestamp: row.comparisonStartTimestamp,
     comparisonStartEquityUsd: row.comparisonStartEquityUsd,
     normalizedStartIndex: row.normalizedStartIndex,
-    parameters: parseParameters(row.parametersJson)
+    parameters: parseParameters(row.parametersJson),
+    account: account ?? {
+      portfolioId: row.portfolioId,
+      accountType: "paper",
+      linkedPortfolioId: null,
+      relationshipLabel: "Standalone paper portfolio",
+      manualEntryEnabled: false,
+      managedByKairox: true,
+      readOnly: false,
+      badgeLabel: "Paper",
+      tradingAllowed: true,
+      orderGenerationAllowed: true,
+      rebalanceAllowed: true
+    }
   };
 }
 

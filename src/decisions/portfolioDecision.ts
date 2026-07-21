@@ -1,6 +1,7 @@
 import { BenchmarkComparisonService, type BenchmarkComparisonSummary } from "../benchmarks/comparison.ts";
 import { recordJourneyEvent } from "../journey/service.ts";
 import { getInvestmentPolicy, type InvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 import { RecommendationProposalService } from "../recommendations/proposalService.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { formatPercent } from "../shared/displayFormat.ts";
@@ -248,6 +249,7 @@ export class PortfolioDecisionService {
   }
 
   async evaluate(portfolioId = TIM_PORTFOLIO_ID, now = new Date()): Promise<PortfolioDecisionResult> {
+    await assertPortfolioAllowsTradingActions(this.db, portfolioId, "evaluate managed portfolio decisions");
     const cycle = await this.latestCompletedCycle(portfolioId);
     if (!cycle) {
       throw new Error("No completed daily management cycle is available for portfolio decision evaluation.");
@@ -260,6 +262,7 @@ export class PortfolioDecisionService {
     if (!cycle || cycle.status !== "completed") {
       throw new Error("Completed daily management cycle not found.");
     }
+    await assertPortfolioAllowsTradingActions(this.db, cycle.portfolioId, "evaluate managed portfolio decisions");
     const existing = await this.getByCycleVersion(cycle.portfolioId, cycle.id, cycleVersionHash(cycle));
     if (existing) {
       return { decision: existing, idempotent: true, proposalCreated: false, proposalId: existing.resultingProposalId };
@@ -309,6 +312,7 @@ export class PortfolioDecisionService {
     if (!decision) {
       throw new Error("Portfolio decision not found.");
     }
+    await assertPortfolioAllowsTradingActions(this.db, decision.portfolioId, "accept managed portfolio decisions for proposals");
     if (decision.resultingProposalId) {
       return { decision, idempotent: true, proposalCreated: false, proposalId: decision.resultingProposalId };
     }

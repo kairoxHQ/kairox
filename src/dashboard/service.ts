@@ -1313,7 +1313,7 @@ function accountSummaryCard(account: DashboardAccountCard): string {
   const className = account.indicator === "up" ? "up" : account.indicator === "down" ? "down" : "flat";
   const direction = account.indicator === "up" ? "Up" : account.indicator === "down" ? "Down" : "Flat";
   return `<article class="account-card">
-    <div class="account-top"><div><strong>${escapeHtml(account.accountName)}</strong><div class="muted">${escapeHtml(account.riskProfile)}</div></div><span class="pill">${escapeHtml(account.paperLabel.includes("Paper") ? account.paperLabel : "Paper")}</span></div>
+    <div class="account-top"><div><strong>${escapeHtml(account.accountName)}</strong><div class="muted">${escapeHtml(account.riskProfile)}</div></div><span class="pill">${escapeHtml(account.paperLabel)}</span></div>
     <div class="metric">${escapeHtml(money(account.totalCurrentValueUsd))}</div>
     <div class="${className}">${escapeHtml(`${direction} ${signedMoney(account.todayChangeUsd)} (${signedPct(account.todayChangePct)}) today`)}</div>
     <div class="muted">${escapeHtml(todayChangeDetail(account.todayChangeStatus, account.todayChangeDisclosure ?? "Daily market movement from open holdings."))}</div>

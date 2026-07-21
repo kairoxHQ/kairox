@@ -5,6 +5,7 @@ import { addMoney, roundMoney, roundRatio, subtractMoney } from "../shared/money
 import type { AssetClass } from "../shared/types.ts";
 import { MarketDataService } from "../market/service.ts";
 import { StrategyEngine, type StrategyRun, type StrategyDecision } from "../strategy/engine.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export type ReviewProposalStatus =
   | "Draft"
@@ -237,6 +238,7 @@ export class RecommendationProposalService {
     if (!portfolio || portfolio.mode !== "paper") {
       throw new Error("Recommendation proposals are restricted to paper portfolios.");
     }
+    await assertPortfolioAllowsTradingActions(this.db, review.portfolioId, "create recommendation proposals");
     if (!policy) {
       return this.noAction(review, "No active investment policy is configured for this portfolio.", now);
     }

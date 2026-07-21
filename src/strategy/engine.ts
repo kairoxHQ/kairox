@@ -5,6 +5,7 @@ import { recordJourneyEvent } from "../journey/service.ts";
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { roundMoney, roundRatio } from "../shared/money.ts";
 import type { AssetClass } from "../shared/types.ts";
+import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 export type StrategyDecisionAction =
   | "Hold"
@@ -278,6 +279,7 @@ export class StrategyEngine {
     if (portfolio.mode !== "paper") {
       throw new Error("Strategy analysis is restricted to paper portfolios.");
     }
+    await assertPortfolioAllowsTradingActions(this.db, portfolioId, "run strategy analysis");
     if (!policy) {
       throw new Error("No active investment policy is configured for this portfolio.");
     }
