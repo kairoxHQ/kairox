@@ -63,24 +63,24 @@ export const TIM_REAL_TWIN_PORTFOLIO_ID = "portfolio_tim_real_portfolio";
 export const TIM_REAL_TWIN_NAME = "Tim Real Portfolio";
 
 const SCREENSHOT_IMPORT_PREVIEW = {
-  detectedAt: "May 21, 2026 at 4:17 PM",
+  detectedAt: "July 21, 2026 CSV import",
   cashUsd: 0,
   expectedTotals: {
-    portfolioTotalUsd: 404.67,
-    totalCostBasisUsd: 942.21,
-    todayGainLossUsd: -0.24,
-    totalGainLossUsd: -537.54
+    portfolioTotalUsd: 401.7712368,
+    totalCostBasisUsd: 339.934075447,
+    todayGainLossUsd: -2.979362433747,
+    totalGainLossUsd: 61.837161352999985
   },
   holdings: [
-    { symbol: "GEN", companyName: "Gen Digital", assetClass: "stock", quantity: 1.386, averageCostUsd: 193.6, totalCostUsd: 268.43, marketValueUsd: 202.68, todayGainLossUsd: -0.2, totalGainLossUsd: -65.75, dividendIncomeUsd: 0 },
-    { symbol: "FXAIX", companyName: "Fidelity 500 Index Fund", assetClass: "mutual_fund", quantity: 3.411, averageCostUsd: 162.61, totalCostUsd: 554.6, marketValueUsd: 547.11, todayGainLossUsd: 2.39, totalGainLossUsd: -7.49, dividendIncomeUsd: 0 },
-    { symbol: "SOXX", companyName: "iShares Semiconductor ETF", assetClass: "etf", quantity: 2.078, averageCostUsd: 24.87, totalCostUsd: 51.69, marketValueUsd: 36.87, todayGainLossUsd: -0.54, totalGainLossUsd: -14.82, dividendIncomeUsd: 0 },
-    { symbol: "MSFT", companyName: "Microsoft", assetClass: "stock", quantity: 0.09296, averageCostUsd: 368.6, totalCostUsd: 34.25, marketValueUsd: 34.44, todayGainLossUsd: 0.19, totalGainLossUsd: 0.19, dividendIncomeUsd: 0.04 },
-    { symbol: "VOO", companyName: "Vanguard S&P 500 ETF", assetClass: "etf", quantity: 0.020406, averageCostUsd: 490.17, totalCostUsd: 10, marketValueUsd: 10.71, todayGainLossUsd: -0.01, totalGainLossUsd: 0.71, dividendIncomeUsd: 0 },
-    { symbol: "KO", companyName: "Coca-Cola", assetClass: "stock", quantity: 0.15904, averageCostUsd: 69.23, totalCostUsd: 11.01, marketValueUsd: 10.83, todayGainLossUsd: 0.02, totalGainLossUsd: -0.18, dividendIncomeUsd: 0.01 },
-    { symbol: "VOOG", companyName: "Vanguard S&P 500 Growth ETF", assetClass: "etf", quantity: 0.01328, averageCostUsd: 104.33, totalCostUsd: 1.38, marketValueUsd: 1.36, todayGainLossUsd: 0, totalGainLossUsd: -0.02, dividendIncomeUsd: 0 },
-    { symbol: "ETH-USD", companyName: "Ethereum", assetClass: "crypto", quantity: 0.00314, averageCostUsd: 3251.7, totalCostUsd: 10.2, marketValueUsd: 8.48, todayGainLossUsd: -0.08, totalGainLossUsd: -1.72, dividendIncomeUsd: 0 },
-    { symbol: "BTC-USD", companyName: "Bitcoin", assetClass: "crypto", quantity: 0.000017, averageCostUsd: 79430, totalCostUsd: 1.35, marketValueUsd: 1.31, todayGainLossUsd: -0.01, totalGainLossUsd: -0.04, dividendIncomeUsd: 0 }
+    { symbol: "GEN", companyName: "Gen Digital", assetClass: "stock", quantity: 7.606, averageCostUsd: 17.925, totalCostUsd: 136.33755, marketValueUsd: 198.59266, todayGainLossUsd: -4.2973793516, totalGainLossUsd: 62.25511, dividendIncomeUsd: 0 },
+    { symbol: "FXAIX", companyName: "Fidelity 500", assetClass: "mutual_fund", quantity: 0.411, averageCostUsd: 252.40513381995137, totalCostUsd: 103.73851, marketValueUsd: 106.32569999999998, todayGainLossUsd: -0.20138999999999999, totalGainLossUsd: 2.5871899999999783, dividendIncomeUsd: 0 },
+    { symbol: "SOXX", companyName: "iShares Semiconductor ETF", assetClass: "etf", quantity: 0.05069, averageCostUsd: 591.8036654172421, totalCostUsd: 29.9985278, marketValueUsd: 28.0158561, todayGainLossUsd: 1.44719889172, totalGainLossUsd: -1.982671700000001, dividendIncomeUsd: 0 },
+    { symbol: "MSFT", companyName: "Microsoft", assetClass: "stock", quantity: 0.060762, averageCostUsd: 411.44, totalCostUsd: 24.99991728, marketValueUsd: 24.1680855, todayGainLossUsd: -0.275859996477, totalGainLossUsd: -0.8318317799999981, dividendIncomeUsd: 0 },
+    { symbol: "VOO", companyName: "Vanguard S&P 500 ETF", assetClass: "etf", quantity: 0.022435999999999998, averageCostUsd: 669.0143682920307, totalCostUsd: 15.010006366999999, marketValueUsd: 15.433051319999999, todayGainLossUsd: 0.12698708692, totalGainLossUsd: 0.4230449529999998, dividendIncomeUsd: 0 },
+    { symbol: "KO", companyName: "Coca-Cola", assetClass: "stock", quantity: 0.128205, averageCostUsd: 78, totalCostUsd: 9.99999, marketValueUsd: 10.50896385, todayGainLossUsd: -0.01923100641, totalGainLossUsd: 0.5089738500000003, dividendIncomeUsd: 0 },
+    { symbol: "VOOG", companyName: "Vanguard S&P 500 Growth ETF", assetClass: "etf", quantity: 0.1228, averageCostUsd: 81.53, totalCostUsd: 10.011884, marketValueUsd: 10.067144, todayGainLossUsd: 0.1228, totalGainLossUsd: 0.05526000000000053, dividendIncomeUsd: 0 },
+    { symbol: "ETH-USD", companyName: "Ethereum", assetClass: "crypto", quantity: 0.0024, averageCostUsd: 2122.79, totalCostUsd: 5.094696, marketValueUsd: 4.611191999999999, todayGainLossUsd: 0.0486717768, totalGainLossUsd: -0.4835040000000008, dividendIncomeUsd: 0 },
+    { symbol: "BTC-USD", companyName: "Bitcoin", assetClass: "crypto", quantity: 0.000061, averageCostUsd: 77754, totalCostUsd: 4.7429939999999995, marketValueUsd: 4.04858403, todayGainLossUsd: 0.06884016529999999, totalGainLossUsd: -0.6944099699999997, dividendIncomeUsd: 0 }
   ] satisfies LinkedPortfolioImportPreviewHolding[]
 };
 
@@ -205,14 +205,14 @@ export function renderLinkedPortfolioImportPreview(): Response {
       <section class="hero">
         <p class="eyebrow">Linked Portfolios</p>
         <h1>Review Tim Real Watchlist Import</h1>
-        <p class="lede">The screenshot is only a temporary starting point. Verify or correct every field before creating the Read Only watchlist.</p>
+        <p class="lede">The CSV import is only a temporary starting point. Verify or correct every field before creating the Read Only watchlist.</p>
       </section>
       <section class="notice">
         <strong>No database records are created from this page until you approve the reviewed values.</strong>
-        <span>Do not treat screenshot extraction as authoritative. The approved form values become the source of truth.</span>
+        <span>The user-provided CSV is the source for these defaults. The approved form values become the source of truth.</span>
       </section>
       <section class="panel summary">
-        <div><span>Source</span><strong>Screenshot Upload</strong></div>
+        <div><span>Source</span><strong>User-provided CSV</strong></div>
         <div><span>Detected</span><strong>${escapeHtml(SCREENSHOT_IMPORT_PREVIEW.detectedAt)}</strong></div>
         <div><span>Holdings</span><strong>${SCREENSHOT_IMPORT_PREVIEW.holdings.length} securities + cash</strong></div>
         <div><span>Cash</span><strong>${formatCurrency(SCREENSHOT_IMPORT_PREVIEW.cashUsd)}</strong></div>
@@ -230,16 +230,16 @@ export function renderLinkedPortfolioImportPreview(): Response {
         <section class="targets">
           <h2>Reconciliation Targets</h2>
           <div class="form-row">
-            <label>Displayed portfolio total<input name="portfolioTotalUsd" inputmode="decimal" value="${moneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.portfolioTotalUsd)}"></label>
-            <label>Displayed cost basis<input name="totalCostBasisUsd" inputmode="decimal" value="${moneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.totalCostBasisUsd)}"></label>
-            <label>Displayed today's gain/loss<input name="todayGainLossUsd" inputmode="decimal" value="${signedMoneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.todayGainLossUsd)}"></label>
-            <label>Calculated total gain/loss<input name="totalGainLossUsd" readonly data-screenshot-total="${signedMoneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.totalGainLossUsd)}" value="${signedMoneyInput(previewValidation.sums.totalGainLossUsd)}"></label>
+            <label>Displayed portfolio total<input name="portfolioTotalUsd" inputmode="decimal" data-raw-value="${rawNumber(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.portfolioTotalUsd)}" data-edited="false" value="${moneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.portfolioTotalUsd)}"></label>
+            <label>Displayed cost basis<input name="totalCostBasisUsd" inputmode="decimal" data-raw-value="${rawNumber(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.totalCostBasisUsd)}" data-edited="false" value="${moneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.totalCostBasisUsd)}"></label>
+            <label>Displayed today's gain/loss<input name="todayGainLossUsd" inputmode="decimal" data-raw-value="${rawNumber(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.todayGainLossUsd)}" data-edited="false" value="${signedMoneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.todayGainLossUsd)}"></label>
+            <label>Calculated total gain/loss<input name="totalGainLossUsd" readonly data-raw-value="${rawNumber(previewValidation.sums.totalGainLossUsd)}" data-screenshot-total="${signedMoneyInput(SCREENSHOT_IMPORT_PREVIEW.expectedTotals.totalGainLossUsd)}" data-edited="false" value="${signedMoneyInput(previewValidation.sums.totalGainLossUsd)}"></label>
           </div>
         </section>
         <div class="form-row">
           <label>Account name<input value="${escapeHtml(TIM_REAL_WATCHLIST_NAME)}" disabled></label>
           <label>Type<input value="Read Only Watchlist" disabled></label>
-          <label>Cash balance<input name="cashUsd" inputmode="decimal" value="${moneyInput(SCREENSHOT_IMPORT_PREVIEW.cashUsd)}"></label>
+          <label>Cash balance<input name="cashUsd" inputmode="decimal" data-raw-value="${rawNumber(SCREENSHOT_IMPORT_PREVIEW.cashUsd)}" data-edited="false" value="${moneyInput(SCREENSHOT_IMPORT_PREVIEW.cashUsd)}"></label>
         </div>
         <div class="table-wrap">
           <table>
@@ -294,6 +294,9 @@ export function renderLinkedPortfolioImportPreview(): Response {
           element.dataset.confidence = "Verified by user";
           element.closest("td")?.setAttribute("data-confidence", "Verified by user");
         }
+        if (element.dataset.rawValue !== undefined) {
+          element.dataset.edited = "true";
+        }
         runValidation();
       }));
       nextIssueButton.addEventListener("click", () => {
@@ -333,28 +336,31 @@ export function renderLinkedPortfolioImportPreview(): Response {
               element.dataset.confidence = "Verified by user";
               element.closest("td")?.setAttribute("data-confidence", "Verified by user");
             }
+            if (element.dataset.rawValue !== undefined) {
+              element.dataset.edited = "true";
+            }
             runValidation();
           });
         });
       }
       function collectInput() {
-        const cashUsd = numeric(document.querySelector("[name=cashUsd]").value);
+        const cashUsd = numericInput(document.querySelector("[name=cashUsd]"));
         const expectedTotals = {
-          portfolioTotalUsd: numeric(document.querySelector("[name=portfolioTotalUsd]").value),
-          totalCostBasisUsd: numeric(document.querySelector("[name=totalCostBasisUsd]").value),
-          todayGainLossUsd: numeric(document.querySelector("[name=todayGainLossUsd]").value),
-          totalGainLossUsd: numeric(totalGainLossInput.value)
+          portfolioTotalUsd: numericInput(document.querySelector("[name=portfolioTotalUsd]")),
+          totalCostBasisUsd: numericInput(document.querySelector("[name=totalCostBasisUsd]")),
+          todayGainLossUsd: numericInput(document.querySelector("[name=todayGainLossUsd]")),
+          totalGainLossUsd: numericInput(totalGainLossInput)
         };
         const holdings = [...rows.querySelectorAll("tr")].map((row) => ({
           symbol: text(row, "symbol"),
           companyName: text(row, "companyName"),
-          quantity: numeric(value(row, "quantity")),
-          averageCostUsd: numeric(value(row, "averageCostUsd")),
-          totalCostUsd: numeric(value(row, "totalCostUsd")),
-          marketValueUsd: numeric(value(row, "marketValueUsd")),
-          todayGainLossUsd: optionalNumeric(value(row, "todayGainLossUsd")),
-          totalGainLossUsd: optionalNumeric(value(row, "totalGainLossUsd")),
-          dividendIncomeUsd: optionalNumeric(value(row, "dividendIncomeUsd")),
+          quantity: numericField(row, "quantity"),
+          averageCostUsd: numericField(row, "averageCostUsd"),
+          totalCostUsd: numericField(row, "totalCostUsd"),
+          marketValueUsd: numericField(row, "marketValueUsd"),
+          todayGainLossUsd: optionalNumericField(row, "todayGainLossUsd"),
+          totalGainLossUsd: optionalNumericField(row, "totalGainLossUsd"),
+          dividendIncomeUsd: optionalNumericField(row, "dividendIncomeUsd"),
           assetClass: value(row, "assetClass") || "stock",
           row
         })).filter((holding) => holding.symbol || [...holding.row.querySelectorAll("input")].some((input) => input.value.trim()));
@@ -399,6 +405,7 @@ export function renderLinkedPortfolioImportPreview(): Response {
         };
         sums.totalGainLossUsd = calculateTotalGainLoss(sums.portfolioTotalUsd, sums.totalCostBasisUsd);
         totalGainLossInput.value = moneyValue(sums.totalGainLossUsd);
+        totalGainLossInput.dataset.rawValue = String(sums.totalGainLossUsd);
         if (!near(sums.portfolioTotalUsd, input.expectedTotals.portfolioTotalUsd)) flagReconcile("Market values plus cash do not match the displayed portfolio total.");
         if (!near(sums.totalCostBasisUsd, input.expectedTotals.totalCostBasisUsd)) flagReconcile("Total costs do not match the displayed cost basis.");
         if (!near(sums.todayGainLossUsd, input.expectedTotals.todayGainLossUsd)) flagReconcile("Today's gain/loss does not reconcile.");
@@ -436,6 +443,9 @@ export function renderLinkedPortfolioImportPreview(): Response {
       function currency(value) { return (value < 0 ? "-$" : "$") + Math.abs(value).toFixed(2); }
       function value(row, name) { return row.querySelector("[data-field=" + name + "]")?.value ?? ""; }
       function text(row, name) { return value(row, name).trim(); }
+      function numericField(row, name) { return numericInput(row.querySelector("[data-field=" + name + "]")); }
+      function optionalNumericField(row, name) { const input = row.querySelector("[data-field=" + name + "]"); return String(input?.value ?? "").trim() ? numericInput(input) : null; }
+      function numericInput(input) { return input?.dataset?.rawValue !== undefined && input.dataset.edited !== "true" ? numeric(input.dataset.rawValue) : numeric(input?.value ?? ""); }
       function numeric(raw) { const value = Number(String(raw).replace(/[$,]/g, "")); return Number.isFinite(value) ? value : NaN; }
       function optionalNumeric(raw) { return String(raw).trim() ? numeric(raw) : null; }
     </script>
@@ -533,7 +543,7 @@ async function recordImportAudit(db: D1Database, portfolioId: string, validation
       id, event_key, portfolio_id, event_type, timestamp, title, description,
       source, severity, metadata_json, created_at
     ) VALUES (?, ?, ?, 'linked_portfolio_import_approved', ?, 'Linked Portfolio import approved',
-      'Screenshot import was reviewed and approved by the user.', 'linked_portfolio_import', 'info', ?, ?)`
+      'CSV import was reviewed and approved by the user.', 'linked_portfolio_import', 'info', ?, ?)`
   ).bind(
     `journey_${sanitizeForId(portfolioId)}_linked_import_${timestamp.replace(/[^0-9]/g, "")}`,
     `${portfolioId}:linked_import:${timestamp}`,
@@ -541,7 +551,7 @@ async function recordImportAudit(db: D1Database, portfolioId: string, validation
     timestamp,
     JSON.stringify({
       importTimestamp: timestamp,
-      importSource: "Screenshot",
+      importSource: "CSV",
       holdingsImported: validation.holdingCount,
       validationPassed: validation.passed,
       userApproved: true
@@ -584,17 +594,17 @@ function sanitizeForId(value: string): string {
 }
 
 function holdingRow(index: number | string, holding?: LinkedPortfolioImportPreviewHolding): string {
-  const confidence = holding ? "High confidence" : "";
+  const confidence = holding ? "Imported from user-provided CSV" : "";
   return `<tr>
     <td data-confidence="${confidence}"><input data-field="symbol" data-confidence="${confidence}" aria-label="Symbol ${index}" value="${escapeHtml(holding?.symbol ?? "")}"></td>
     <td data-confidence="${confidence}"><input data-field="companyName" data-confidence="${confidence}" aria-label="Company or ETF name ${index}" value="${escapeHtml(holding?.companyName ?? "")}"></td>
-    <td data-confidence="${confidence}"><input data-field="quantity" data-confidence="${confidence}" inputmode="decimal" aria-label="Shares ${index}" value="${numberInput(holding?.quantity)}"></td>
-    <td data-confidence="${confidence}"><input data-field="averageCostUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Average cost per share ${index}" value="${moneyInput(holding?.averageCostUsd)}"></td>
-    <td data-confidence="${confidence}"><input data-field="totalCostUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Total cost ${index}" value="${moneyInput(holding?.totalCostUsd)}"></td>
-    <td data-confidence="${confidence}"><input data-field="marketValueUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Market value ${index}" value="${moneyInput(holding?.marketValueUsd)}"></td>
-    <td data-confidence="${confidence}"><input data-field="todayGainLossUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Today's gain loss ${index}" value="${signedMoneyInput(holding?.todayGainLossUsd)}"></td>
-    <td data-confidence="${confidence}"><input data-field="totalGainLossUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Total gain loss ${index}" value="${signedMoneyInput(holding?.totalGainLossUsd)}"></td>
-    <td data-confidence="${confidence}"><input data-field="dividendIncomeUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Dividend income ${index}" value="${moneyInput(holding?.dividendIncomeUsd)}"></td>
+    <td data-confidence="${confidence}"><input data-field="quantity" data-confidence="${confidence}" inputmode="decimal" aria-label="Shares ${index}" value="${numberInput(holding?.quantity)}"${rawAttribute(holding?.quantity)}></td>
+    <td data-confidence="${confidence}"><input data-field="averageCostUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Average cost per share ${index}" value="${moneyInput(holding?.averageCostUsd)}"${rawAttribute(holding?.averageCostUsd)}></td>
+    <td data-confidence="${confidence}"><input data-field="totalCostUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Total cost ${index}" value="${moneyInput(holding?.totalCostUsd)}"${rawAttribute(holding?.totalCostUsd)}></td>
+    <td data-confidence="${confidence}"><input data-field="marketValueUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Market value ${index}" value="${moneyInput(holding?.marketValueUsd)}"${rawAttribute(holding?.marketValueUsd)}></td>
+    <td data-confidence="${confidence}"><input data-field="todayGainLossUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Today's gain loss ${index}" value="${signedMoneyInput(holding?.todayGainLossUsd)}"${rawAttribute(holding?.todayGainLossUsd)}></td>
+    <td data-confidence="${confidence}"><input data-field="totalGainLossUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Total gain loss ${index}" value="${signedMoneyInput(holding?.totalGainLossUsd)}"${rawAttribute(holding?.totalGainLossUsd)}></td>
+    <td data-confidence="${confidence}"><input data-field="dividendIncomeUsd" data-confidence="${confidence}" inputmode="decimal" aria-label="Dividend income ${index}" value="${moneyInput(holding?.dividendIncomeUsd)}"${rawAttribute(holding?.dividendIncomeUsd)}></td>
     <td><select data-field="assetClass" aria-label="Asset class ${index}">
       ${assetClassOption("stock", "Stock", holding?.assetClass)}
       ${assetClassOption("etf", "ETF", holding?.assetClass)}
@@ -621,6 +631,14 @@ function moneyInput(value: number | null | undefined): string {
 
 function signedMoneyInput(value: number | null | undefined): string {
   return value === null || value === undefined ? "" : Object.is(value, -0) ? "0.00" : value.toFixed(2);
+}
+
+function rawNumber(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function rawAttribute(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : ` data-raw-value="${rawNumber(value)}" data-edited="false"`;
 }
 
 function finitePositive(value: number, label: string): number {

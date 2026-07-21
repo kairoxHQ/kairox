@@ -30,10 +30,54 @@ test("import preview displays all screenshot review fields without writing data"
   assert.match(html, /Go to next issue/);
   assert.match(html, /Overall confidence/);
   assert.match(html, /disabled>Approve And Create Read Only Watchlist/);
-  assert.match(html, /High confidence/);
+  assert.match(html, /Imported from user-provided CSV/);
+  assert.doesNotMatch(html, /High confidence/);
   assert.match(html, /Verified by user/);
   assert.match(html, /No database records are created/);
   assert.doesNotMatch(html, /INSERT INTO|UPDATE portfolios|DELETE FROM positions/);
+});
+
+test("import preview uses aggregated CSV rows and approval-ready reconciliation totals", () => {
+  const csvInput = {
+    cashUsd: 0,
+    expectedTotals: {
+      portfolioTotalUsd: 401.7712368,
+      totalCostBasisUsd: 339.934075447,
+      todayGainLossUsd: -2.979362433747,
+      totalGainLossUsd: 61.837161352999985
+    },
+    holdings: [
+      { symbol: "GEN", companyName: "Gen Digital", assetClass: "stock", quantity: 7.606, averageCostUsd: 17.925, totalCostUsd: 136.33755, marketValueUsd: 198.59266, todayGainLossUsd: -4.2973793516, totalGainLossUsd: 62.25511, dividendIncomeUsd: 0 },
+      { symbol: "FXAIX", companyName: "Fidelity 500", assetClass: "mutual_fund", quantity: 0.411, averageCostUsd: 252.40513381995137, totalCostUsd: 103.73851, marketValueUsd: 106.32569999999998, todayGainLossUsd: -0.20138999999999999, totalGainLossUsd: 2.5871899999999783, dividendIncomeUsd: 0 },
+      { symbol: "SOXX", companyName: "iShares Semiconductor ETF", assetClass: "etf", quantity: 0.05069, averageCostUsd: 591.8036654172421, totalCostUsd: 29.9985278, marketValueUsd: 28.0158561, todayGainLossUsd: 1.44719889172, totalGainLossUsd: -1.982671700000001, dividendIncomeUsd: 0 },
+      { symbol: "MSFT", companyName: "Microsoft", assetClass: "stock", quantity: 0.060762, averageCostUsd: 411.44, totalCostUsd: 24.99991728, marketValueUsd: 24.1680855, todayGainLossUsd: -0.275859996477, totalGainLossUsd: -0.8318317799999981, dividendIncomeUsd: 0 },
+      { symbol: "VOO", companyName: "Vanguard S&P 500 ETF", assetClass: "etf", quantity: 0.022435999999999998, averageCostUsd: 669.0143682920307, totalCostUsd: 15.010006366999999, marketValueUsd: 15.433051319999999, todayGainLossUsd: 0.12698708692, totalGainLossUsd: 0.4230449529999998, dividendIncomeUsd: 0 },
+      { symbol: "KO", companyName: "Coca-Cola", assetClass: "stock", quantity: 0.128205, averageCostUsd: 78, totalCostUsd: 9.99999, marketValueUsd: 10.50896385, todayGainLossUsd: -0.01923100641, totalGainLossUsd: 0.5089738500000003, dividendIncomeUsd: 0 },
+      { symbol: "VOOG", companyName: "Vanguard S&P 500 Growth ETF", assetClass: "etf", quantity: 0.1228, averageCostUsd: 81.53, totalCostUsd: 10.011884, marketValueUsd: 10.067144, todayGainLossUsd: 0.1228, totalGainLossUsd: 0.05526000000000053, dividendIncomeUsd: 0 },
+      { symbol: "ETH-USD", companyName: "Ethereum", assetClass: "crypto", quantity: 0.0024, averageCostUsd: 2122.79, totalCostUsd: 5.094696, marketValueUsd: 4.611191999999999, todayGainLossUsd: 0.0486717768, totalGainLossUsd: -0.4835040000000008, dividendIncomeUsd: 0 },
+      { symbol: "BTC-USD", companyName: "Bitcoin", assetClass: "crypto", quantity: 0.000061, averageCostUsd: 77754, totalCostUsd: 4.7429939999999995, marketValueUsd: 4.04858403, todayGainLossUsd: 0.06884016529999999, totalGainLossUsd: -0.6944099699999997, dividendIncomeUsd: 0 }
+    ]
+  };
+
+  const validation = validateLinkedPortfolioImport(csvInput);
+  assert.equal(validation.passed, true);
+  assert.equal(Number(validation.sums.portfolioTotalUsd.toFixed(2)), 401.77);
+  assert.equal(Number(validation.sums.totalCostBasisUsd.toFixed(2)), 339.93);
+  assert.equal(Number(validation.sums.todayGainLossUsd.toFixed(2)), -2.98);
+  assert.equal(Number(validation.sums.totalGainLossUsd.toFixed(2)), 61.84);
+  assert.equal(validation.issues.length, 0);
+
+  const html = renderLinkedPortfolioImportPreview().text();
+  return html.then((body) => {
+    assert.match(body, /value="401.77"/);
+    assert.match(body, /value="339.93"/);
+    assert.match(body, /value="-2.98"/);
+    assert.match(body, /value="61.84"/);
+    assert.match(body, /value="7.606"/);
+    assert.match(body, /value="0.000061"/);
+    assert.match(body, /data-raw-value="339.934075447"/);
+    assert.match(body, /data-raw-value="591.8036654172421"/);
+  });
 });
 
 test("import validation blocks unreconciled totals and duplicate or invalid rows", () => {
@@ -124,7 +168,7 @@ test("approved import creates Tim Real Watchlist as read-only without creating t
   assert.match(sql, /INSERT INTO journey_events/);
   assert.doesNotMatch(sql, /paper_portfolio_twin|INSERT INTO orders|INSERT INTO trades|INSERT INTO paper_order_fills|INSERT INTO recommendations|paper_order_executions/i);
   assert.doesNotMatch(args.join(" "), /confidence|High confidence|Verified by user/i);
-  assert.match(args.join(" "), /"importSource":"Screenshot"/);
+  assert.match(args.join(" "), /"importSource":"CSV"/);
   assert.match(args.join(" "), /"validationPassed":true/);
   assert.match(args.join(" "), /"userApproved":true/);
   assert.ok(args.includes(TIM_REAL_WATCHLIST_PORTFOLIO_ID));
