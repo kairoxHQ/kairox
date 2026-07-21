@@ -29,7 +29,9 @@ const protectedMutationRoutes = [
   "/portfolio-decisions/decision_123/review",
   "/accounts/portfolio_ira/daily-orchestration",
   "/paper/run",
-  "/linked-portfolios/portfolio_real/manual-holdings"
+  "/linked-portfolios/portfolio_real/manual-holdings",
+  "/linked-portfolios/import-preview/approve",
+  "/linked-portfolios/portfolio_real/create-paper-twin"
 ];
 
 test("mutating portfolio state routes require the protected secret", () => {
@@ -66,7 +68,9 @@ test("unauthenticated nearby mutation routes are rejected before database access
     "/paper-order-batches/batch_123/ready",
     "/portfolio-decisions/decision_123/accept",
     "/accounts/portfolio_ira/daily-orchestration",
-    "/linked-portfolios/portfolio_real/manual-holdings"
+    "/linked-portfolios/portfolio_real/manual-holdings",
+    "/linked-portfolios/import-preview/approve",
+    "/linked-portfolios/portfolio_real/create-paper-twin"
   ]) {
     const db = failOnAccessDb();
     const response = await worker.fetch(

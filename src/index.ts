@@ -23,6 +23,13 @@ import { getMarket } from "./paper/service.ts";
 import { getSummaries } from "./summaries/service.ts";
 import { getPortfolioValuation, PortfolioNotFoundError } from "./portfolio/valuation.ts";
 import { updateReadOnlyWatchlistManualHoldings, type UpdateReadOnlyWatchlistManualInput } from "./portfolio/accountTypes.ts";
+import {
+  approveLinkedPortfolioImport,
+  createTimRealPortfolioTwin,
+  renderLinkedPortfolioImportApproved,
+  renderLinkedPortfolioImportPreview,
+  type LinkedPortfolioImportApprovalInput
+} from "./portfolio/linkedImport.ts";
 import { getLatestDailySnapshots } from "./portfolio/dailySnapshots.ts";
 import { getHistoricalMetrics } from "./portfolio/historicalMetrics.ts";
 import { getDashboardContract } from "./dashboard/contract.ts";
@@ -143,7 +150,8 @@ const protectedPostRoutes = new Set([
   "/knowledge-graph/sync",
   "/allocation-proposals/generate",
   "/paper-order-batches/stage",
-  "/daily-management-cycles/run"
+  "/daily-management-cycles/run",
+  "/linked-portfolios/import-preview/approve"
 ]);
 
 const protectedMutationRoutePatterns = [
@@ -153,7 +161,8 @@ const protectedMutationRoutePatterns = [
   /^\/paper-order-batches\/[A-Za-z0-9_-]+\/(ready|reject|cancel|refresh|execute)$/,
   /^\/portfolio-decisions\/[A-Za-z0-9_-]+\/(accept|reject|defer|review)$/,
   /^\/accounts\/[A-Za-z0-9_-]+\/daily-orchestration$/,
-  /^\/linked-portfolios\/[A-Za-z0-9_-]+\/manual-holdings$/
+  /^\/linked-portfolios\/[A-Za-z0-9_-]+\/manual-holdings$/,
+  /^\/linked-portfolios\/[A-Za-z0-9_-]+\/create-paper-twin$/
 ];
 
 export function requiresMutationAuth(method: string, pathname: string): boolean {
@@ -226,7 +235,8 @@ export default {
       "/events/observability",
       "/events/dead-letters",
       "/knowledge-graph",
-      "/knowledge-graph/visualization"
+      "/knowledge-graph/visualization",
+      "/linked-portfolios/import-preview"
     ]);
 
     if ((getRoutes.has(url.pathname) || url.pathname.startsWith("/api/analytics")) && request.method !== "GET") {
@@ -445,6 +455,26 @@ export default {
         return json(await updateReadOnlyWatchlistManualHoldings(env.DB, portfolioId, await manualHoldingsBody(request)));
       }
 
+      if (url.pathname === "/linked-portfolios/import-preview/approve") {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        const result = await approveLinkedPortfolioImport(env.DB, await linkedPortfolioImportApprovalBody(request));
+        if ((request.headers.get("accept") ?? "").includes("text/html")) {
+          return renderLinkedPortfolioImportApproved(result);
+        }
+        return json(result);
+      }
+
+      const createPaperTwinMatch = url.pathname.match(/^\/linked-portfolios\/([A-Za-z0-9_-]+)\/create-paper-twin$/);
+      if (createPaperTwinMatch) {
+        if (request.method !== "POST") {
+          return json({ error: "Method not allowed" }, 405);
+        }
+        await assertExistingPortfolio(env.DB, createPaperTwinMatch[1]);
+        return json({ twin: await createTimRealPortfolioTwin(env.DB) });
+      }
+
       if (url.pathname === "/health") {
         return json({
           ok: true,
@@ -473,6 +503,10 @@ export default {
           ],
           safety: safetyStatus(env)
         });
+      }
+
+      if (url.pathname === "/linked-portfolios/import-preview") {
+        return renderLinkedPortfolioImportPreview();
       }
 
       if (url.pathname === "/portfolio") {
@@ -1098,6 +1132,25 @@ async function manualHoldingsBody(request: Request): Promise<UpdateReadOnlyWatch
       throw error;
     }
     throw new RequestError(400, "Invalid manual holdings update body.");
+  }
+}
+
+async function linkedPortfolioImportApprovalBody(request: Request): Promise<LinkedPortfolioImportApprovalInput> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new RequestError(400, "Linked Portfolio import approval requires a JSON body.");
+  }
+  try {
+    const body = await request.json<LinkedPortfolioImportApprovalInput>();
+    if (!body || typeof body !== "object") {
+      throw new Error("Invalid JSON object.");
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof RequestError) {
+      throw error;
+    }
+    throw new RequestError(400, "Invalid Linked Portfolio import approval body.");
   }
 }
 

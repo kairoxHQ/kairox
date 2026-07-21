@@ -45,6 +45,23 @@ export interface UpdateReadOnlyWatchlistManualInput {
   now?: Date;
 }
 
+export interface ReviewedLinkedPortfolioHoldingInput extends ManualReadOnlyHoldingInput {
+  companyName?: string;
+  totalCostUsd?: number;
+  todayGainLossUsd?: number | null;
+  totalGainLossUsd?: number | null;
+  dividendIncomeUsd?: number | null;
+}
+
+export interface CreateReadOnlyWatchlistInput {
+  portfolioId: string;
+  name: string;
+  userId?: string;
+  cashUsd: number;
+  holdings: ReviewedLinkedPortfolioHoldingInput[];
+  now?: Date;
+}
+
 export interface ReadOnlyWatchlistManualUpdateResult {
   portfolioId: string;
   cashUsd: number;
@@ -145,6 +162,75 @@ export async function assertPortfolioAllowsTradingActions(db: D1Database, portfo
     throw new Error(`${account.badgeLabel} portfolios cannot ${action}.`);
   }
   return account;
+}
+
+export async function createReadOnlyWatchlistFromReviewedImport(db: D1Database, input: CreateReadOnlyWatchlistInput): Promise<LinkedPortfolioAccount> {
+  if (!/^[A-Za-z0-9_-]{1,96}$/.test(input.portfolioId)) {
+    throw new Error("Read Only watchlist portfolio identifier is invalid.");
+  }
+  const name = input.name.trim();
+  if (!name) {
+    throw new Error("Read Only watchlist name is required.");
+  }
+  if (!Number.isFinite(input.cashUsd) || input.cashUsd < 0) {
+    throw new Error("Cash must be a non-negative finite number.");
+  }
+  if (!Array.isArray(input.holdings) || input.holdings.length === 0) {
+    throw new Error("At least one reviewed holding is required before creating a Read Only watchlist.");
+  }
+  const existing = await db.prepare("SELECT id FROM portfolios WHERE id = ?").bind(input.portfolioId).first<{ id: string }>();
+  if (existing) {
+    throw new Error("A portfolio with this identifier already exists.");
+  }
+
+  const holdings = input.holdings.map(normalizeReviewedImportHolding);
+  const nowIso = (input.now ?? new Date()).toISOString();
+  const startingBalanceUsd = input.cashUsd + holdings.reduce((sum, holding) => sum + holding.totalCostUsd, 0);
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `INSERT INTO portfolios (
+        id, user_id, broker_account_id, name, cash_usd, starting_balance_usd, currency, mode, created_at, updated_at
+      ) VALUES (?, ?, NULL, ?, ?, ?, 'USD', 'paper', ?, ?)`
+    ).bind(input.portfolioId, input.userId ?? "user_tim", name, input.cashUsd, startingBalanceUsd, nowIso, nowIso),
+    db.prepare(
+      `INSERT INTO linked_portfolio_accounts (
+        portfolio_id, account_type, linked_portfolio_id, relationship_label,
+        manual_entry_enabled, managed_by_kairox, read_only, created_at, updated_at
+      ) VALUES (?, 'read_only_watchlist', NULL, 'Real brokerage holdings baseline', 1, 0, 1, ?, ?)`
+    ).bind(input.portfolioId, nowIso, nowIso),
+    db.prepare(
+      `INSERT INTO portfolio_goals (id, portfolio_id, objective, target_description, created_at)
+       VALUES (?, ?, 'compare_real_holdings', 'Use this read-only watchlist as the real brokerage baseline for comparison against Kairox-managed paper portfolios.', ?)`
+    ).bind(`goal_${sanitizeId(input.portfolioId)}_real_baseline`, input.portfolioId, nowIso),
+    db.prepare(
+      `INSERT INTO risk_profiles (
+        id, portfolio_id, risk_level, max_position_pct, max_daily_loss_pct,
+        leverage_allowed, options_allowed, futures_allowed, live_trading_allowed, created_at
+      ) VALUES (?, ?, 'moderate', 1, 1, 0, 0, 0, 0, ?)`
+    ).bind(`risk_${sanitizeId(input.portfolioId)}_read_only`, input.portfolioId, nowIso)
+  ];
+
+  holdings.forEach((holding, index) => {
+    statements.push(db.prepare(
+      `INSERT INTO positions (
+        id, portfolio_id, symbol, asset_class, quantity, avg_entry_price_usd,
+        current_price_usd, market_value_usd, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      `import_${sanitizeId(input.portfolioId)}_${sanitizeId(holding.symbol)}_${index + 1}`,
+      input.portfolioId,
+      holding.symbol,
+      holding.assetClass,
+      holding.quantity,
+      holding.averageCostUsd,
+      holding.currentPriceUsd,
+      holding.marketValueUsd,
+      nowIso
+    ));
+  });
+
+  await db.batch(statements);
+  return getLinkedPortfolioAccount(db, input.portfolioId);
 }
 
 export async function createPaperPortfolioTwinFromReadOnly(db: D1Database, input: CreatePaperPortfolioTwinInput): Promise<LinkedPortfolioAccount> {
@@ -397,6 +483,16 @@ function normalizeManualHolding(input: ManualReadOnlyHoldingInput): Required<Man
     currentPriceUsd,
     marketValueUsd
   };
+}
+
+function normalizeReviewedImportHolding(input: ReviewedLinkedPortfolioHoldingInput): Required<ManualReadOnlyHoldingInput> & { totalCostUsd: number } {
+  const totalCostUsd = input.totalCostUsd ?? input.quantity * input.averageCostUsd;
+  if (!Number.isFinite(totalCostUsd) || totalCostUsd < 0) {
+    throw new Error(`Total cost for ${input.symbol} must be a non-negative finite number.`);
+  }
+  const currentPriceUsd = input.currentPriceUsd ?? (input.marketValueUsd && input.quantity > 0 ? input.marketValueUsd / input.quantity : input.averageCostUsd);
+  const holding = normalizeManualHolding({ ...input, currentPriceUsd });
+  return { ...holding, totalCostUsd };
 }
 
 function isSupportedAssetClass(value: string): value is AssetClass {
