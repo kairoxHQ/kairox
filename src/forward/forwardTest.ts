@@ -787,7 +787,7 @@ export class ForwardTestService {
 
 export async function runScheduledForwardTests(env: Env, scheduledAt = new Date().toISOString()): Promise<ForwardTestRunResult[]> {
   const service = new ForwardTestService(env.DB);
-  const profiles = await listPortfolioProfiles(env.DB);
+  const profiles = await listPortfolioProfiles(env.DB, { includeReadOnly: false });
   const results: ForwardTestRunResult[] = [];
   for (const profile of profiles.filter((item) => item.portfolioId === "portfolio_ira")) {
     results.push(await service.run(profile.portfolioId, "scheduled", new Date(scheduledAt)));

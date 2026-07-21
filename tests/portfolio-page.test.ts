@@ -151,10 +151,16 @@ test("portfolio page offers mobile-friendly account switching without combining 
   assert.match(selector, /Tim Balanced/);
   assert.match(selector, /Kairox High Risk/);
   assert.match(selector, /IRA/);
+  assert.match(selector, /Tim Real Watchlist/);
+  assert.match(selector, /Tim Real Portfolio/);
+  assert.match(selector, /Read Only/);
+  assert.match(selector, /Paper Managed/);
   assert.match(selector, /href="\/portfolio\?portfolioId=portfolio_kairox_conservative"/);
   assert.match(selector, /href="\/portfolio\?portfolioId=portfolio_tim_paper"/);
   assert.match(selector, /href="\/portfolio\?portfolioId=portfolio_kairox_high_risk"/);
   assert.match(selector, /href="\/portfolio\?portfolioId=portfolio_ira" aria-current="page"/);
+  assert.match(selector, /href="\/portfolio\?portfolioId=portfolio_tim_real_watchlist"/);
+  assert.match(selector, /href="\/portfolio\?portfolioId=portfolio_tim_real_portfolio"/);
   assert.match(html, /\.account-selector \{[^}]*overflow-x: auto/);
   assert.doesNotMatch(html, /SPY Combined|combined holdings|all account holdings/i);
 });
@@ -256,10 +262,12 @@ test("portfolio page marks read-only watchlists and hides decision controls", ()
 
 function accountOptions(selectedPortfolioId: string) {
   return [
-    { portfolioId: "portfolio_kairox_conservative", displayName: "Kairox Conservative", riskPosture: "conservative", selected: selectedPortfolioId === "portfolio_kairox_conservative" },
-    { portfolioId: "portfolio_tim_paper", displayName: "Tim Balanced", riskPosture: "moderate", selected: selectedPortfolioId === "portfolio_tim_paper" },
-    { portfolioId: "portfolio_kairox_high_risk", displayName: "Kairox High Risk", riskPosture: "high_risk", selected: selectedPortfolioId === "portfolio_kairox_high_risk" },
-    { portfolioId: "portfolio_ira", displayName: "IRA", riskPosture: "moderate", selected: selectedPortfolioId === "portfolio_ira" }
+    { portfolioId: "portfolio_kairox_conservative", displayName: "Kairox Conservative", riskPosture: "conservative", badgeLabel: "Paper", accountType: "paper", readOnly: false, selected: selectedPortfolioId === "portfolio_kairox_conservative" },
+    { portfolioId: "portfolio_tim_paper", displayName: "Tim Balanced", riskPosture: "moderate", badgeLabel: "Paper", accountType: "paper", readOnly: false, selected: selectedPortfolioId === "portfolio_tim_paper" },
+    { portfolioId: "portfolio_kairox_high_risk", displayName: "Kairox High Risk", riskPosture: "high_risk", badgeLabel: "Paper", accountType: "paper", readOnly: false, selected: selectedPortfolioId === "portfolio_kairox_high_risk" },
+    { portfolioId: "portfolio_ira", displayName: "IRA", riskPosture: "moderate", badgeLabel: "Paper", accountType: "paper", readOnly: false, selected: selectedPortfolioId === "portfolio_ira" },
+    { portfolioId: "portfolio_tim_real_watchlist", displayName: "Tim Real Watchlist", riskPosture: "baseline", badgeLabel: "Read Only", accountType: "read_only_watchlist", readOnly: true, selected: selectedPortfolioId === "portfolio_tim_real_watchlist" },
+    { portfolioId: "portfolio_tim_real_portfolio", displayName: "Tim Real Portfolio", riskPosture: "managed", badgeLabel: "Paper Managed", accountType: "paper_portfolio_twin", readOnly: false, selected: selectedPortfolioId === "portfolio_tim_real_portfolio" }
   ];
 }
 

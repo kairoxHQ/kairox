@@ -40,6 +40,17 @@ interface ProfileRow {
   parametersJson: string;
 }
 
+interface LinkedOnlyProfileRow {
+  portfolioId: string;
+  displayName: string;
+  createdAt: string;
+  startingBalanceUsd: number;
+}
+
+interface ListPortfolioProfilesOptions {
+  includeReadOnly?: boolean;
+}
+
 const DEFAULT_PARAMETERS: ProfileParameters = {
   minConfidence: 0.6,
   maxNewTradePct: 0.1,
@@ -51,7 +62,8 @@ const DEFAULT_PARAMETERS: ProfileParameters = {
   dividendPreference: 1
 };
 
-export async function listPortfolioProfiles(db: D1Database): Promise<PortfolioProfile[]> {
+export async function listPortfolioProfiles(db: D1Database, options: ListPortfolioProfilesOptions = {}): Promise<PortfolioProfile[]> {
+  const includeReadOnly = options.includeReadOnly ?? true;
   const rows = await listRows<ProfileRow>(
     db.prepare(
       `SELECT id, portfolio_id AS portfolioId, profile_key AS profileKey,
@@ -72,11 +84,17 @@ export async function listPortfolioProfiles(db: D1Database): Promise<PortfolioPr
   );
 
   if (rows.length > 0) {
-    const accounts = await listLinkedPortfolioAccounts(db, rows.map((row) => row.portfolioId));
-    return rows.map((row) => parseProfileRow(row, accounts.get(row.portfolioId)));
+    const linkedOnlyRows = await listLinkedOnlyProfileRows(db);
+    const portfolioIds = [...rows.map((row) => row.portfolioId), ...linkedOnlyRows.map((row) => row.portfolioId)];
+    const accounts = await listLinkedPortfolioAccounts(db, portfolioIds);
+    const profiles = [
+      ...rows.map((row) => parseProfileRow(row, accounts.get(row.portfolioId))),
+      ...linkedOnlyRows.map((row) => parseLinkedOnlyProfileRow(row, accounts.get(row.portfolioId)))
+    ];
+    return includeReadOnly ? profiles : profiles.filter((profile) => !profile.account.readOnly && profile.account.managedByKairox);
   }
 
-  return [{
+  const fallbackProfiles: PortfolioProfile[] = [{
     id: "portfolio_profile_tim_balanced_fallback",
     portfolioId: TIM_PORTFOLIO_ID,
     profileKey: "tim_balanced",
@@ -101,15 +119,16 @@ export async function listPortfolioProfiles(db: D1Database): Promise<PortfolioPr
       rebalanceAllowed: true
     }
   }];
+  return includeReadOnly ? fallbackProfiles : fallbackProfiles.filter((profile) => !profile.account.readOnly && profile.account.managedByKairox);
 }
 
 export async function getPortfolioProfile(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<PortfolioProfile> {
-  const profiles = await listPortfolioProfiles(db);
+  const profiles = await listPortfolioProfiles(db, { includeReadOnly: true });
   return profiles.find((profile) => profile.portfolioId === portfolioId) ?? profiles.find((profile) => profile.portfolioId === TIM_PORTFOLIO_ID) ?? profiles[0];
 }
 
 export async function getProfileComparison(db: D1Database): Promise<unknown> {
-  const profiles = await listPortfolioProfiles(db);
+  const profiles = await listPortfolioProfiles(db, { includeReadOnly: true });
   const metrics = await Promise.all(profiles.map((profile) => getProfileReadinessMetrics(db, profile.portfolioId)));
   const metricsByPortfolio = new Map(metrics.map((metric) => [metric.portfolioId, metric]));
 
@@ -150,6 +169,32 @@ export async function getProfileComparison(db: D1Database): Promise<unknown> {
       };
     })
   };
+}
+
+async function listLinkedOnlyProfileRows(db: D1Database): Promise<LinkedOnlyProfileRow[]> {
+  try {
+    return await listRows<LinkedOnlyProfileRow>(
+      db.prepare(
+        `SELECT p.id AS portfolioId, p.name AS displayName,
+          p.created_at AS createdAt, p.starting_balance_usd AS startingBalanceUsd
+         FROM portfolios p
+         JOIN linked_portfolio_accounts lpa ON lpa.portfolio_id = p.id
+         LEFT JOIN portfolio_profiles pp ON pp.portfolio_id = p.id AND pp.enabled = 1
+         WHERE pp.id IS NULL
+           AND lpa.account_type IN ('read_only_watchlist', 'paper_portfolio_twin')
+         ORDER BY CASE lpa.account_type
+           WHEN 'read_only_watchlist' THEN 90
+           WHEN 'paper_portfolio_twin' THEN 91
+           ELSE 99
+         END, p.created_at, p.id`
+      )
+    );
+  } catch (error) {
+    if (isMissingLinkedPortfolioSchema(error)) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 async function getProfileReadinessMetrics(db: D1Database, portfolioId: string) {
@@ -257,6 +302,35 @@ function parseProfileRow(row: ProfileRow, account?: LinkedPortfolioAccount): Por
   };
 }
 
+function parseLinkedOnlyProfileRow(row: LinkedOnlyProfileRow, account?: LinkedPortfolioAccount): PortfolioProfile {
+  const linkedAccount = account ?? {
+    portfolioId: row.portfolioId,
+    accountType: "paper" as const,
+    linkedPortfolioId: null,
+    relationshipLabel: "Standalone paper portfolio",
+    manualEntryEnabled: false,
+    managedByKairox: true,
+    readOnly: false,
+    badgeLabel: "Paper" as const,
+    tradingAllowed: true,
+    orderGenerationAllowed: true,
+    rebalanceAllowed: true
+  };
+  return {
+    id: `portfolio_profile_${sanitizeProfileId(row.portfolioId)}_linked`,
+    portfolioId: row.portfolioId,
+    profileKey: sanitizeProfileId(row.portfolioId),
+    displayName: row.displayName,
+    philosophy: linkedAccount.relationshipLabel ?? (linkedAccount.readOnly ? "Read-only real holdings baseline for comparison." : "Linked paper portfolio for comparison."),
+    riskPosture: linkedAccount.readOnly ? "baseline" : "managed",
+    comparisonStartTimestamp: row.createdAt,
+    comparisonStartEquityUsd: row.startingBalanceUsd,
+    normalizedStartIndex: 100,
+    parameters: DEFAULT_PARAMETERS,
+    account: linkedAccount
+  };
+}
+
 function parseParameters(value: string): ProfileParameters {
   try {
     return { ...DEFAULT_PARAMETERS, ...(JSON.parse(value) as Partial<ProfileParameters>) };
@@ -267,4 +341,13 @@ function parseParameters(value: string): ProfileParameters {
 
 function round(value: number): number {
   return Math.round(value * 10000) / 10000;
+}
+
+function sanitizeProfileId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 96) || "linked_portfolio";
+}
+
+function isMissingLinkedPortfolioSchema(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /linked_portfolio_accounts|portfolio_profiles|no such table/i.test(message);
 }

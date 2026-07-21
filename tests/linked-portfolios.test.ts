@@ -7,6 +7,7 @@ import {
   createPaperPortfolioTwinFromReadOnly,
   updateReadOnlyWatchlistManualHoldings
 } from "../src/portfolio/accountTypes.ts";
+import { listPortfolioProfiles } from "../src/portfolio/profiles.ts";
 
 const migration = readFileSync("migrations/0038_linked_portfolios.sql", "utf8");
 const accountTypesSource = readFileSync("src/portfolio/accountTypes.ts", "utf8");
@@ -68,6 +69,34 @@ test("linked account classification exposes badges and action permissions", () =
   assert.equal(twin.linkedPortfolioId, "portfolio_real");
   assert.equal(twin.tradingAllowed, true);
   assert.equal(twin.managedByKairox, true);
+});
+
+test("linked read-only watchlists are visible in account lists without becoming managed profiles", async () => {
+  const db = fakeProfileListDb();
+
+  const visibleProfiles = await listPortfolioProfiles(db as unknown as D1Database);
+  const managedProfiles = await listPortfolioProfiles(db as unknown as D1Database, { includeReadOnly: false });
+
+  assert.deepEqual(
+    visibleProfiles.map((profile) => profile.displayName),
+    ["Tim Real Portfolio", "Tim Real Watchlist"]
+  );
+  const watchlist = visibleProfiles.find((profile) => profile.portfolioId === "portfolio_tim_real_watchlist");
+  const twin = visibleProfiles.find((profile) => profile.portfolioId === "portfolio_tim_real_portfolio");
+  assert.equal(watchlist?.account.badgeLabel, "Read Only");
+  assert.equal(watchlist?.account.readOnly, true);
+  assert.equal(watchlist?.riskPosture, "baseline");
+  assert.equal(twin?.account.badgeLabel, "Paper Managed");
+  assert.equal(twin?.account.managedByKairox, true);
+  assert.deepEqual(managedProfiles.map((profile) => profile.portfolioId), ["portfolio_tim_real_portfolio"]);
+});
+
+test("scheduled profile lists exclude read-only watchlists from trading workflows", async () => {
+  const db = fakeProfileListDb();
+  const profiles = await listPortfolioProfiles(db as unknown as D1Database, { includeReadOnly: false });
+
+  assert.equal(profiles.some((profile) => profile.account.readOnly), false);
+  assert.equal(profiles.every((profile) => profile.account.tradingAllowed), true);
 });
 
 test("read-only watchlists fail closed for trading actions", async () => {
@@ -279,4 +308,89 @@ function fakeLinkedDb(options: { portfolioRealAccountType?: "paper" | "read_only
     }
   };
   return db;
+}
+
+function fakeProfileListDb() {
+  const db = {
+    prepare(sql: string) {
+      return {
+        bind(...args: unknown[]) {
+          return statement(sql, args);
+        },
+        ...statement(sql, [])
+      };
+    }
+  };
+  return db;
+}
+
+function statement(sql: string, args: unknown[]) {
+  return {
+    sql,
+    args,
+    async first() {
+      if (/FROM linked_portfolio_accounts/i.test(sql)) {
+        const portfolioId = String(args[0]);
+        if (portfolioId === "portfolio_tim_real_watchlist") {
+          return {
+            portfolioId,
+            accountType: "read_only_watchlist",
+            linkedPortfolioId: null,
+            relationshipLabel: "Real brokerage holdings baseline",
+            manualEntryEnabled: 1,
+            managedByKairox: 0,
+            readOnly: 1
+          };
+        }
+        if (portfolioId === "portfolio_tim_real_portfolio") {
+          return {
+            portfolioId,
+            accountType: "paper_portfolio_twin",
+            linkedPortfolioId: "portfolio_tim_real_watchlist",
+            relationshipLabel: "Paper-managed twin of Tim Real Watchlist",
+            manualEntryEnabled: 0,
+            managedByKairox: 1,
+            readOnly: 0
+          };
+        }
+      }
+      return null;
+    },
+    async all() {
+      if (/FROM portfolio_profiles/i.test(sql) && !/JOIN linked_portfolio_accounts/i.test(sql)) {
+        return {
+          results: [
+            {
+              id: "portfolio_profile_tim_real_portfolio",
+              portfolioId: "portfolio_tim_real_portfolio",
+              profileKey: "tim_real_portfolio",
+              displayName: "Tim Real Portfolio",
+              philosophy: "Paper-managed twin for comparison.",
+              riskPosture: "managed",
+              comparisonStartTimestamp: "2026-07-21T21:33:59.833Z",
+              comparisonStartEquityUsd: 339.934075447,
+              normalizedStartIndex: 100,
+              parametersJson: "{}"
+            }
+          ]
+        };
+      }
+      if (/JOIN linked_portfolio_accounts/i.test(sql)) {
+        return {
+          results: [
+            {
+              portfolioId: "portfolio_tim_real_watchlist",
+              displayName: "Tim Real Watchlist",
+              createdAt: "2026-07-21T21:33:52.891Z",
+              startingBalanceUsd: 339.934075447
+            }
+          ]
+        };
+      }
+      return { results: [] };
+    },
+    async run() {
+      return {};
+    }
+  };
 }

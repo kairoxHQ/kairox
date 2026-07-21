@@ -204,7 +204,7 @@ export class PaperObservationService {
   }
 
   private async createParent(runKey: string, window: string, now: Date): Promise<PaperObservationRun> {
-    const profiles = await listPortfolioProfiles(this.db);
+    const profiles = await listPortfolioProfiles(this.db, { includeReadOnly: false });
     const symbols = await this.uniqueSymbols(profiles);
     const marketData = new MarketDataService(this.db);
     const snapshot = await marketData.createSnapshot(symbols, "proposal", now);

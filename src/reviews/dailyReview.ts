@@ -450,7 +450,7 @@ export async function runScheduledDailyReviews(env: Env, scheduledAt = new Date(
     return [await service.run(TIM_PORTFOLIO_ID, "scheduled", now)];
   }
   const service = new DailyPortfolioReviewService(env.DB);
-  const profiles = await listPortfolioProfiles(env.DB);
+  const profiles = await listPortfolioProfiles(env.DB, { includeReadOnly: false });
   const results: DailyReviewRunResult[] = [];
   for (const profile of profiles) {
     results.push(await service.run(profile.portfolioId, "scheduled", now));

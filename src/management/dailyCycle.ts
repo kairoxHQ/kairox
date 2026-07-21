@@ -517,7 +517,7 @@ export async function runScheduledDailyManagementCycles(env: Env, scheduledAt = 
   if (!schedule.shouldRun) {
     return [await service.run(TIM_PORTFOLIO_ID, "scheduled", now)];
   }
-  const profiles = await listPortfolioProfiles(env.DB);
+  const profiles = await listPortfolioProfiles(env.DB, { includeReadOnly: false });
   const results: DailyManagementRunResult[] = [];
   for (const profile of profiles) {
     results.push(await service.run(profile.portfolioId, "scheduled", now));

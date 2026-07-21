@@ -216,7 +216,9 @@ test("dashboard overall today matches summed account daily market moves", () => 
         positionCount: 2,
         riskProfile: "moderate",
         indicator: "up",
-        paperLabel: "Paper"
+        paperLabel: "Paper",
+        readOnly: false,
+        managedByKairox: true
       },
       {
         portfolioId: "portfolio_tim_paper",
@@ -234,7 +236,9 @@ test("dashboard overall today matches summed account daily market moves", () => 
         positionCount: 1,
         riskProfile: "moderate",
         indicator: "flat",
-        paperLabel: "Paper"
+        paperLabel: "Paper",
+        readOnly: false,
+        managedByKairox: true
       }
     ],
     performance: {
@@ -262,6 +266,81 @@ test("dashboard overall today matches summed account daily market moves", () => 
   assert.match(html, /Up \+\$1\.00 \(\+0\.71%\) today/);
   assert.match(html, /Partial daily price data/);
   assert.doesNotMatch(html, /-\$0\.00|-0\.00%/);
+});
+
+test("dashboard shows linked read-only watchlists without double-counting managed totals", () => {
+  const html = renderDashboardHtml({
+    settings: { automationPaused: false },
+    accounts: [
+      {
+        portfolioId: "portfolio_tim_real_watchlist",
+        profileKey: "portfolio_tim_real_watchlist",
+        accountName: "Tim Real Watchlist",
+        totalCurrentValueUsd: 401.77,
+        todayChangeUsd: -2.98,
+        todayChangePct: -0.0074,
+        todayChangeStatus: "complete",
+        todayChangeDisclosure: "Daily market movement is summed from open holdings using current prices versus previous close; cash is unchanged.",
+        todayPreviousCloseAccountValueUsd: 404.75,
+        totalReturnUsd: 61.84,
+        totalReturnPct: 0.1819,
+        cashUsd: 0,
+        positionCount: 9,
+        riskProfile: "baseline",
+        indicator: "down",
+        paperLabel: "Read Only",
+        readOnly: true,
+        managedByKairox: false
+      },
+      {
+        portfolioId: "portfolio_tim_real_portfolio",
+        profileKey: "tim_real_portfolio",
+        accountName: "Tim Real Portfolio",
+        totalCurrentValueUsd: 401.77,
+        todayChangeUsd: -2.98,
+        todayChangePct: -0.0074,
+        todayChangeStatus: "complete",
+        todayChangeDisclosure: "Daily market movement is summed from open holdings using current prices versus previous close; cash is unchanged.",
+        todayPreviousCloseAccountValueUsd: 404.75,
+        totalReturnUsd: 61.84,
+        totalReturnPct: 0.1819,
+        cashUsd: 0,
+        positionCount: 9,
+        riskProfile: "managed",
+        indicator: "down",
+        paperLabel: "Paper Managed",
+        readOnly: false,
+        managedByKairox: true
+      }
+    ],
+    performance: {
+      totalValueUsd: 401.77,
+      cashUsd: 0,
+      totalReturnUsd: 61.84,
+      priceReturnUsd: 0,
+      dividendReturnUsd: 0,
+      tradeCount: 0,
+      maxDrawdownPct: 0,
+      benchmarkReturns: []
+    },
+    positions: [],
+    recommendations: [],
+    journal: [],
+    trades: [],
+    scheduledRuns: [],
+    summaries: [],
+    rejectedOpportunities: []
+  });
+
+  assert.match(html, /Tim Real Watchlist/);
+  assert.match(html, /Tim Real Portfolio/);
+  assert.match(html, /Read Only/);
+  assert.match(html, /Paper Managed/);
+  assert.match(html, /Read-only comparison account; excluded from managed totals/);
+  assert.match(html, /Combined value \(managed\)/);
+  assert.match(html, /1 managed account; 2 visible/);
+  assert.match(html, /\$401\.77/);
+  assert.doesNotMatch(html, /\$803\.54/);
 });
 
 test("browser-local timestamp formatting is deferred to the viewer timezone", () => {

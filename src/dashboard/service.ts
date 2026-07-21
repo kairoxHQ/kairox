@@ -94,16 +94,19 @@ export async function getDashboardData(db: D1Database, portfolioId = TIM_PORTFOL
       positionCount: valuation?.positions.length ?? profile.openPositions ?? 0,
       riskProfile: profile.riskPosture,
       indicator: directionFor(todayChangeUsd),
-      paperLabel: profile.paperOnlyLabel ?? "Paper"
+      paperLabel: profile.paperOnlyLabel ?? "Paper",
+      readOnly: profile.readOnly ?? false,
+      managedByKairox: profile.managedByKairox ?? true
     };
   });
   const activity = buildDashboardActivity(latestObservation ?? null, founderReport ?? null);
   const attention = buildDashboardAttention(settings, latestObservation ?? null, activity);
-  const combinedValueUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0));
-  const todayChangeUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.todayChangeUsd, 0));
-  const todayPreviousCloseValueUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.todayPreviousCloseAccountValueUsd, 0));
-  const totalGainLossUsd = roundCurrency(accounts.reduce((sum, account) => sum + account.totalReturnUsd, 0));
-  const todayChangeStatus = combineTodayChangeStatuses(accounts.map((account) => account.todayChangeStatus));
+  const managedAccounts = managedSummaryAccounts(accounts);
+  const combinedValueUsd = roundCurrency(managedAccounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0));
+  const todayChangeUsd = roundCurrency(managedAccounts.reduce((sum, account) => sum + account.todayChangeUsd, 0));
+  const todayPreviousCloseValueUsd = roundCurrency(managedAccounts.reduce((sum, account) => sum + (account.todayPreviousCloseAccountValueUsd ?? account.totalCurrentValueUsd - account.todayChangeUsd), 0));
+  const totalGainLossUsd = roundCurrency(managedAccounts.reduce((sum, account) => sum + account.totalReturnUsd, 0));
+  const todayChangeStatus = combineTodayChangeStatuses(managedAccounts.map((account) => account.todayChangeStatus));
   const overallSummary = {
     combinedValueUsd,
     todayChangeUsd,
@@ -901,6 +904,8 @@ interface DashboardComparison {
     journalEntryCount?: number;
     equityHistoryCount?: number;
     paperOnlyLabel?: string;
+    readOnly?: boolean;
+    managedByKairox?: boolean;
     normalizedIndex: number;
     normalizedReturnPct: number;
   }>;
@@ -1009,6 +1014,8 @@ interface DashboardAccountCard {
   riskProfile: string;
   indicator: "up" | "down" | "flat";
   paperLabel: string;
+  readOnly: boolean;
+  managedByKairox: boolean;
 }
 
 interface DashboardTodayActivity {
@@ -1209,9 +1216,9 @@ function renderSimpleDashboardHtml(data: {
   </header>
   <main class="page-shell">
     <section id="overall-summary" class="summary" aria-label="Overall summary">
-      ${compactMetric("Combined value", money(summary.combinedValueUsd), `${accounts.length} visible account${accounts.length === 1 ? "" : "s"}`)}
+      ${compactMetric("Combined value (managed)", money(summary.combinedValueUsd), `${managedAccountCount(accounts)} managed account${managedAccountCount(accounts) === 1 ? "" : "s"}; ${accounts.length} visible`)}
       ${compactMetric("Today", `${signedMoney(summary.todayChangeUsd)} (${signedPct(summary.todayChangePct)})`, todayChangeDetail(summary.todayChangeStatus, directionText(summary.todayChangeUsd)))}
-      ${compactMetric("Total gain/loss", signedMoney(summary.totalGainLossUsd), "Across visible accounts")}
+      ${compactMetric("Total gain/loss", signedMoney(summary.totalGainLossUsd), "Across managed accounts")}
       ${compactMetric("Guardian", summary.guardianStatus, `${summary.paperLiveStatus} - ${data.settings.automationPaused ? "Automation paused" : "Automation active"}`)}
     </section>
     <section id="accounts" class="panel">
@@ -1317,6 +1324,7 @@ function accountSummaryCard(account: DashboardAccountCard): string {
     <div class="metric">${escapeHtml(money(account.totalCurrentValueUsd))}</div>
     <div class="${className}">${escapeHtml(`${direction} ${signedMoney(account.todayChangeUsd)} (${signedPct(account.todayChangePct)}) today`)}</div>
     <div class="muted">${escapeHtml(todayChangeDetail(account.todayChangeStatus, account.todayChangeDisclosure ?? "Daily market movement from open holdings."))}</div>
+    ${account.readOnly ? '<div class="muted">Read-only comparison account; excluded from managed totals to avoid double-counting linked holdings.</div>' : ""}
     ${row("Total return", `${signedMoney(account.totalReturnUsd)} (${signedPct(account.totalReturnPct)})`)}
     ${row("Cash", money(account.cashUsd))}
     ${row("Positions", String(account.positionCount))}
@@ -1363,7 +1371,9 @@ function fallbackDashboardAccounts(data: {
         positionCount: profile.openPositions ?? 0,
         riskProfile: profile.riskPosture,
         indicator: "flat",
-        paperLabel: profile.paperOnlyLabel ?? "Paper"
+        paperLabel: profile.paperOnlyLabel ?? "Paper",
+        readOnly: profile.readOnly ?? false,
+        managedByKairox: profile.managedByKairox ?? true
       };
     });
   }
@@ -1390,25 +1400,42 @@ function fallbackDashboardAccounts(data: {
       positionCount: selected ? data.positions.length : 0,
       riskProfile: profile.riskPosture,
       indicator: directionFor(today),
-      paperLabel: "Paper"
+      paperLabel: "Paper",
+      readOnly: false,
+      managedByKairox: true
     };
   });
 }
 
 function fallbackDashboardSummary(data: { settings: { automationPaused: boolean }; performance: { totalValueUsd: number; todayGainLossUsd?: number; totalReturnUsd: number } }, accounts: DashboardAccountCard[]): DashboardOverallSummary {
-  const combinedValueUsd = accounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0) || data.performance.totalValueUsd;
-  const todayChangeUsd = accounts.reduce((sum, account) => sum + account.todayChangeUsd, 0) || (data.performance.todayGainLossUsd ?? 0);
-  const todayPreviousCloseValueUsd = accounts.reduce((sum, account) => sum + (account.todayPreviousCloseAccountValueUsd ?? account.totalCurrentValueUsd - account.todayChangeUsd), 0);
+  const managedAccounts = managedSummaryAccounts(accounts);
+  const combinedValueUsd = managedAccounts.length > 0
+    ? managedAccounts.reduce((sum, account) => sum + account.totalCurrentValueUsd, 0)
+    : accounts.length === 0 ? data.performance.totalValueUsd : 0;
+  const todayChangeUsd = managedAccounts.length > 0
+    ? managedAccounts.reduce((sum, account) => sum + account.todayChangeUsd, 0)
+    : accounts.length === 0 ? data.performance.todayGainLossUsd ?? 0 : 0;
+  const todayPreviousCloseValueUsd = managedAccounts.reduce((sum, account) => sum + (account.todayPreviousCloseAccountValueUsd ?? account.totalCurrentValueUsd - account.todayChangeUsd), 0);
   return {
     combinedValueUsd,
     todayChangeUsd,
     todayChangePct: todayPreviousCloseValueUsd > 0 ? todayChangeUsd / todayPreviousCloseValueUsd : 0,
-    todayChangeStatus: combineTodayChangeStatuses(accounts.map((account) => account.todayChangeStatus ?? "unavailable")),
+    todayChangeStatus: combineTodayChangeStatuses(managedAccounts.map((account) => account.todayChangeStatus ?? "unavailable")),
     todayPreviousCloseValueUsd,
-    totalGainLossUsd: accounts.reduce((sum, account) => sum + account.totalReturnUsd, 0) || data.performance.totalReturnUsd,
+    totalGainLossUsd: managedAccounts.length > 0
+      ? managedAccounts.reduce((sum, account) => sum + account.totalReturnUsd, 0)
+      : accounts.length === 0 ? data.performance.totalReturnUsd : 0,
     guardianStatus: "Clear",
     paperLiveStatus: "Paper only"
   };
+}
+
+function managedSummaryAccounts(accounts: DashboardAccountCard[]): DashboardAccountCard[] {
+  return accounts.filter((account) => !account.readOnly && account.managedByKairox);
+}
+
+function managedAccountCount(accounts: DashboardAccountCard[]): number {
+  return managedSummaryAccounts(accounts).length;
 }
 
 function combineTodayChangeStatuses(statuses: Array<"complete" | "partial" | "unavailable" | undefined>): "complete" | "partial" | "unavailable" {

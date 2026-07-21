@@ -79,7 +79,7 @@ async function runLegacyScheduledPaperStrategy(
 
   try {
     const settings = await getSettings(env.DB);
-    const profiles = await listPortfolioProfiles(env.DB);
+    const profiles = await listPortfolioProfiles(env.DB, { includeReadOnly: false });
     const profileSummaries = [];
     for (const profile of profiles) {
       const profileRunKey = `${runKey}:${profile.profileKey}`;

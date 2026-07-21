@@ -102,6 +102,9 @@ interface PortfolioPageAccountOption {
   portfolioId: string;
   displayName: string;
   riskPosture: string;
+  badgeLabel: string;
+  accountType: string;
+  readOnly: boolean;
   selected: boolean;
 }
 
@@ -171,6 +174,9 @@ async function getPortfolioPageData(db: D1Database, portfolioId: string): Promis
       portfolioId: item.portfolioId,
       displayName: item.displayName,
       riskPosture: item.riskPosture,
+      badgeLabel: item.account.badgeLabel,
+      accountType: item.account.accountType,
+      readOnly: item.account.readOnly,
       selected: item.portfolioId === portfolioId
     })),
     marketTicker: {
@@ -326,6 +332,7 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
     .account-choice { flex: 0 0 178px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; color: inherit; text-decoration: none; background: #fbfcfd; display: grid; gap: 3px; }
     .account-choice[aria-current="page"] { border-color: #2a6fdb; background: #f4f8ff; box-shadow: inset 0 0 0 1px #2a6fdb; }
     .account-choice-name { font-weight: 740; }
+    .account-choice-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .account-choice-state { color: #1f5ed8; font-size: .78rem; font-weight: 720; }
     .market-strip { display: grid; gap: 10px; }
     .market-strip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
@@ -438,9 +445,10 @@ function renderAccountSelector(options: PortfolioPageAccountOption[] | undefined
 
 function accountChoice(option: PortfolioPageAccountOption, selectedPortfolioId: string): string {
   const selected = option.selected || option.portfolioId === selectedPortfolioId;
+  const badgeClass = option.readOnly ? "read-only" : option.accountType === "paper_portfolio_twin" ? "paper-managed" : "paper";
   return `<a class="account-choice" href="/portfolio?portfolioId=${encodeURIComponent(option.portfolioId)}" ${selected ? 'aria-current="page"' : ""}>
     <span class="account-choice-name">${escapeHtml(option.displayName)}</span>
-    <span class="muted">${escapeHtml(titleCase(option.riskPosture))}</span>
+    <span class="account-choice-meta"><span class="muted">${escapeHtml(titleCase(option.riskPosture))}</span><span class="account-badge ${badgeClass}">${escapeHtml(option.badgeLabel)}</span></span>
     <span class="account-choice-state">${selected ? "Selected" : "View account"}</span>
   </a>`;
 }
