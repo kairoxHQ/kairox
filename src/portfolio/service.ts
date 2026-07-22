@@ -385,8 +385,9 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
       <div class="metric-grid">
         ${metric("Cash available", money(data.valuation.cashUsd), data.account.readOnly ? "Entered manually for comparison" : "Available for future paper trades")}
         ${metric("Holdings value", money(data.valuation.totalPortfolioValueUsd), `${data.holdings.length} holding${data.holdings.length === 1 ? "" : "s"}`)}
-        ${metric("Market data", plainDataStatus(data.valuation.dataStatus), "Used for account valuation")}
+        ${metric("Market data", plainDataStatus(data.valuation.dataStatus), valuationMarketDataDetail(data.valuation))}
       </div>
+      <p class="muted">${escapeHtml(valuationComparisonDisclosure(data.valuation))}</p>
     </section>
     <section class="panel guardian" id="guardian-summary">
       <h2>Guardian Summary</h2>
@@ -550,6 +551,19 @@ function todayChangeDetail(valuation: PortfolioValuation): string {
     return `Daily price data unavailable - ${disclosure}`;
   }
   return disclosure;
+}
+
+function valuationMarketDataDetail(valuation: PortfolioValuation): string {
+  const timestamp = valuation.lastSuccessfulMarketDataUpdateTime ?? valuation.valuationTimestamp;
+  return `Valued ${formatDate(timestamp)}; ${valuation.todayChangeStatus ?? "unavailable"} daily movement.`;
+}
+
+function valuationComparisonDisclosure(valuation: PortfolioValuation): string {
+  const partial = valuation.todayChangeStatus === "partial" || valuation.dataStatus === "stale" || valuation.dataStatus === "unavailable";
+  const prefix = partial
+    ? "Some holding prices are partial, stale, or unavailable."
+    : "Holding prices use the latest trusted market data available to Kairox.";
+  return `${prefix} Brokerage comparisons can differ when screenshots and Kairox quotes were captured at different times, crypto moved, or mutual-fund NAVs have not updated yet.`;
 }
 
 function money(value: number): string {

@@ -1,4 +1,5 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
+import { MarketDataService, type NormalizedQuote } from "../market/service.ts";
 import { addMoney, multiplyMoney, pctChange, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 
 export type ValuationDataStatus = "live" | "delayed" | "stale" | "unavailable";
@@ -15,6 +16,8 @@ export interface PositionInput {
   latestPreviousCloseUsd?: number | null;
   latestPriceAsOf?: string | null;
   latestDataStatus?: ValuationDataStatus | null;
+  latestPriceSource?: string | null;
+  latestQuoteStatus?: string | null;
 }
 
 export interface ValuedPosition {
@@ -32,6 +35,8 @@ export interface ValuedPosition {
   realizedProfitLossUsd: number;
   dataStatus: ValuationDataStatus;
   priceTimestamp: string | null;
+  priceSource: string | null;
+  quoteStatus: string | null;
 }
 
 export interface PortfolioValuationInput {
@@ -91,6 +96,7 @@ interface PriceRow {
   previousCloseUsd: number | null;
   priceAsOf: string;
   validationStatus: string;
+  source: string | null;
   createdAt: string;
   candlesJson?: string;
 }
@@ -98,10 +104,16 @@ interface PriceRow {
 interface TrustedQuoteRow {
   symbol: string;
   normalizedQuoteJson: string;
+  provider: string;
   qualityStatus: string;
   providerTimestamp: string | null;
   retrievalTimestamp: string;
   expiresAt: string;
+}
+
+export interface PortfolioValuationOptions {
+  marketDataService?: Pick<MarketDataService, "getQuotes">;
+  refreshMissingQuotes?: boolean;
 }
 
 export class PortfolioNotFoundError extends Error {
@@ -114,7 +126,7 @@ export class PortfolioNotFoundError extends Error {
   }
 }
 
-export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PORTFOLIO_ID, now = new Date()): Promise<PortfolioValuation> {
+export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PORTFOLIO_ID, now = new Date(), options: PortfolioValuationOptions = {}): Promise<PortfolioValuation> {
   const portfolio = await db
     .prepare("SELECT id, cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd FROM portfolios WHERE id = ?")
     .bind(portfolioId)
@@ -135,7 +147,7 @@ export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PO
       )
       .bind(portfolioId)
   );
-  const latestPrices = await latestPricesBySymbol(db, now);
+  const latestPrices = await latestPricesBySymbol(db, now, positions.map((position) => position.symbol), options);
   const trades = await db
     .prepare("SELECT COALESCE(SUM(fees_usd), 0) AS fees FROM trades WHERE portfolio_id = ?")
     .bind(portfolioId)
@@ -166,7 +178,9 @@ export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PO
         latestPriceUsd: latest?.priceUsd ?? null,
         latestPreviousCloseUsd: latest?.previousCloseUsd ?? null,
         latestPriceAsOf: latest?.priceAsOf ?? null,
-        latestDataStatus: latest ? classifyPriceStatus(latest, now) : "unavailable"
+        latestDataStatus: latest ? classifyPriceStatus(latest, now) : "unavailable",
+        latestPriceSource: latest?.source ?? null,
+        latestQuoteStatus: latest?.validationStatus ?? null
       };
     }),
     realizedProfitLossUsd: 0,
@@ -235,7 +249,9 @@ export function valuePosition(input: PositionInput): ValuedPosition {
     unrealizedProfitLossPct: cost > 0 ? roundRatio(unrealized / cost) : 0,
     realizedProfitLossUsd: 0,
     dataStatus: status,
-    priceTimestamp: input.latestPriceAsOf ?? null
+    priceTimestamp: input.latestPriceAsOf ?? null,
+    priceSource: input.latestPriceSource ?? null,
+    quoteStatus: input.latestQuoteStatus ?? null
   };
 }
 
@@ -336,11 +352,12 @@ function combineStatuses(statuses: ValuationDataStatus[]): ValuationDataStatus {
   return "live";
 }
 
-async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<Map<string, PriceRow>> {
+async function latestPricesBySymbol(db: D1Database, now = new Date(), symbols: string[] = [], options: PortfolioValuationOptions = {}): Promise<Map<string, PriceRow>> {
   const rows = await listRows<PriceRow>(
     db.prepare(
       `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf,
         ms.validation_status AS validationStatus, ms.created_at AS createdAt,
+        ms.source,
         ms.candles_json AS candlesJson
        FROM market_snapshots ms
        JOIN (
@@ -355,7 +372,7 @@ async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<M
   const trustedRows = await listRows<TrustedQuoteRow>(
     db.prepare(
       `SELECT symbol, normalized_quote_json AS normalizedQuoteJson, quality_status AS qualityStatus,
-        provider_timestamp AS providerTimestamp, retrieval_timestamp AS retrievalTimestamp, expires_at AS expiresAt
+        provider, provider_timestamp AS providerTimestamp, retrieval_timestamp AS retrievalTimestamp, expires_at AS expiresAt
        FROM trusted_quote_cache
        WHERE expires_at >= ?`
     ).bind(now.toISOString())
@@ -372,6 +389,7 @@ async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<M
       previousCloseUsd: quote.previousClose && quote.previousClose > 0 ? quote.previousClose : null,
       priceAsOf: quote.providerTimestamp ?? row.providerTimestamp ?? quote.receivedTimestamp ?? row.retrievalTimestamp,
       validationStatus: quote.dataQualityStatus ?? row.qualityStatus,
+      source: quote.providerName ?? row.provider,
       createdAt: row.retrievalTimestamp
     };
     const existing = bySymbol.get(row.symbol);
@@ -379,7 +397,41 @@ async function latestPricesBySymbol(db: D1Database, now = new Date()): Promise<M
       bySymbol.set(row.symbol, candidate);
     }
   }
+  const missing = [...new Set(symbols)].filter((symbol) => !hasUsableCurrentPrice(bySymbol.get(symbol)));
+  if (missing.length > 0 && options.refreshMissingQuotes !== false) {
+    const service = options.marketDataService ?? new MarketDataService(db);
+    const quotes = await service.getQuotes(missing, "valuation", now);
+    for (const quote of quotes) {
+      const candidate = priceRowFromQuote(quote);
+      if (!candidate) {
+        continue;
+      }
+      const existing = bySymbol.get(candidate.symbol);
+      if (!existing || isFresherPrice(candidate, existing)) {
+        bySymbol.set(candidate.symbol, candidate);
+      }
+    }
+  }
   return bySymbol;
+}
+
+function hasUsableCurrentPrice(row: PriceRow | undefined): boolean {
+  return Boolean(row && Number.isFinite(row.priceUsd) && row.priceUsd > 0 && !/missing|failure|unavailable|conflicting|anomalous/i.test(row.validationStatus));
+}
+
+function priceRowFromQuote(quote: NormalizedQuote): PriceRow | null {
+  if (!quote.validation.valid || !Number.isFinite(quote.lastPrice) || (quote.lastPrice ?? 0) <= 0) {
+    return null;
+  }
+  return {
+    symbol: quote.symbol,
+    priceUsd: quote.lastPrice as number,
+    previousCloseUsd: quote.previousClose && quote.previousClose > 0 ? quote.previousClose : null,
+    priceAsOf: quote.providerTimestamp ?? quote.receivedTimestamp,
+    validationStatus: quote.dataQualityStatus,
+    source: quote.providerName,
+    createdAt: quote.receivedTimestamp
+  };
 }
 
 function isFresherPrice(candidate: PriceRow, existing: PriceRow): boolean {
@@ -408,13 +460,13 @@ function classifyPriceStatus(row: PriceRow, now: Date): ValuationDataStatus {
   return ageSeconds <= 30 * 60 ? "delayed" : ageSeconds <= 4 * 24 * 60 * 60 ? "stale" : "unavailable";
 }
 
-function parseTrustedQuote(value: string): { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string } | null {
+function parseTrustedQuote(value: string): { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; providerName?: string | null; dataQualityStatus?: string } | null {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
-    return parsed as { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; dataQualityStatus?: string };
+    return parsed as { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; providerName?: string | null; dataQualityStatus?: string };
   } catch {
     return null;
   }

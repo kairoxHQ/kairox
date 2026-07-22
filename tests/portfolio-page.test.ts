@@ -71,6 +71,8 @@ test("portfolio page renders an investor-focused primary view", () => {
   assert.match(html, /Cash available/);
   assert.match(html, /Guardian Summary/);
   assert.match(html, /Everything looks healthy\. No action is recommended today\./);
+  assert.match(html, /Valued Jul 17/);
+  assert.match(html, /Brokerage comparisons can differ when screenshots and Kairox quotes were captured at different times/);
   assert.match(html, /VTI/);
   assert.match(html, /Vanguard Total Stock Market ETF/);
   assert.match(html, /Allocation/);

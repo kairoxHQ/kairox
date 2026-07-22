@@ -8,7 +8,7 @@ import { calculateTradeResults } from "../src/portfolio/dailySnapshots.ts";
 import { calculateStreak } from "../src/portfolio/historicalMetrics.ts";
 import { accountDate, calculatePortfolioValuation, getPortfolioValuation, PortfolioNotFoundError, valuePosition, type PortfolioValuation } from "../src/portfolio/valuation.ts";
 import { buildDailySummary } from "../src/summaries/service.ts";
-import { addMoney, multiplyMoney, pctChange } from "../src/shared/money.ts";
+import { addMoney, multiplyMoney, pctChange, subtractMoney } from "../src/shared/money.ts";
 import worker from "../src/index.ts";
 
 test("position valuation calculates cost basis and unrealized profit/loss", () => {
@@ -226,6 +226,200 @@ test("portfolio valuation uses trusted quote cache when market timestamp is fres
   assert.equal(valuation.totalAccountValueUsd, 245.44);
 });
 
+test("portfolio valuation replaces stale imported seed prices with trusted current quotes", async () => {
+  const now = new Date("2026-07-22T21:18:14.000Z");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_gen",
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      currentPriceUsd: 26.11,
+      marketValueUsd: 198.59266
+    }],
+    trustedRows: [],
+    snapshotRows: []
+  });
+  const marketDataService = fakeMarketDataService([
+    quote("GEN", 25.58, 26.11000061, "2026-07-22T20:00:01.000Z", "yahoo_finance_chart", "Previous Close")
+  ]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService });
+
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 25.58);
+  assert.equal(valuation.positions[0].currentPositionValueUsd, 194.5615);
+  assert.equal(valuation.positions[0].todayChangeUsd, -4.0312);
+  assert.equal(valuation.positions[0].priceTimestamp, "2026-07-22T20:00:01.000Z");
+  assert.equal(valuation.positions[0].priceSource, "yahoo_finance_chart");
+  assert.equal(valuation.portfolioValueUsd, 194.5615);
+  assert.equal(valuation.overallReturnUsd, 54.5615);
+});
+
+test("account value and total gain move by the same amount when only current price changes", () => {
+  const seed = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 136.33755,
+    availableCashUsd: 0,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-22T21:18:14.000Z",
+    positions: [{
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      fallbackPriceUsd: 26.11,
+      fallbackMarketValueUsd: 198.59266,
+      latestPriceUsd: null,
+      latestPreviousCloseUsd: null
+    }]
+  });
+  const trusted = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 136.33755,
+    availableCashUsd: 0,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-22T21:18:14.000Z",
+    positions: [{
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      fallbackPriceUsd: 26.11,
+      fallbackMarketValueUsd: 198.59266,
+      latestPriceUsd: 25.58,
+      latestPreviousCloseUsd: 26.11000061,
+      latestPriceAsOf: "2026-07-22T20:00:01.000Z",
+      latestDataStatus: "delayed"
+    }]
+  });
+  const accountMove = subtractMoney(trusted.totalAccountValueUsd, seed.totalAccountValueUsd);
+  const gainMove = subtractMoney(trusted.overallReturnUsd, seed.overallReturnUsd);
+
+  assert.equal(accountMove, -4.0312);
+  assert.equal(gainMove, -4.0312);
+});
+
+test("mutual fund NAV valuation uses latest published NAV and previous NAV", () => {
+  const valuation = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 103.73851,
+    availableCashUsd: 0,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-22T21:18:14.000Z",
+    positions: [{
+      symbol: "FXAIX",
+      assetClass: "mutual_fund",
+      quantity: 0.411,
+      avgEntryPriceUsd: 252.40513381995137,
+      fallbackPriceUsd: 258.7,
+      fallbackMarketValueUsd: 106.3257,
+      latestPriceUsd: 260.99,
+      latestPreviousCloseUsd: 258.70001220703125,
+      latestPriceAsOf: "2026-07-22T12:10:16.000Z",
+      latestDataStatus: "delayed",
+      latestPriceSource: "yahoo_finance_chart",
+      latestQuoteStatus: "Previous Close"
+    }]
+  });
+
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 260.99);
+  assert.equal(valuation.positions[0].currentPositionValueUsd, 107.2669);
+  assert.equal(valuation.positions[0].todayChangeUsd, 0.9412);
+  assert.equal(valuation.positions[0].priceSource, "yahoo_finance_chart");
+});
+
+test("crypto valuation preserves quote timestamp and source", () => {
+  const position = valuePosition({
+    symbol: "BTC-USD",
+    assetClass: "crypto",
+    quantity: 0.000061,
+    avgEntryPriceUsd: 77754,
+    fallbackPriceUsd: 66370.23,
+    fallbackMarketValueUsd: 4.04858403,
+    latestPriceUsd: 65871.98,
+    latestPreviousCloseUsd: 66516.18,
+    latestPriceAsOf: "2026-07-22T21:18:29.087027642Z",
+    latestDataStatus: "live",
+    latestPriceSource: "coinbase_public_market_data",
+    latestQuoteStatus: "Valid"
+  });
+
+  assert.equal(position.currentMarketPriceUsd, 65871.98);
+  assert.equal(position.priceTimestamp, "2026-07-22T21:18:29.087027642Z");
+  assert.equal(position.priceSource, "coinbase_public_market_data");
+  assert.equal(position.todayChangeUsd, -0.0393);
+});
+
+test("current quote without previous close updates value but keeps daily movement partial", () => {
+  const valuation = calculatePortfolioValuation({
+    portfolioId: "portfolio_ira",
+    startingBalanceUsd: 15,
+    availableCashUsd: 0,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-22T21:18:14.000Z",
+    positions: [{
+      symbol: "VOOG",
+      assetClass: "etf",
+      quantity: 0.1228,
+      avgEntryPriceUsd: 81.53,
+      fallbackPriceUsd: 81.98,
+      fallbackMarketValueUsd: 10.067144,
+      latestPriceUsd: 81.72,
+      latestPreviousCloseUsd: null,
+      latestPriceAsOf: "2026-07-22T20:00:00.000Z",
+      latestDataStatus: "delayed"
+    }]
+  });
+
+  assert.equal(valuation.positions[0].currentPositionValueUsd, 10.0352);
+  assert.equal(valuation.positions[0].todayChangeUsd, null);
+  assert.equal(valuation.todayChangeStatus, "unavailable");
+  assert.match(valuation.todayChangeDisclosure ?? "", /no market gain or loss was fabricated/i);
+});
+
+test("identical holdings use identical quote inputs at the same valuation timestamp", () => {
+  const position = {
+    symbol: "GEN",
+    assetClass: "stock",
+    quantity: 7.606,
+    avgEntryPriceUsd: 17.925,
+    fallbackPriceUsd: 26.11,
+    fallbackMarketValueUsd: 198.59266,
+    latestPriceUsd: 25.58,
+    latestPreviousCloseUsd: 26.11000061,
+    latestPriceAsOf: "2026-07-22T20:00:01.000Z",
+    latestDataStatus: "delayed" as const
+  };
+  const watchlist = calculatePortfolioValuation({
+    portfolioId: "portfolio_tim_real_watchlist",
+    startingBalanceUsd: 136.33755,
+    availableCashUsd: 0,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-22T21:18:14.000Z",
+    positions: [position]
+  });
+  const twin = calculatePortfolioValuation({
+    portfolioId: "portfolio_tim_real_portfolio",
+    startingBalanceUsd: 136.33755,
+    availableCashUsd: 0,
+    realizedProfitLossUsd: 0,
+    feesUsd: 0,
+    valuationTimestamp: "2026-07-22T21:18:14.000Z",
+    positions: [position]
+  });
+
+  assert.equal(watchlist.positions[0].currentMarketPriceUsd, twin.positions[0].currentMarketPriceUsd);
+  assert.equal(watchlist.positions[0].currentPositionValueUsd, twin.positions[0].currentPositionValueUsd);
+  assert.equal(watchlist.todayChangeUsd, twin.todayChangeUsd);
+});
+
 test("daily snapshot migration is idempotent and stores opening and closing fields", () => {
   const sql = readFileSync("migrations/0012_journey_valuation_milestones.sql", "utf8");
 
@@ -236,7 +430,13 @@ test("daily snapshot migration is idempotent and stores opening and closing fiel
   assert.match(sql, /max_daily_drawdown_pct/);
 });
 
-function fakeValuationDb(input: { trustedQuoteJson: string; now: Date }): D1Database {
+function fakeValuationDb(input: {
+  trustedQuoteJson?: string;
+  now: Date;
+  positions?: Array<{ id: string; symbol: string; assetClass: string; quantity: number; avgEntryPriceUsd: number; currentPriceUsd: number; marketValueUsd: number }>;
+  trustedRows?: Array<{ symbol: string; normalizedQuoteJson: string; provider: string; qualityStatus: string; providerTimestamp: string | null; retrievalTimestamp: string; expiresAt: string }>;
+  snapshotRows?: Array<{ symbol: string; priceUsd: number; priceAsOf: string; validationStatus: string; createdAt: string; source?: string | null }>;
+}): D1Database {
   return {
     prepare(sql: string) {
       return {
@@ -249,7 +449,13 @@ function fakeValuationDb(input: { trustedQuoteJson: string; now: Date }): D1Data
   } as unknown as D1Database;
 }
 
-function statementFor(sql: string, _params: unknown[], input: { trustedQuoteJson: string; now: Date }) {
+function statementFor(sql: string, _params: unknown[], input: {
+  trustedQuoteJson?: string;
+  now: Date;
+  positions?: Array<{ id: string; symbol: string; assetClass: string; quantity: number; avgEntryPriceUsd: number; currentPriceUsd: number; marketValueUsd: number }>;
+  trustedRows?: Array<{ symbol: string; normalizedQuoteJson: string; provider: string; qualityStatus: string; providerTimestamp: string | null; retrievalTimestamp: string; expiresAt: string }>;
+  snapshotRows?: Array<{ symbol: string; priceUsd: number; priceAsOf: string; validationStatus: string; createdAt: string; source?: string | null }>;
+}) {
   return {
     async first() {
       if (/FROM portfolios WHERE id/i.test(sql)) {
@@ -266,7 +472,7 @@ function statementFor(sql: string, _params: unknown[], input: { trustedQuoteJson
     async all() {
       if (/FROM positions/i.test(sql)) {
         return {
-          results: [{
+          results: input.positions ?? [{
             id: "pos_bnd",
             symbol: "BND",
             assetClass: "bond_fund",
@@ -279,20 +485,22 @@ function statementFor(sql: string, _params: unknown[], input: { trustedQuoteJson
       }
       if (/FROM market_snapshots/i.test(sql)) {
         return {
-          results: [{
+          results: input.snapshotRows ?? [{
             symbol: "BND",
             priceUsd: 72.5,
             priceAsOf: "2026-07-13T20:00:01.000Z",
             validationStatus: "validated",
+            source: "test",
             createdAt: "2026-07-14T15:03:58.000Z"
           }]
         };
       }
       if (/FROM trusted_quote_cache/i.test(sql)) {
         return {
-          results: [{
+          results: input.trustedRows ?? [{
             symbol: "BND",
-            normalizedQuoteJson: input.trustedQuoteJson,
+            normalizedQuoteJson: input.trustedQuoteJson ?? "",
+            provider: "test",
             qualityStatus: "Delayed",
             providerTimestamp: "2026-07-14T14:56:53.000Z",
             retrievalTimestamp: input.now.toISOString(),
@@ -302,6 +510,27 @@ function statementFor(sql: string, _params: unknown[], input: { trustedQuoteJson
       }
       return { results: [] };
     }
+  };
+}
+
+function fakeMarketDataService(quotes: unknown[]) {
+  return {
+    async getQuotes() {
+      return quotes;
+    }
+  } as never;
+}
+
+function quote(symbol: string, lastPrice: number, previousClose: number | null, providerTimestamp: string, providerName: string, dataQualityStatus: string) {
+  return {
+    symbol,
+    lastPrice,
+    previousClose,
+    providerTimestamp,
+    receivedTimestamp: "2026-07-22T21:18:14.000Z",
+    providerName,
+    dataQualityStatus,
+    validation: { valid: true, status: dataQualityStatus, reasons: [], warnings: [] }
   };
 }
 
