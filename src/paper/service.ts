@@ -137,7 +137,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     const portfolio = await getPortfolioRow(env.DB, portfolioId);
     const position = await getPosition(env.DB, portfolioId, symbol);
     const openPositions = await getOpenPositions(env.DB, portfolioId);
-    const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[symbol, marketData.priceUsd]]));
+    const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[symbol, marketData.priceUsd]]), portfolioId);
     const exposure = exposureForAsset(asset, openPositions, portfolioState.totalValueUsd, portfolioState.drawdownPct);
     const screen = adjustScreenForProfile(screenAsset({ asset, marketData, now, exposure }), profile);
     const decision = screen.eligible ? decidePaperAction({
@@ -166,7 +166,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     const { asset, marketData, decision, screen } = item;
     const position = await getPosition(env.DB, portfolioId, asset.symbol);
     const portfolio = await getPortfolioRow(env.DB, portfolioId);
-    const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[asset.symbol, marketData.priceUsd]]));
+    const portfolioState = await calculatePortfolioState(env.DB, portfolio, new Map([[asset.symbol, marketData.priceUsd]]), portfolioId);
 
     const duplicateSignal = await hasProcessedSignal(env.DB, portfolioId, decision.signalKey);
     const executionGateReasons: string[] = [];
@@ -610,7 +610,7 @@ function incrementBudget(budget: PaperRunBudget | undefined, key: keyof PaperRun
   budget[key] += amount;
 }
 
-function exposureForAsset(
+export function exposureForAsset(
   asset: AssetRegistryRecord,
   positions: PositionRow[],
   totalValueUsd: number,
@@ -687,7 +687,7 @@ function adjustScreenForProfile(screen: ScreenResult, profile: PortfolioProfile)
   };
 }
 
-async function calculatePortfolioState(db: D1Database, portfolio: PortfolioRow, prices: Map<string, number>, portfolioId = TIM_PORTFOLIO_ID) {
+export async function calculatePortfolioState(db: D1Database, portfolio: PortfolioRow, prices: Map<string, number>, portfolioId: string) {
   const positions = await listRows<PositionRow>(
     db
       .prepare(
