@@ -60,6 +60,11 @@ interface AssetRow {
   notes?: string | null;
 }
 
+interface PositionAssetRow extends Partial<AssetRow> {
+  positionSymbol: string;
+  positionAssetClass: string;
+}
+
 export async function listEnabledWatchlistAssets(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<AssetRegistryRecord[]> {
   const rows = await listRows<AssetRow>(
     db
@@ -116,10 +121,12 @@ export async function resolvePaperCandidateUniverse(db: D1Database, portfolioId 
 }
 
 async function listEnabledPositionAssets(db: D1Database, portfolioId: string): Promise<AssetRegistryRecord[]> {
-  const rows = await listRows<AssetRow>(
+  const rows = await listRows<PositionAssetRow>(
     db
       .prepare(
         `SELECT
+          p.symbol AS positionSymbol,
+          p.asset_class AS positionAssetClass,
           a.id,
           a.symbol,
           a.display_name AS displayName,
@@ -139,16 +146,19 @@ async function listEnabledPositionAssets(db: D1Database, portfolioId: string): P
           NULL AS rankingPriority,
           NULL AS notes
          FROM positions p
-         JOIN assets a ON a.symbol = p.symbol
+         LEFT JOIN assets a ON a.symbol = p.symbol
          WHERE p.portfolio_id = ?
            AND p.quantity > 0
-           AND a.enabled = 1
-         ORDER BY a.symbol ASC`
+           AND COALESCE(a.enabled, 1) = 1
+         ORDER BY p.symbol ASC`
       )
       .bind(portfolioId)
   );
 
-  return rows.map(parseAssetRow);
+  return rows.flatMap((row) => {
+    const asset = parsePositionAssetRow(portfolioId, row);
+    return asset ? [asset] : [];
+  });
 }
 
 function dedupeAssets(assets: AssetRegistryRecord[]): AssetRegistryRecord[] {
@@ -159,6 +169,51 @@ function dedupeAssets(assets: AssetRegistryRecord[]): AssetRegistryRecord[] {
     }
   }
   return [...bySymbol.values()];
+}
+
+function parsePositionAssetRow(portfolioId: string, row: PositionAssetRow): AssetRegistryRecord | null {
+  if (row.id) {
+    return parseAssetRow(row as AssetRow);
+  }
+  if (!isAssetType(row.positionAssetClass)) {
+    return null;
+  }
+  const assetType = row.positionAssetClass;
+  return {
+    id: `position_${sanitizeAssetId(portfolioId)}_${sanitizeAssetId(row.positionSymbol)}`,
+    symbol: row.positionSymbol,
+    displayName: row.positionSymbol,
+    assetType,
+    market: assetType === "crypto" ? "crypto" : "US",
+    currency: "USD",
+    providerSymbol: row.positionSymbol,
+    enabled: true,
+    tradable: defaultTradableForAssetType(assetType),
+    fractionalSupported: true,
+    dividendCapable: assetType !== "crypto",
+    expenseRatio: null,
+    minimumInvestment: null,
+    marketHoursMode: defaultMarketHoursModeForAssetType(assetType),
+    pricePrecision: 2,
+    quantityPrecision: assetType === "crypto" ? 8 : 6,
+    rankingPriority: undefined,
+    notes: "Derived from current paper-twin position because no asset registry row exists."
+  };
+}
+
+function defaultTradableForAssetType(assetType: AssetType): boolean {
+  return assetType === "stock" || assetType === "etf" || assetType === "crypto" || assetType === "reit" || assetType === "bond_fund";
+}
+
+function defaultMarketHoursModeForAssetType(assetType: AssetType): MarketHoursMode {
+  if (assetType === "crypto") return "continuous";
+  if (assetType === "mutual_fund") return "fund_end_of_day";
+  if (assetType === "stock" || assetType === "etf" || assetType === "reit" || assetType === "bond_fund") return "us_regular";
+  return "cash_equivalent";
+}
+
+function sanitizeAssetId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 96) || "asset";
 }
 
 export async function getAssets(db: D1Database): Promise<unknown> {

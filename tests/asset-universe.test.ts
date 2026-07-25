@@ -141,7 +141,7 @@ test("standard paper candidate universe continues to prefer enabled watchlist ca
       registryAsset("asset_gen", "GEN", "stock", "us_regular", true),
       registryAsset("asset_voo", "VOO", "etf", "us_regular", true)
     ],
-    positions: [{ portfolioId: "portfolio_standard", symbol: "BTC-USD", quantity: 1 }]
+    positions: [{ portfolioId: "portfolio_standard", symbol: "BTC-USD", assetClass: "crypto", quantity: 1 }]
   });
 
   const universe = await resolvePaperCandidateUniverse(db, "portfolio_standard");
@@ -166,15 +166,15 @@ test("paper portfolio twin falls back to positive held symbols when no watchlist
       registryAsset("asset_voog", "VOOG", "etf", "us_regular", true)
     ],
     positions: [
-      { portfolioId: "portfolio_twin", symbol: "BTC-USD", quantity: 0.000061 },
-      { portfolioId: "portfolio_twin", symbol: "ETH-USD", quantity: 0.0024 },
-      { portfolioId: "portfolio_twin", symbol: "FXAIX", quantity: 0.411 },
-      { portfolioId: "portfolio_twin", symbol: "GEN", quantity: 7.606 },
-      { portfolioId: "portfolio_twin", symbol: "KO", quantity: 0.128205 },
-      { portfolioId: "portfolio_twin", symbol: "MSFT", quantity: 0.060762 },
-      { portfolioId: "portfolio_twin", symbol: "SOXX", quantity: 0.05069 },
-      { portfolioId: "portfolio_twin", symbol: "VOO", quantity: 0.022436 },
-      { portfolioId: "portfolio_twin", symbol: "VOOG", quantity: 0.1228 }
+      { portfolioId: "portfolio_twin", symbol: "BTC-USD", assetClass: "crypto", quantity: 0.000061 },
+      { portfolioId: "portfolio_twin", symbol: "ETH-USD", assetClass: "crypto", quantity: 0.0024 },
+      { portfolioId: "portfolio_twin", symbol: "FXAIX", assetClass: "mutual_fund", quantity: 0.411 },
+      { portfolioId: "portfolio_twin", symbol: "GEN", assetClass: "stock", quantity: 7.606 },
+      { portfolioId: "portfolio_twin", symbol: "KO", assetClass: "stock", quantity: 0.128205 },
+      { portfolioId: "portfolio_twin", symbol: "MSFT", assetClass: "stock", quantity: 0.060762 },
+      { portfolioId: "portfolio_twin", symbol: "SOXX", assetClass: "etf", quantity: 0.05069 },
+      { portfolioId: "portfolio_twin", symbol: "VOO", assetClass: "etf", quantity: 0.022436 },
+      { portfolioId: "portfolio_twin", symbol: "VOOG", assetClass: "etf", quantity: 0.1228 }
     ]
   });
 
@@ -197,7 +197,7 @@ test("paper portfolio twin falls back to positive held symbols when no watchlist
   assert.equal(universe.assets.find((candidate) => candidate.symbol === "FXAIX")?.marketHoursMode, "fund_end_of_day");
 });
 
-test("paper twin position fallback only includes positive positions joined to enabled assets and de-duplicates symbols", async () => {
+test("paper twin position fallback excludes disabled assets, non-positive positions, and de-duplicates symbols", async () => {
   const db = candidateUniverseDb({
     accounts: { portfolio_twin: { accountType: "paper_portfolio_twin", readOnly: 0 } },
     assets: [
@@ -206,25 +206,27 @@ test("paper twin position fallback only includes positive positions joined to en
       registryAsset("asset_disabled", "DISABLED", "stock", "us_regular", true, 0)
     ],
     positions: [
-      { portfolioId: "portfolio_twin", symbol: "GEN", quantity: 7.606 },
-      { portfolioId: "portfolio_twin", symbol: "GEN", quantity: 0.5 },
-      { portfolioId: "portfolio_twin", symbol: "KO", quantity: 0 },
-      { portfolioId: "portfolio_twin", symbol: "DISABLED", quantity: 1 },
-      { portfolioId: "portfolio_twin", symbol: "MISSING", quantity: 1 }
+      { portfolioId: "portfolio_twin", symbol: "GEN", assetClass: "stock", quantity: 7.606 },
+      { portfolioId: "portfolio_twin", symbol: "GEN", assetClass: "stock", quantity: 0.5 },
+      { portfolioId: "portfolio_twin", symbol: "KO", assetClass: "stock", quantity: 0 },
+      { portfolioId: "portfolio_twin", symbol: "DISABLED", assetClass: "stock", quantity: 1 },
+      { portfolioId: "portfolio_twin", symbol: "MISSING", assetClass: "etf", quantity: 1 }
     ]
   });
 
   const universe = await resolvePaperCandidateUniverse(db, "portfolio_twin");
 
   assert.equal(universe.source, "paper_twin_positions");
-  assert.deepEqual(universe.assets.map((candidate) => candidate.symbol), ["GEN"]);
+  assert.deepEqual(universe.assets.map((candidate) => candidate.symbol), ["GEN", "MISSING"]);
+  assert.equal(universe.assets.find((candidate) => candidate.symbol === "MISSING")?.assetType, "etf");
+  assert.equal(universe.assets.find((candidate) => candidate.symbol === "MISSING")?.marketHoursMode, "us_regular");
 });
 
 test("read-only linked watchlist and truly empty paper profile resolve no enabled candidates", async () => {
   const readOnlyDb = candidateUniverseDb({
     accounts: { portfolio_read_only: { accountType: "read_only_watchlist", readOnly: 1 } },
     assets: [registryAsset("asset_gen", "GEN", "stock", "us_regular", true)],
-    positions: [{ portfolioId: "portfolio_read_only", symbol: "GEN", quantity: 7.606 }]
+    positions: [{ portfolioId: "portfolio_read_only", symbol: "GEN", assetClass: "stock", quantity: 7.606 }]
   });
   const emptyPaperDb = candidateUniverseDb({
     accounts: { portfolio_empty: { accountType: "paper", readOnly: 0 } }
@@ -454,7 +456,7 @@ interface CandidateUniverseDbFixture {
   watchlists?: Array<{ id: string; portfolioId: string; enabled: 0 | 1 }>;
   watchlistAssets?: Array<{ watchlistId: string; assetId: string; enabled: 0 | 1; rankingPriority: number }>;
   assets?: CandidateAssetRow[];
-  positions?: Array<{ portfolioId: string; symbol: string; quantity: number }>;
+  positions?: Array<{ portfolioId: string; symbol: string; assetClass: RegistryAssetType; quantity: number }>;
 }
 
 interface CandidateAssetRow {
@@ -521,10 +523,36 @@ function candidateUniverseDb(fixture: CandidateUniverseDbFixture): D1Database {
               if (/FROM positions p/i.test(sql)) {
                 const rows = (fixture.positions ?? [])
                   .filter((position) => position.portfolioId === portfolioId && position.quantity > 0)
-                  .map((position) => (fixture.assets ?? []).find((assetRow) => assetRow.symbol === position.symbol && assetRow.enabled === 1) ?? null)
-                  .filter((assetRow): assetRow is CandidateAssetRow => assetRow !== null)
-                  .map((assetRow) => ({ ...assetRow, rankingPriority: null, notes: null }))
-                  .sort((left, right) => left.symbol.localeCompare(right.symbol));
+                  .map((position) => {
+                    const assetRow = (fixture.assets ?? []).find((candidate) => candidate.symbol === position.symbol);
+                    if (assetRow?.enabled === 0) return null;
+                    return assetRow
+                      ? { positionSymbol: position.symbol, positionAssetClass: position.assetClass, ...assetRow, rankingPriority: null, notes: null }
+                      : {
+                          positionSymbol: position.symbol,
+                          positionAssetClass: position.assetClass,
+                          id: null,
+                          symbol: null,
+                          displayName: null,
+                          assetType: null,
+                          market: null,
+                          currency: null,
+                          providerSymbol: null,
+                          enabled: null,
+                          tradable: null,
+                          fractionalSupported: null,
+                          dividendCapable: null,
+                          expenseRatio: null,
+                          minimumInvestment: null,
+                          marketHoursMode: null,
+                          pricePrecision: null,
+                          quantityPrecision: null,
+                          rankingPriority: null,
+                          notes: null
+                        };
+                  })
+                  .filter((assetRow) => assetRow !== null)
+                  .sort((left, right) => left.positionSymbol.localeCompare(right.positionSymbol));
                 return { results: rows };
               }
               return { results: [] };
