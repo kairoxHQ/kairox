@@ -1,5 +1,6 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import type { AssetClass } from "../shared/types.ts";
+import { getLinkedPortfolioAccount } from "../portfolio/accountTypes.ts";
 
 export const ASSET_TYPES = ["stock", "etf", "mutual_fund", "crypto", "reit", "bond_fund", "money_market"] as const;
 export const MARKET_HOURS_MODES = ["continuous", "us_regular", "fund_end_of_day", "cash_equivalent", "disabled"] as const;
@@ -26,6 +27,16 @@ export interface AssetRegistryRecord {
   quantityPrecision: number;
   rankingPriority?: number;
   notes?: string | null;
+}
+
+export const NO_ENABLED_CANDIDATES = "NO_ENABLED_CANDIDATES";
+
+export type CandidateUniverseSource = "watchlist_assets" | "paper_twin_positions" | "none";
+
+export interface CandidateUniverse {
+  assets: AssetRegistryRecord[];
+  source: CandidateUniverseSource;
+  reason: typeof NO_ENABLED_CANDIDATES | null;
 }
 
 interface AssetRow {
@@ -85,6 +96,69 @@ export async function listEnabledWatchlistAssets(db: D1Database, portfolioId = T
   );
 
   return rows.map(parseAssetRow);
+}
+
+export async function resolvePaperCandidateUniverse(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<CandidateUniverse> {
+  const watchlistAssets = dedupeAssets(await listEnabledWatchlistAssets(db, portfolioId));
+  if (watchlistAssets.length > 0) {
+    return { assets: watchlistAssets, source: "watchlist_assets", reason: null };
+  }
+
+  const account = await getLinkedPortfolioAccount(db, portfolioId);
+  if (account.accountType !== "paper_portfolio_twin" || account.readOnly) {
+    return { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES };
+  }
+
+  const positionAssets = dedupeAssets(await listEnabledPositionAssets(db, portfolioId));
+  return positionAssets.length > 0
+    ? { assets: positionAssets, source: "paper_twin_positions", reason: null }
+    : { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES };
+}
+
+async function listEnabledPositionAssets(db: D1Database, portfolioId: string): Promise<AssetRegistryRecord[]> {
+  const rows = await listRows<AssetRow>(
+    db
+      .prepare(
+        `SELECT
+          a.id,
+          a.symbol,
+          a.display_name AS displayName,
+          a.asset_type AS assetType,
+          a.market,
+          a.currency,
+          a.provider_symbol AS providerSymbol,
+          a.enabled,
+          a.tradable,
+          a.fractional_supported AS fractionalSupported,
+          a.dividend_capable AS dividendCapable,
+          a.expense_ratio AS expenseRatio,
+          a.minimum_investment AS minimumInvestment,
+          a.market_hours_mode AS marketHoursMode,
+          a.price_precision AS pricePrecision,
+          a.quantity_precision AS quantityPrecision,
+          NULL AS rankingPriority,
+          NULL AS notes
+         FROM positions p
+         JOIN assets a ON a.symbol = p.symbol
+         WHERE p.portfolio_id = ?
+           AND p.quantity > 0
+           AND a.enabled = 1
+         ORDER BY a.symbol ASC`
+      )
+      .bind(portfolioId)
+  );
+
+  return rows.map(parseAssetRow);
+}
+
+function dedupeAssets(assets: AssetRegistryRecord[]): AssetRegistryRecord[] {
+  const bySymbol = new Map<string, AssetRegistryRecord>();
+  for (const asset of assets) {
+    if (!bySymbol.has(asset.symbol)) {
+      bySymbol.set(asset.symbol, asset);
+    }
+  }
+  return [...bySymbol.values()];
 }
 
 export async function getAssets(db: D1Database): Promise<unknown> {

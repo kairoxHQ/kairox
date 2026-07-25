@@ -1,5 +1,5 @@
 import { EventBus } from "../events/eventBus.ts";
-import { listEnabledWatchlistAssets } from "../market/assets.ts";
+import { resolvePaperCandidateUniverse } from "../market/assets.ts";
 import { MarketDataService, type MarketDataSnapshot } from "../market/service.ts";
 import { listPortfolioProfiles, type PortfolioProfile } from "../portfolio/profiles.ts";
 import { generateFounderReport, type FounderReportInput, type FounderReportProfileInput } from "../reports/founderReport.ts";
@@ -325,7 +325,7 @@ export class PaperObservationService {
     if (!child.startedAt) return false;
     const parent = await this.getParent(child.parentRunId);
     if (!parent) return false;
-    const expectedSymbols = (await listEnabledWatchlistAssets(this.db, child.portfolioId)).length;
+    const expectedSymbols = (await resolvePaperCandidateUniverse(this.db, child.portfolioId)).assets.length;
     const budget: PaperRunBudget = { ...child.requestBudget, profilesProcessed: Math.max(1, child.requestBudget.profilesProcessed) };
     const summary = await recoverPaperStrategyRunFromPersistedWork(this.env, {
       runKey: child.runKey,
@@ -410,8 +410,8 @@ export class PaperObservationService {
   private async uniqueSymbols(profiles: PortfolioProfile[]): Promise<string[]> {
     const symbols = new Set<string>();
     for (const profile of profiles) {
-      const assets = await listEnabledWatchlistAssets(this.db, profile.portfolioId);
-      for (const asset of assets) symbols.add(asset.providerSymbol);
+      const universe = await resolvePaperCandidateUniverse(this.db, profile.portfolioId);
+      for (const asset of universe.assets) symbols.add(asset.providerSymbol);
     }
     return [...symbols].sort();
   }

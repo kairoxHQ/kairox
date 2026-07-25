@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import worker from "../src/index.ts";
-import { parseAssetRow } from "../src/market/assets.ts";
+import { NO_ENABLED_CANDIDATES, parseAssetRow, resolvePaperCandidateUniverse } from "../src/market/assets.ts";
 import { canExecuteAt } from "../src/market/hours.ts";
 import { YahooFinanceMarketDataProvider } from "../src/market/yahooFinanceProvider.ts";
 import { rankOpportunities, screenAsset } from "../src/strategy/screener.ts";
@@ -127,6 +127,114 @@ test("Sprint 5B watchlist priorities stay in the approved order", () => {
   for (const [assetId, priority] of expected) {
     assert.match(sql, new RegExp(`WHEN '${assetId}' THEN ${priority}`));
   }
+});
+
+test("standard paper candidate universe continues to prefer enabled watchlist candidates", async () => {
+  const db = candidateUniverseDb({
+    accounts: { portfolio_standard: { accountType: "paper", readOnly: 0 } },
+    watchlists: [{ id: "watchlist_standard", portfolioId: "portfolio_standard", enabled: 1 }],
+    watchlistAssets: [
+      { watchlistId: "watchlist_standard", assetId: "asset_voo", enabled: 1, rankingPriority: 20 },
+      { watchlistId: "watchlist_standard", assetId: "asset_gen", enabled: 1, rankingPriority: 10 }
+    ],
+    assets: [
+      registryAsset("asset_gen", "GEN", "stock", "us_regular", true),
+      registryAsset("asset_voo", "VOO", "etf", "us_regular", true)
+    ],
+    positions: [{ portfolioId: "portfolio_standard", symbol: "BTC-USD", quantity: 1 }]
+  });
+
+  const universe = await resolvePaperCandidateUniverse(db, "portfolio_standard");
+
+  assert.equal(universe.source, "watchlist_assets");
+  assert.equal(universe.reason, null);
+  assert.deepEqual(universe.assets.map((candidate) => candidate.symbol), ["GEN", "VOO"]);
+});
+
+test("paper portfolio twin falls back to positive held symbols when no watchlist candidates exist", async () => {
+  const db = candidateUniverseDb({
+    accounts: { portfolio_twin: { accountType: "paper_portfolio_twin", readOnly: 0 } },
+    assets: [
+      registryAsset("asset_btc_usd", "BTC-USD", "crypto", "continuous", true),
+      registryAsset("asset_eth_usd", "ETH-USD", "crypto", "continuous", true),
+      registryAsset("asset_fxaix", "FXAIX", "mutual_fund", "fund_end_of_day", false),
+      registryAsset("asset_gen", "GEN", "stock", "us_regular", true),
+      registryAsset("asset_ko", "KO", "stock", "us_regular", true),
+      registryAsset("asset_msft", "MSFT", "stock", "us_regular", true),
+      registryAsset("asset_soxx", "SOXX", "etf", "us_regular", true),
+      registryAsset("asset_voo", "VOO", "etf", "us_regular", true),
+      registryAsset("asset_voog", "VOOG", "etf", "us_regular", true)
+    ],
+    positions: [
+      { portfolioId: "portfolio_twin", symbol: "BTC-USD", quantity: 0.000061 },
+      { portfolioId: "portfolio_twin", symbol: "ETH-USD", quantity: 0.0024 },
+      { portfolioId: "portfolio_twin", symbol: "FXAIX", quantity: 0.411 },
+      { portfolioId: "portfolio_twin", symbol: "GEN", quantity: 7.606 },
+      { portfolioId: "portfolio_twin", symbol: "KO", quantity: 0.128205 },
+      { portfolioId: "portfolio_twin", symbol: "MSFT", quantity: 0.060762 },
+      { portfolioId: "portfolio_twin", symbol: "SOXX", quantity: 0.05069 },
+      { portfolioId: "portfolio_twin", symbol: "VOO", quantity: 0.022436 },
+      { portfolioId: "portfolio_twin", symbol: "VOOG", quantity: 0.1228 }
+    ]
+  });
+
+  const universe = await resolvePaperCandidateUniverse(db, "portfolio_twin");
+
+  assert.equal(universe.source, "paper_twin_positions");
+  assert.equal(universe.reason, null);
+  assert.deepEqual(universe.assets.map((candidate) => candidate.symbol), [
+    "BTC-USD",
+    "ETH-USD",
+    "FXAIX",
+    "GEN",
+    "KO",
+    "MSFT",
+    "SOXX",
+    "VOO",
+    "VOOG"
+  ]);
+  assert.equal(universe.assets.find((candidate) => candidate.symbol === "FXAIX")?.tradable, false);
+  assert.equal(universe.assets.find((candidate) => candidate.symbol === "FXAIX")?.marketHoursMode, "fund_end_of_day");
+});
+
+test("paper twin position fallback only includes positive positions joined to enabled assets and de-duplicates symbols", async () => {
+  const db = candidateUniverseDb({
+    accounts: { portfolio_twin: { accountType: "paper_portfolio_twin", readOnly: 0 } },
+    assets: [
+      registryAsset("asset_gen", "GEN", "stock", "us_regular", true),
+      registryAsset("asset_ko", "KO", "stock", "us_regular", true),
+      registryAsset("asset_disabled", "DISABLED", "stock", "us_regular", true, 0)
+    ],
+    positions: [
+      { portfolioId: "portfolio_twin", symbol: "GEN", quantity: 7.606 },
+      { portfolioId: "portfolio_twin", symbol: "GEN", quantity: 0.5 },
+      { portfolioId: "portfolio_twin", symbol: "KO", quantity: 0 },
+      { portfolioId: "portfolio_twin", symbol: "DISABLED", quantity: 1 },
+      { portfolioId: "portfolio_twin", symbol: "MISSING", quantity: 1 }
+    ]
+  });
+
+  const universe = await resolvePaperCandidateUniverse(db, "portfolio_twin");
+
+  assert.equal(universe.source, "paper_twin_positions");
+  assert.deepEqual(universe.assets.map((candidate) => candidate.symbol), ["GEN"]);
+});
+
+test("read-only linked watchlist and truly empty paper profile resolve no enabled candidates", async () => {
+  const readOnlyDb = candidateUniverseDb({
+    accounts: { portfolio_read_only: { accountType: "read_only_watchlist", readOnly: 1 } },
+    assets: [registryAsset("asset_gen", "GEN", "stock", "us_regular", true)],
+    positions: [{ portfolioId: "portfolio_read_only", symbol: "GEN", quantity: 7.606 }]
+  });
+  const emptyPaperDb = candidateUniverseDb({
+    accounts: { portfolio_empty: { accountType: "paper", readOnly: 0 } }
+  });
+
+  const readOnlyUniverse = await resolvePaperCandidateUniverse(readOnlyDb, "portfolio_read_only");
+  const emptyPaperUniverse = await resolvePaperCandidateUniverse(emptyPaperDb, "portfolio_empty");
+
+  assert.deepEqual(readOnlyUniverse, { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES });
+  assert.deepEqual(emptyPaperUniverse, { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES });
 });
 
 test("provider classifies controlled stock, ETF, REIT, bond ETF, and mutual fund symbols", async () => {
@@ -335,5 +443,123 @@ function marketData(symbol: string, assetClass: AssetClass, dailyStep = 0.8): Ma
     candles,
     status: "validated",
     quality: "fresh"
+  };
+}
+
+type RegistryAssetType = "stock" | "etf" | "mutual_fund" | "crypto" | "reit" | "bond_fund" | "money_market";
+type RegistryMarketHoursMode = "continuous" | "us_regular" | "fund_end_of_day" | "cash_equivalent" | "disabled";
+
+interface CandidateUniverseDbFixture {
+  accounts?: Record<string, { accountType: "paper" | "read_only_watchlist" | "paper_portfolio_twin"; readOnly: 0 | 1 }>;
+  watchlists?: Array<{ id: string; portfolioId: string; enabled: 0 | 1 }>;
+  watchlistAssets?: Array<{ watchlistId: string; assetId: string; enabled: 0 | 1; rankingPriority: number }>;
+  assets?: CandidateAssetRow[];
+  positions?: Array<{ portfolioId: string; symbol: string; quantity: number }>;
+}
+
+interface CandidateAssetRow {
+  id: string;
+  symbol: string;
+  displayName: string;
+  assetType: RegistryAssetType;
+  market: string;
+  currency: string;
+  providerSymbol: string;
+  enabled: 0 | 1;
+  tradable: 0 | 1;
+  fractionalSupported: 0 | 1;
+  dividendCapable: 0 | 1;
+  expenseRatio: number | null;
+  minimumInvestment: number | null;
+  marketHoursMode: RegistryMarketHoursMode;
+  pricePrecision: number;
+  quantityPrecision: number;
+  rankingPriority?: number | null;
+  notes?: string | null;
+}
+
+function candidateUniverseDb(fixture: CandidateUniverseDbFixture): D1Database {
+  return {
+    prepare(sql: string) {
+      return {
+        bind(...params: unknown[]) {
+          return {
+            async first() {
+              if (/FROM linked_portfolio_accounts/i.test(sql)) {
+                const portfolioId = String(params[0]);
+                const account = fixture.accounts?.[portfolioId];
+                if (!account) return null;
+                return {
+                  portfolioId,
+                  accountType: account.accountType,
+                  linkedPortfolioId: null,
+                  relationshipLabel: null,
+                  manualEntryEnabled: 0,
+                  managedByKairox: account.accountType === "paper_portfolio_twin" || account.accountType === "paper" ? 1 : 0,
+                  readOnly: account.readOnly
+                };
+              }
+              return null;
+            },
+            async all() {
+              const portfolioId = String(params[0]);
+              if (/FROM watchlists w/i.test(sql)) {
+                const rows = (fixture.watchlists ?? [])
+                  .filter((watchlist) => watchlist.portfolioId === portfolioId && watchlist.enabled === 1)
+                  .flatMap((watchlist) =>
+                    (fixture.watchlistAssets ?? [])
+                      .filter((watchlistAsset) => watchlistAsset.watchlistId === watchlist.id && watchlistAsset.enabled === 1)
+                      .map((watchlistAsset) => {
+                        const assetRow = (fixture.assets ?? []).find((asset) => asset.id === watchlistAsset.assetId && asset.enabled === 1);
+                        return assetRow ? { ...assetRow, rankingPriority: watchlistAsset.rankingPriority, notes: null } : null;
+                      })
+                      .filter((assetRow): assetRow is CandidateAssetRow => assetRow !== null)
+                  )
+                  .sort((left, right) => (left.rankingPriority ?? 100) - (right.rankingPriority ?? 100) || left.symbol.localeCompare(right.symbol));
+                return { results: rows };
+              }
+              if (/FROM positions p/i.test(sql)) {
+                const rows = (fixture.positions ?? [])
+                  .filter((position) => position.portfolioId === portfolioId && position.quantity > 0)
+                  .map((position) => (fixture.assets ?? []).find((assetRow) => assetRow.symbol === position.symbol && assetRow.enabled === 1) ?? null)
+                  .filter((assetRow): assetRow is CandidateAssetRow => assetRow !== null)
+                  .map((assetRow) => ({ ...assetRow, rankingPriority: null, notes: null }))
+                  .sort((left, right) => left.symbol.localeCompare(right.symbol));
+                return { results: rows };
+              }
+              return { results: [] };
+            }
+          };
+        }
+      };
+    }
+  } as unknown as D1Database;
+}
+
+function registryAsset(
+  id: string,
+  symbol: string,
+  assetType: RegistryAssetType,
+  marketHoursMode: RegistryMarketHoursMode,
+  tradable: boolean,
+  enabled: 0 | 1 = 1
+): CandidateAssetRow {
+  return {
+    id,
+    symbol,
+    displayName: symbol,
+    assetType,
+    market: assetType === "crypto" ? "crypto" : "US",
+    currency: "USD",
+    providerSymbol: symbol,
+    enabled,
+    tradable: tradable ? 1 : 0,
+    fractionalSupported: 1,
+    dividendCapable: assetType === "crypto" ? 0 : 1,
+    expenseRatio: null,
+    minimumInvestment: null,
+    marketHoursMode,
+    pricePrecision: 2,
+    quantityPrecision: assetType === "crypto" ? 8 : 6
   };
 }

@@ -1,5 +1,5 @@
 import { canExecuteAt } from "../market/hours.ts";
-import { listEnabledWatchlistAssets, type AssetRegistryRecord } from "../market/assets.ts";
+import { listEnabledWatchlistAssets, resolvePaperCandidateUniverse, type AssetRegistryRecord } from "../market/assets.ts";
 import { MarketDataService, quoteToMarketDataset, type MarketDataSnapshot } from "../market/service.ts";
 import {
   getCachedMarketData,
@@ -120,7 +120,8 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   }
 
   const marketDataService = new MarketDataService(env.DB);
-  const assets = await listEnabledWatchlistAssets(env.DB, portfolioId);
+  const candidateUniverse = await resolvePaperCandidateUniverse(env.DB, portfolioId);
+  const assets = candidateUniverse.assets;
   const evaluated: RankedOpportunity[] = [];
   let openedNewPositionThisRun = false;
 
@@ -278,6 +279,11 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     trigger: options.trigger ?? "manual",
     paperOnly: true,
     liveTradingEnabled: false,
+    candidateUniverse: {
+      source: candidateUniverse.source,
+      reason: candidateUniverse.reason,
+      symbols: assets.map((asset) => asset.symbol)
+    },
     symbols: summaries,
     portfolio: finalPortfolio,
     performance: maintenanceResult.performance,

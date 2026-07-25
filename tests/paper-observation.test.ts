@@ -44,6 +44,22 @@ test("multiple profiles share one persisted market-data snapshot", () => {
   assert.match(paperSource, /incrementBudget\(budget, "cacheHits"\)/);
 });
 
+test("scheduled paper observation uses the shared paper candidate resolver", () => {
+  assert.match(observationSource, /import \{ resolvePaperCandidateUniverse \} from "\.\.\/market\/assets\.ts"/);
+  assert.match(observationSource, /resolvePaperCandidateUniverse\(this\.db, profile\.portfolioId\)/);
+  assert.match(observationSource, /resolvePaperCandidateUniverse\(this\.db, child\.portfolioId\)\)\.assets\.length/);
+  assert.match(paperSource, /resolvePaperCandidateUniverse\(env\.DB, portfolioId\)/);
+  assert.match(paperSource, /const assets = candidateUniverse\.assets/);
+  assert.match(paperSource, /candidateUniverse: \{/);
+});
+
+test("paper strategy summaries disclose empty candidate universes", () => {
+  assert.match(paperSource, /source: candidateUniverse\.source/);
+  assert.match(paperSource, /reason: candidateUniverse\.reason/);
+  assert.match(paperSource, /symbols: assets\.map\(\(asset\) => asset\.symbol\)/);
+  assert.match(readFileSync("src/market/assets.ts", "utf8"), /NO_ENABLED_CANDIDATES/);
+});
+
 test("profile execution has terminal statuses for no action, success, and failure", () => {
   assert.match(observationSource, /childStatusFromSummary/);
   assert.match(observationSource, /return "no_action"/);
