@@ -1,8 +1,10 @@
 import { listRows, TIM_PORTFOLIO_ID } from "../shared/db.ts";
 import { MarketDataService, type NormalizedQuote } from "../market/service.ts";
+import { getUsEquityMarketStatus, isUsEquityMarketHoliday } from "../market/hours.ts";
 import { addMoney, multiplyMoney, pctChange, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 
 export type ValuationDataStatus = "live" | "delayed" | "stale" | "unavailable";
+export type QuoteOrigin = "market_snapshot" | "trusted_quote_cache" | "provider_refresh" | "imported_fallback";
 
 export interface PositionInput {
   id?: string;
@@ -18,6 +20,7 @@ export interface PositionInput {
   latestDataStatus?: ValuationDataStatus | null;
   latestPriceSource?: string | null;
   latestQuoteStatus?: string | null;
+  latestQuoteOrigin?: QuoteOrigin | null;
 }
 
 export interface ValuedPosition {
@@ -37,6 +40,7 @@ export interface ValuedPosition {
   priceTimestamp: string | null;
   priceSource: string | null;
   quoteStatus: string | null;
+  quoteOrigin: QuoteOrigin;
 }
 
 export interface PortfolioValuationInput {
@@ -99,6 +103,7 @@ interface PriceRow {
   source: string | null;
   createdAt: string;
   candlesJson?: string;
+  origin: QuoteOrigin;
 }
 
 interface TrustedQuoteRow {
@@ -147,7 +152,7 @@ export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PO
       )
       .bind(portfolioId)
   );
-  const latestPrices = await latestPricesBySymbol(db, now, positions.map((position) => position.symbol), options);
+  const latestPrices = await latestPricesBySymbol(db, now, positions.map((position) => ({ symbol: position.symbol, assetClass: position.assetClass })), options);
   const trades = await db
     .prepare("SELECT COALESCE(SUM(fees_usd), 0) AS fees FROM trades WHERE portfolio_id = ?")
     .bind(portfolioId)
@@ -178,9 +183,10 @@ export async function getPortfolioValuation(db: D1Database, portfolioId = TIM_PO
         latestPriceUsd: latest?.priceUsd ?? null,
         latestPreviousCloseUsd: latest?.previousCloseUsd ?? null,
         latestPriceAsOf: latest?.priceAsOf ?? null,
-        latestDataStatus: latest ? classifyPriceStatus(latest, now) : "unavailable",
+        latestDataStatus: latest ? classifyPriceStatus(latest, position.assetClass, now) : "unavailable",
         latestPriceSource: latest?.source ?? null,
-        latestQuoteStatus: latest?.validationStatus ?? null
+        latestQuoteStatus: latest?.validationStatus ?? null,
+        latestQuoteOrigin: latest?.origin ?? null
       };
     }),
     realizedProfitLossUsd: 0,
@@ -251,7 +257,8 @@ export function valuePosition(input: PositionInput): ValuedPosition {
     dataStatus: status,
     priceTimestamp: input.latestPriceAsOf ?? null,
     priceSource: input.latestPriceSource ?? null,
-    quoteStatus: input.latestQuoteStatus ?? null
+    quoteStatus: input.latestQuoteStatus ?? null,
+    quoteOrigin: hasLatestPrice ? input.latestQuoteOrigin ?? "provider_refresh" : "imported_fallback"
   };
 }
 
@@ -352,7 +359,9 @@ function combineStatuses(statuses: ValuationDataStatus[]): ValuationDataStatus {
   return "live";
 }
 
-async function latestPricesBySymbol(db: D1Database, now = new Date(), symbols: string[] = [], options: PortfolioValuationOptions = {}): Promise<Map<string, PriceRow>> {
+async function latestPricesBySymbol(db: D1Database, now = new Date(), positions: Array<{ symbol: string; assetClass: string }> = [], options: PortfolioValuationOptions = {}): Promise<Map<string, PriceRow>> {
+  const symbols = [...new Set(positions.map((position) => position.symbol))];
+  const assetClassBySymbol = new Map(positions.map((position) => [position.symbol, position.assetClass]));
   const rows = await listRows<PriceRow>(
     db.prepare(
       `SELECT ms.symbol, ms.price_usd AS priceUsd, ms.price_as_of AS priceAsOf,
@@ -368,14 +377,13 @@ async function latestPricesBySymbol(db: D1Database, now = new Date(), symbols: s
        ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
     )
   );
-  const bySymbol = new Map(rows.map((row) => [row.symbol, { ...row, previousCloseUsd: previousCloseFromCandles(row.candlesJson ?? "") }]));
+  const bySymbol = new Map<string, PriceRow>(rows.map((row) => [row.symbol, { ...row, previousCloseUsd: previousCloseFromCandles(row.candlesJson ?? ""), origin: "market_snapshot" }]));
   const trustedRows = await listRows<TrustedQuoteRow>(
     db.prepare(
       `SELECT symbol, normalized_quote_json AS normalizedQuoteJson, quality_status AS qualityStatus,
         provider, provider_timestamp AS providerTimestamp, retrieval_timestamp AS retrievalTimestamp, expires_at AS expiresAt
-       FROM trusted_quote_cache
-       WHERE expires_at >= ?`
-    ).bind(now.toISOString())
+       FROM trusted_quote_cache`
+    )
   );
   for (const row of trustedRows) {
     const quote = parseTrustedQuote(row.normalizedQuoteJson);
@@ -390,14 +398,15 @@ async function latestPricesBySymbol(db: D1Database, now = new Date(), symbols: s
       priceAsOf: quote.providerTimestamp ?? row.providerTimestamp ?? quote.receivedTimestamp ?? row.retrievalTimestamp,
       validationStatus: quote.dataQualityStatus ?? row.qualityStatus,
       source: quote.providerName ?? row.provider,
-      createdAt: row.retrievalTimestamp
+      createdAt: row.retrievalTimestamp,
+      origin: "trusted_quote_cache"
     };
     const existing = bySymbol.get(row.symbol);
     if (!existing || isFresherPrice(candidate, existing)) {
       bySymbol.set(row.symbol, candidate);
     }
   }
-  const missing = [...new Set(symbols)].filter((symbol) => !hasUsableCurrentPrice(bySymbol.get(symbol)));
+  const missing = symbols.filter((symbol) => !hasUsableCurrentPrice(bySymbol.get(symbol), assetClassBySymbol.get(symbol) ?? "unknown", now));
   if (missing.length > 0 && options.refreshMissingQuotes !== false) {
     const service = options.marketDataService ?? new MarketDataService(db);
     const quotes = await service.getQuotes(missing, "valuation", now);
@@ -407,7 +416,8 @@ async function latestPricesBySymbol(db: D1Database, now = new Date(), symbols: s
         continue;
       }
       const existing = bySymbol.get(candidate.symbol);
-      if (!existing || isFresherPrice(candidate, existing)) {
+      const assetClass = assetClassBySymbol.get(candidate.symbol) ?? "unknown";
+      if (!existing || hasUsableCurrentPrice(candidate, assetClass, now) || isFresherPrice(candidate, existing)) {
         bySymbol.set(candidate.symbol, candidate);
       }
     }
@@ -415,8 +425,15 @@ async function latestPricesBySymbol(db: D1Database, now = new Date(), symbols: s
   return bySymbol;
 }
 
-function hasUsableCurrentPrice(row: PriceRow | undefined): boolean {
-  return Boolean(row && Number.isFinite(row.priceUsd) && row.priceUsd > 0 && !/missing|failure|unavailable|conflicting|anomalous/i.test(row.validationStatus));
+function hasUsableCurrentPrice(row: PriceRow | undefined, assetClass: string, now: Date): boolean {
+  return Boolean(row && hasUsableTrustedPrice(row) && isFreshForValuation(row, assetClass, now));
+}
+
+function hasUsableTrustedPrice(row: PriceRow): boolean {
+  return Number.isFinite(row.priceUsd)
+    && row.priceUsd > 0
+    && row.origin !== "imported_fallback"
+    && !/missing|failure|unavailable|conflicting|anomalous/i.test(row.validationStatus);
 }
 
 function priceRowFromQuote(quote: NormalizedQuote): PriceRow | null {
@@ -430,7 +447,8 @@ function priceRowFromQuote(quote: NormalizedQuote): PriceRow | null {
     priceAsOf: quote.providerTimestamp ?? quote.receivedTimestamp,
     validationStatus: quote.dataQualityStatus,
     source: quote.providerName,
-    createdAt: quote.receivedTimestamp
+    createdAt: quote.receivedTimestamp,
+    origin: "provider_refresh"
   };
 }
 
@@ -443,12 +461,19 @@ function isFresherPrice(candidate: PriceRow, existing: PriceRow): boolean {
   return new Date(candidate.createdAt).getTime() >= new Date(existing.createdAt).getTime();
 }
 
-function classifyPriceStatus(row: PriceRow, now: Date): ValuationDataStatus {
-  const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(row.createdAt).getTime()) / 1000));
+function classifyPriceStatus(row: PriceRow, assetClass: string, now: Date): ValuationDataStatus {
+  const timestamp = new Date(row.priceAsOf);
+  const ageSeconds = Math.max(0, Math.floor((now.getTime() - timestamp.getTime()) / 1000));
   if (/missing|failure|unavailable|conflicting|anomalous/i.test(row.validationStatus)) {
     return "unavailable";
   }
   if (/stale/i.test(row.validationStatus)) {
+    return "stale";
+  }
+  if (!hasUsableTrustedPrice(row)) {
+    return "unavailable";
+  }
+  if (!isFreshForValuation(row, assetClass, now)) {
     return "stale";
   }
   if (/delayed|previous close/i.test(row.validationStatus)) {
@@ -459,6 +484,82 @@ function classifyPriceStatus(row: PriceRow, now: Date): ValuationDataStatus {
   }
   return ageSeconds <= 30 * 60 ? "delayed" : ageSeconds <= 4 * 24 * 60 * 60 ? "stale" : "unavailable";
 }
+
+function isFreshForValuation(row: PriceRow, assetClass: string, now: Date): boolean {
+  const timestamp = new Date(row.priceAsOf);
+  if (!Number.isFinite(timestamp.getTime()) || timestamp.getTime() > now.getTime() + 60_000) {
+    return false;
+  }
+  if (assetClass === "crypto" || row.symbol.endsWith("-USD")) {
+    return now.getTime() - timestamp.getTime() <= 30 * 60 * 1000;
+  }
+  if (assetClass === "mutual_fund") {
+    return isFreshMutualFundNav(timestamp, now);
+  }
+  return isFreshUsEquityQuote(timestamp, now);
+}
+
+function isFreshUsEquityQuote(timestamp: Date, now: Date): boolean {
+  const status = getUsEquityMarketStatus(now);
+  const quoteDate = accountDate(timestamp, "America/New_York");
+  if (status.phase === "regular") {
+    return quoteDate === status.marketDate && now.getTime() - timestamp.getTime() <= 30 * 60 * 1000;
+  }
+  return quoteDate === latestCompletedUsEquitySessionDate(now);
+}
+
+function isFreshMutualFundNav(timestamp: Date, now: Date): boolean {
+  const quoteDate = accountDate(timestamp, "America/New_York");
+  const expectedDate = latestExpectedMutualFundNavDate(now);
+  return quoteDate === expectedDate;
+}
+
+function latestExpectedMutualFundNavDate(now: Date): string {
+  const status = getUsEquityMarketStatus(now);
+  if (status.isTradingDay && status.phase === "after_hours" && easternMinutes(now) >= 18 * 60 + 30) {
+    return status.marketDate;
+  }
+  return previousTradingDate(status.marketDate, status.isTradingDay ? 1 : 0);
+}
+
+function latestCompletedUsEquitySessionDate(now: Date): string {
+  const status = getUsEquityMarketStatus(now);
+  if (status.isTradingDay && status.phase === "after_hours") {
+    return status.marketDate;
+  }
+  return previousTradingDate(status.marketDate, status.isTradingDay ? 1 : 0);
+}
+
+function previousTradingDate(fromDate: string, offset = 1): string {
+  let date = addDays(fromDate, -offset);
+  for (let guard = 0; guard < 14; guard += 1) {
+    const weekday = new Date(`${date}T12:00:00.000Z`).getUTCDay();
+    if (weekday !== 0 && weekday !== 6 && !isUsEquityMarketHoliday(date)) {
+      return date;
+    }
+    date = addDays(date, -1);
+  }
+  return fromDate;
+}
+
+function addDays(date: string, days: number): string {
+  const value = new Date(`${date}T12:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function easternMinutes(date: Date): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
+  return hour * 60 + minute;
+}
+
 
 function parseTrustedQuote(value: string): { lastPrice?: number | null; previousClose?: number | null; providerTimestamp?: string | null; receivedTimestamp?: string; providerName?: string | null; dataQualityStatus?: string } | null {
   try {

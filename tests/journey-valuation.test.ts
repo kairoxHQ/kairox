@@ -222,8 +222,228 @@ test("portfolio valuation uses trusted quote cache when market timestamp is fres
   assert.equal(valuation.positions[0].currentMarketPriceUsd, 72.72);
   assert.equal(valuation.positions[0].currentPositionValueUsd, 145.44);
   assert.equal(valuation.positions[0].dataStatus, "delayed");
+  assert.equal(valuation.positions[0].quoteOrigin, "trusted_quote_cache");
   assert.equal(valuation.portfolioValueUsd, 145.44);
   assert.equal(valuation.totalAccountValueUsd, 245.44);
+});
+
+test("portfolio valuation refreshes stale trusted market snapshots before using them as current", async () => {
+  const now = new Date("2026-07-25T04:50:00.000Z");
+  const freshProviderQuote = quote("GEN", 25.84, 25.06999969, "2026-07-24T20:00:01.000Z", "yahoo_finance_chart", "Previous Close");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_gen",
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      currentPriceUsd: 26.11,
+      marketValueUsd: 198.59266
+    }],
+    snapshotRows: [{
+      symbol: "GEN",
+      priceUsd: 25.58,
+      priceAsOf: "2026-07-22T20:00:01.000Z",
+      validationStatus: "validated",
+      source: "market_snapshot_test",
+      createdAt: "2026-07-22T21:33:09.000Z"
+    }],
+    trustedRows: []
+  });
+  const marketData = trackingFakeMarketDataService([freshProviderQuote]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService: marketData.service });
+
+  assert.equal(marketData.calls.length, 1);
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 25.84);
+  assert.equal(valuation.positions[0].quoteOrigin, "provider_refresh");
+});
+
+test("portfolio valuation refreshes old same-session stock quotes during regular market hours", async () => {
+  const now = new Date("2026-07-24T19:00:00.000Z");
+  const staleSessionQuote = quote("GEN", 25.40, 25.07, "2026-07-24T14:00:01.000Z", "yahoo_finance_chart", "Delayed");
+  const freshProviderQuote = quote("GEN", 25.84, 25.06999969, "2026-07-24T18:59:01.000Z", "yahoo_finance_chart", "Delayed");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_gen",
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      currentPriceUsd: 26.11,
+      marketValueUsd: 198.59266
+    }],
+    snapshotRows: [],
+    trustedRows: [{
+      symbol: "GEN",
+      normalizedQuoteJson: JSON.stringify(staleSessionQuote),
+      provider: "yahoo_finance_chart",
+      qualityStatus: "Delayed",
+      providerTimestamp: "2026-07-24T14:00:01.000Z",
+      retrievalTimestamp: "2026-07-24T14:00:30.000Z",
+      expiresAt: "2026-07-28T14:00:30.000Z"
+    }]
+  });
+  const marketData = trackingFakeMarketDataService([freshProviderQuote]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService: marketData.service });
+
+  assert.equal(marketData.calls.length, 1);
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 25.84);
+  assert.equal(valuation.positions[0].dataStatus, "delayed");
+  assert.equal(valuation.positions[0].quoteOrigin, "provider_refresh");
+});
+
+test("portfolio valuation refreshes stale-but-unexpired trusted cache for latest completed stock session", async () => {
+  const now = new Date("2026-07-25T04:50:00.000Z");
+  const staleCachedQuote = quote("GEN", 25.58, 26.11000061, "2026-07-22T20:00:01.000Z", "yahoo_finance_chart", "Previous Close");
+  const freshProviderQuote = quote("GEN", 25.84, 25.06999969, "2026-07-24T20:00:01.000Z", "yahoo_finance_chart", "Previous Close");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_gen",
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      currentPriceUsd: 26.11,
+      marketValueUsd: 198.59266
+    }],
+    snapshotRows: [],
+    trustedRows: [{
+      symbol: "GEN",
+      normalizedQuoteJson: JSON.stringify(staleCachedQuote),
+      provider: "yahoo_finance_chart",
+      qualityStatus: "Previous Close",
+      providerTimestamp: "2026-07-22T20:00:01.000Z",
+      retrievalTimestamp: "2026-07-22T21:33:09.000Z",
+      expiresAt: "2026-07-26T21:33:09.000Z"
+    }]
+  });
+  const marketData = trackingFakeMarketDataService([freshProviderQuote]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService: marketData.service });
+
+  assert.deepEqual(marketData.calls.map((call) => ({ symbols: call.symbols, useCase: call.useCase })), [{ symbols: ["GEN"], useCase: "valuation" }]);
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 25.84);
+  assert.equal(valuation.positions[0].previousCloseUsd, 25.07);
+  assert.equal(valuation.positions[0].currentPositionValueUsd, 196.539);
+  assert.equal(valuation.positions[0].quoteOrigin, "provider_refresh");
+  assert.equal(valuation.positions[0].priceTimestamp, "2026-07-24T20:00:01.000Z");
+  assert.equal(valuation.positions[0].quoteStatus, "Previous Close");
+});
+
+test("portfolio valuation keeps stale trusted cache only as an explicit fallback when refresh fails", async () => {
+  const now = new Date("2026-07-25T04:50:00.000Z");
+  const staleCachedQuote = quote("GEN", 25.58, 26.11000061, "2026-07-22T20:00:01.000Z", "yahoo_finance_chart", "Previous Close");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_gen",
+      symbol: "GEN",
+      assetClass: "stock",
+      quantity: 7.606,
+      avgEntryPriceUsd: 17.925,
+      currentPriceUsd: 26.11,
+      marketValueUsd: 198.59266
+    }],
+    snapshotRows: [],
+    trustedRows: [{
+      symbol: "GEN",
+      normalizedQuoteJson: JSON.stringify(staleCachedQuote),
+      provider: "yahoo_finance_chart",
+      qualityStatus: "Previous Close",
+      providerTimestamp: "2026-07-22T20:00:01.000Z",
+      retrievalTimestamp: "2026-07-22T21:33:09.000Z",
+      expiresAt: "2026-07-26T21:33:09.000Z"
+    }]
+  });
+  const marketData = trackingFakeMarketDataService([]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService: marketData.service });
+
+  assert.equal(marketData.calls.length, 1);
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 25.58);
+  assert.equal(valuation.positions[0].dataStatus, "stale");
+  assert.equal(valuation.positions[0].quoteOrigin, "trusted_quote_cache");
+  assert.equal(valuation.dataStatus, "stale");
+});
+
+test("portfolio valuation refreshes stale crypto cache even when cache has not expired", async () => {
+  const now = new Date("2026-07-25T04:50:00.000Z");
+  const staleCachedQuote = quote("ETH-USD", 1927.22, 1928.3838, "2026-07-24T04:45:00.000Z", "yahoo_finance_chart", "Valid");
+  const freshProviderQuote = quote("ETH-USD", 1860.19, 1900.2, "2026-07-25T04:49:30.000Z", "yahoo_finance_chart", "Valid");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_eth",
+      symbol: "ETH-USD",
+      assetClass: "crypto",
+      quantity: 0.0024,
+      avgEntryPriceUsd: 1800,
+      currentPriceUsd: 1927.22,
+      marketValueUsd: 4.625328
+    }],
+    snapshotRows: [],
+    trustedRows: [{
+      symbol: "ETH-USD",
+      normalizedQuoteJson: JSON.stringify(staleCachedQuote),
+      provider: "yahoo_finance_chart",
+      qualityStatus: "Valid",
+      providerTimestamp: "2026-07-24T04:45:00.000Z",
+      retrievalTimestamp: "2026-07-24T04:45:30.000Z",
+      expiresAt: "2026-07-28T04:45:30.000Z"
+    }]
+  });
+  const marketData = trackingFakeMarketDataService([freshProviderQuote]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService: marketData.service });
+
+  assert.equal(marketData.calls.length, 1);
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 1860.19);
+  assert.equal(valuation.positions[0].dataStatus, "live");
+  assert.equal(valuation.positions[0].quoteOrigin, "provider_refresh");
+  assert.equal(valuation.positions[0].priceTimestamp, "2026-07-25T04:49:30.000Z");
+});
+
+test("portfolio valuation accepts latest published mutual fund NAV on weekends without implying intraday pricing", async () => {
+  const now = new Date("2026-07-25T14:00:00.000Z");
+  const latestNav = quote("FXAIX", 257.65, null, "2026-07-25T00:08:19.000Z", "yahoo_finance_chart", "Previous Close");
+  const db = fakeValuationDb({
+    now,
+    positions: [{
+      id: "pos_fxaix",
+      symbol: "FXAIX",
+      assetClass: "mutual_fund",
+      quantity: 0.411,
+      avgEntryPriceUsd: 252.40513381995137,
+      currentPriceUsd: 257.49,
+      marketValueUsd: 105.82839
+    }],
+    snapshotRows: [],
+    trustedRows: [{
+      symbol: "FXAIX",
+      normalizedQuoteJson: JSON.stringify(latestNav),
+      provider: "yahoo_finance_chart",
+      qualityStatus: "Previous Close",
+      providerTimestamp: "2026-07-25T00:08:19.000Z",
+      retrievalTimestamp: "2026-07-25T03:00:49.000Z",
+      expiresAt: "2026-07-26T15:00:49.000Z"
+    }]
+  });
+  const marketData = trackingFakeMarketDataService([]);
+
+  const valuation = await getPortfolioValuation(db, "portfolio_ira", now, { marketDataService: marketData.service });
+
+  assert.equal(marketData.calls.length, 0);
+  assert.equal(valuation.positions[0].currentMarketPriceUsd, 257.65);
+  assert.equal(valuation.positions[0].previousCloseUsd, null);
+  assert.equal(valuation.positions[0].todayChangeUsd, null);
+  assert.equal(valuation.positions[0].dataStatus, "delayed");
+  assert.equal(valuation.positions[0].quoteOrigin, "trusted_quote_cache");
+  assert.equal(valuation.todayChangeStatus, "unavailable");
 });
 
 test("portfolio valuation replaces stale imported seed prices with trusted current quotes", async () => {
@@ -519,6 +739,19 @@ function fakeMarketDataService(quotes: unknown[]) {
       return quotes;
     }
   } as never;
+}
+
+function trackingFakeMarketDataService(quotes: unknown[]) {
+  const calls: Array<{ symbols: string[]; useCase: string; now: Date }> = [];
+  return {
+    calls,
+    service: {
+      async getQuotes(symbols: string[], useCase: string, now: Date) {
+        calls.push({ symbols, useCase, now });
+        return quotes;
+      }
+    } as never
+  };
 }
 
 function quote(symbol: string, lastPrice: number, previousClose: number | null, providerTimestamp: string, providerName: string, dataQualityStatus: string) {
