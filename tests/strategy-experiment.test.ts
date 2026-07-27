@@ -72,6 +72,9 @@ test("baseline scaling creates nine symbols and exactly 400 dollars without usin
   assert.ok(baseline.initialCashUsd >= 0);
   assert.ok(baseline.initialCashUsd < 1);
   assert.ok(baseline.positions.every((position) => position.experimentCostBasisUsd === position.scaledMarketValueUsd));
+  if (baseline.initialCashUsd < 0.005) {
+    assert.doesNotMatch(baseline.warnings.join(" "), /Quantity precision left/);
+  }
   assert.equal(
     round4(baseline.positions.reduce((sum, position) => sum + round4(position.frozenPriceUsd * position.scaledQuantity), 0)),
     baseline.initialHoldingsValueUsd

@@ -876,7 +876,7 @@ function baselineWarnings(input: FrozenBaselineInput, cashUsd: number): string[]
       warnings.push(`${holding.symbol} baseline quote timestamp is unavailable.`);
     }
   }
-  if (cashUsd > 0) {
+  if (cashUsd >= 0.005) {
     warnings.push(`Quantity precision left ${formatCurrency(cashUsd)} as initial cash.`);
   }
   return [...new Set(warnings)];
