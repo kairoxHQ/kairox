@@ -177,6 +177,7 @@ test("experiment source does not create initialization trades or alter protected
 test("experiment activation has dry-run, cadence, candidate, and startup cap safety hooks", () => {
   assert.match(serviceSource, /getFiveStrategyExperimentDryRun/);
   assert.match(serviceSource, /latestReadOnlyMarketData/);
+  assert.match(serviceSource, /trusted_quote_cache/);
   assert.doesNotMatch(serviceSource, /getFiveStrategyExperimentDryRun[\s\S]*recordRecommendationAndJournal/);
   assert.doesNotMatch(serviceSource, /getFiveStrategyExperimentDryRun[\s\S]*executePaperTrade/);
   assert.match(assetSource, /isStrategyExperimentPortfolio/);

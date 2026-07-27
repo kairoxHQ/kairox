@@ -12,6 +12,7 @@ import { listRows } from "../shared/db.ts";
 import { formatCurrency, formatPercent, formatSignedCurrency, formatSignedPercent } from "../shared/displayFormat.ts";
 import { addMoney, multiplyMoney, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
 import type { MarketCandle, MarketDataset } from "../shared/types.ts";
+import type { NormalizedQuote } from "../market/service.ts";
 
 export const FIVE_STRATEGY_EXPERIMENT_KEY = "tim_real_five_strategy_400_v1";
 export const FIVE_STRATEGY_EXPERIMENT_ID = "experiment_tim_real_five_strategy_400_v1";
@@ -444,6 +445,15 @@ interface ReadOnlyMarketRow {
   volume: number | null;
   candlesJson: string | null;
   createdAt: string;
+}
+
+interface TrustedQuoteCacheRow {
+  symbol: string;
+  normalizedQuoteJson: string;
+  qualityStatus: string;
+  provider: string;
+  providerTimestamp: string | null;
+  retrievalTimestamp: string;
 }
 
 interface AssetPrecisionRow {
@@ -999,7 +1009,7 @@ async function getExperimentPortfolioRow(db: D1Database, portfolioId: string): P
 }
 
 async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryRecord, now: Date): Promise<MarketDataset> {
-  const row = await db.prepare(
+  const snapshotRow = await db.prepare(
     `SELECT symbol, asset_class AS assetClass, source, price_usd AS priceUsd,
       price_as_of AS priceAsOf, volume, candles_json AS candlesJson, created_at AS createdAt
      FROM market_snapshots
@@ -1007,24 +1017,26 @@ async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryReco
      ORDER BY created_at DESC
      LIMIT 1`
   ).bind(asset.symbol).first<ReadOnlyMarketRow>();
-  if (!row) {
-    return {
-      symbol: asset.symbol,
-      assetClass: asset.assetType,
-      priceUsd: 0,
-      asOf: nullTimestamp(now),
-      source: "none",
-      validated: false,
-      stale: true,
-      candles: [],
-      status: "unavailable",
-      quality: "invalid",
-      userMessage: "No trusted read-only market snapshot is available for dry-run evaluation.",
-      error: "No trusted read-only market snapshot is available for dry-run evaluation."
-    };
+  const trustedRow = await db.prepare(
+    `SELECT symbol, normalized_quote_json AS normalizedQuoteJson, quality_status AS qualityStatus,
+      provider, provider_timestamp AS providerTimestamp, retrieval_timestamp AS retrievalTimestamp
+     FROM trusted_quote_cache
+     WHERE symbol = ?`
+  ).bind(asset.symbol).first<TrustedQuoteCacheRow>();
+  const candidates = [
+    snapshotRow ? marketDatasetFromSnapshot(snapshotRow, asset, now) : null,
+    trustedRow ? marketDatasetFromTrustedQuote(trustedRow, asset, now) : null
+  ].filter((candidate): candidate is MarketDataset => candidate !== null);
+  const best = candidates.sort((a, b) => new Date(b.asOf).getTime() - new Date(a.asOf).getTime())[0];
+  if (best) {
+    return best;
   }
+  return latestReadOnlyMarketUnavailable(asset, now);
+}
+
+function marketDatasetFromSnapshot(row: ReadOnlyMarketRow, asset: AssetRegistryRecord, now: Date): MarketDataset {
   const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(row.createdAt).getTime()) / 1000));
-  const maxAgeSeconds = asset.assetType === "crypto" ? 30 * 60 : 4 * 24 * 60 * 60;
+  const maxAgeSeconds = maxReadOnlyAgeSeconds(asset.assetType);
   const stale = ageSeconds > maxAgeSeconds;
   return {
     symbol: asset.symbol,
@@ -1040,6 +1052,69 @@ async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryReco
     quality: stale ? "stale" : "acceptable_cached",
     userMessage: stale ? "Trusted snapshot is too old for dry-run execution approval." : "Using trusted read-only market snapshot for dry-run evaluation.",
     error: stale ? "Trusted snapshot is too old for dry-run execution approval." : undefined
+  };
+}
+
+function marketDatasetFromTrustedQuote(row: TrustedQuoteCacheRow, asset: AssetRegistryRecord, now: Date): MarketDataset | null {
+  const quote = parseTrustedQuote(row.normalizedQuoteJson);
+  const price = quote?.lastPrice;
+  if (!quote || !Number.isFinite(price) || (price ?? 0) <= 0) {
+    return null;
+  }
+  const asOf = quote.providerTimestamp ?? row.providerTimestamp ?? quote.receivedTimestamp ?? row.retrievalTimestamp;
+  const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(asOf).getTime()) / 1000));
+  const stale = ageSeconds > maxReadOnlyAgeSeconds(asset.assetType) || /stale|missing|failure|unavailable|conflicting|anomalous/i.test(quote.dataQualityStatus ?? row.qualityStatus);
+  return {
+    symbol: asset.symbol,
+    assetClass: asset.assetType,
+    priceUsd: price as number,
+    asOf,
+    source: quote.providerName ?? row.provider,
+    validated: !stale,
+    stale,
+    volume: quote.volume ?? undefined,
+    candles: quote.candles ?? [],
+    status: stale ? "deferred" : "cached",
+    quality: stale ? "stale" : "acceptable_cached",
+    userMessage: stale ? "Trusted quote cache is too old for dry-run execution approval." : "Using trusted read-only quote cache for dry-run evaluation.",
+    error: stale ? "Trusted quote cache is too old for dry-run execution approval." : undefined
+  };
+}
+
+function parseTrustedQuote(value: string | null): NormalizedQuote | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as NormalizedQuote : null;
+  } catch {
+    return null;
+  }
+}
+
+function maxReadOnlyAgeSeconds(assetType: string): number {
+  return assetType === "crypto" ? 30 * 60 : 4 * 24 * 60 * 60;
+}
+
+function nullTimestamp(now: Date): string {
+  return new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function latestReadOnlyMarketUnavailable(asset: AssetRegistryRecord, now: Date): MarketDataset {
+  return {
+    symbol: asset.symbol,
+    assetClass: asset.assetType,
+    priceUsd: 0,
+    asOf: nullTimestamp(now),
+    source: "none",
+    validated: false,
+    stale: true,
+    candles: [],
+    status: "unavailable",
+    quality: "invalid",
+    userMessage: "No trusted read-only market data is available for dry-run evaluation.",
+    error: "No trusted read-only market data is available for dry-run evaluation."
   };
 }
 
@@ -1087,10 +1162,6 @@ function parseCandles(value: string | null): MarketCandle[] {
   } catch {
     return [];
   }
-}
-
-function nullTimestamp(now: Date): string {
-  return now.toISOString();
 }
 
 async function experimentInitializationResult(db: D1Database, experiment: ExperimentRow, idempotent: boolean): Promise<FiveStrategyExperimentResult> {

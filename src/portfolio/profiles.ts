@@ -153,8 +153,31 @@ export async function listPortfolioProfiles(db: D1Database, options: ListPortfol
 }
 
 export async function getPortfolioProfile(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<PortfolioProfile> {
+  const direct = await getPortfolioProfileRow(db, portfolioId);
+  if (direct) {
+    return direct;
+  }
   const profiles = await listPortfolioProfiles(db, { includeReadOnly: true });
   return profiles.find((profile) => profile.portfolioId === portfolioId) ?? profiles.find((profile) => profile.portfolioId === TIM_PORTFOLIO_ID) ?? profiles[0];
+}
+
+async function getPortfolioProfileRow(db: D1Database, portfolioId: string): Promise<PortfolioProfile | null> {
+  const row = await db.prepare(
+    `SELECT id, portfolio_id AS portfolioId, profile_key AS profileKey,
+      display_name AS displayName, philosophy, risk_posture AS riskPosture,
+      comparison_start_timestamp AS comparisonStartTimestamp,
+      comparison_start_equity_usd AS comparisonStartEquityUsd,
+      normalized_start_index AS normalizedStartIndex,
+      parameters_json AS parametersJson
+     FROM portfolio_profiles
+     WHERE portfolio_id = ?
+     LIMIT 1`
+  ).bind(portfolioId).first<ProfileRow>();
+  if (!row) {
+    return null;
+  }
+  const accounts = await listLinkedPortfolioAccounts(db, [portfolioId]);
+  return parseProfileRow(row, accounts.get(portfolioId));
 }
 
 export async function getProfileComparison(db: D1Database): Promise<unknown> {
