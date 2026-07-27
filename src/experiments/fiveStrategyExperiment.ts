@@ -1,7 +1,17 @@
 import { getPortfolioValuation, type PortfolioValuation, type ValuedPosition } from "../portfolio/valuation.ts";
+import { resolvePaperCandidateUniverse, type AssetRegistryRecord } from "../market/assets.ts";
+import { canExecuteAt } from "../market/hours.ts";
+import { calculateIndicators } from "../strategy/indicators.ts";
+import { decidePaperAction, type StrategyDecision } from "../strategy/paperStrategy.ts";
+import { assessPaperTrade } from "../risk/checks.ts";
+import { getPortfolioProfile, type PortfolioProfile } from "../portfolio/profiles.ts";
+import { calculatePortfolioState, exposureForAsset } from "../paper/service.ts";
+import { screenAsset } from "../strategy/screener.ts";
+import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { listRows } from "../shared/db.ts";
 import { formatCurrency, formatPercent, formatSignedCurrency, formatSignedPercent } from "../shared/displayFormat.ts";
 import { addMoney, multiplyMoney, roundMoney, roundRatio, subtractMoney } from "../shared/money.ts";
+import type { MarketCandle, MarketDataset } from "../shared/types.ts";
 
 export const FIVE_STRATEGY_EXPERIMENT_KEY = "tim_real_five_strategy_400_v1";
 export const FIVE_STRATEGY_EXPERIMENT_ID = "experiment_tim_real_five_strategy_400_v1";
@@ -33,15 +43,28 @@ export interface ExperimentStrategyDefinition {
   maxDailyLossPct: number;
   parameters: {
     minConfidence: number;
+    buyThreshold: number;
+    sellThreshold: number;
     maxNewTradePct: number;
     maxPositionPct: number;
     cashReservePct: number;
     drawdownBlockPct: number;
+    rebalanceThresholdPct: number;
     concentrationMultiplier: number;
     cryptoPreference: number;
     dividendPreference: number;
     turnoverLimitPct: number;
     decisionCadence: string;
+    maxTradesPerCycle: number;
+    maxTradesPerDay: number;
+    cooldownMinutes: number;
+    feeRate: number;
+    slippageBps: number;
+    volatilityWeight: number;
+    momentumWeight: number;
+    trendWeight: number;
+    macroWeight: number;
+    geopoliticalWeight: number;
   };
 }
 
@@ -56,15 +79,28 @@ export const FIVE_STRATEGY_DEFINITIONS: ExperimentStrategyDefinition[] = [
     maxDailyLossPct: 0.015,
     parameters: {
       minConfidence: 0.78,
+      buyThreshold: 0.78,
+      sellThreshold: 0.72,
       maxNewTradePct: 0.04,
       maxPositionPct: 0.18,
       cashReservePct: 0.12,
       drawdownBlockPct: 0.04,
+      rebalanceThresholdPct: 0.12,
       concentrationMultiplier: 0.65,
       cryptoPreference: 0.35,
       dividendPreference: 1.45,
       turnoverLimitPct: 0.08,
-      decisionCadence: "low"
+      decisionCadence: "low",
+      maxTradesPerCycle: 1,
+      maxTradesPerDay: 1,
+      cooldownMinutes: 1440,
+      feeRate: 0.001,
+      slippageBps: 25,
+      volatilityWeight: 0.55,
+      momentumWeight: 0.55,
+      trendWeight: 0.7,
+      macroWeight: 0.35,
+      geopoliticalWeight: 0.15
     }
   },
   {
@@ -77,15 +113,28 @@ export const FIVE_STRATEGY_DEFINITIONS: ExperimentStrategyDefinition[] = [
     maxDailyLossPct: 0.025,
     parameters: {
       minConfidence: 0.64,
+      buyThreshold: 0.64,
+      sellThreshold: 0.6,
       maxNewTradePct: 0.08,
       maxPositionPct: 0.28,
       cashReservePct: 0.06,
       drawdownBlockPct: 0.08,
+      rebalanceThresholdPct: 0.08,
       concentrationMultiplier: 0.9,
       cryptoPreference: 0.8,
       dividendPreference: 1.1,
       turnoverLimitPct: 0.18,
-      decisionCadence: "moderate"
+      decisionCadence: "moderate",
+      maxTradesPerCycle: 1,
+      maxTradesPerDay: 2,
+      cooldownMinutes: 720,
+      feeRate: 0.001,
+      slippageBps: 25,
+      volatilityWeight: 0.8,
+      momentumWeight: 0.85,
+      trendWeight: 1,
+      macroWeight: 0.45,
+      geopoliticalWeight: 0.25
     }
   },
   {
@@ -98,15 +147,28 @@ export const FIVE_STRATEGY_DEFINITIONS: ExperimentStrategyDefinition[] = [
     maxDailyLossPct: 0.035,
     parameters: {
       minConfidence: 0.56,
+      buyThreshold: 0.56,
+      sellThreshold: 0.54,
       maxNewTradePct: 0.12,
       maxPositionPct: 0.36,
       cashReservePct: 0.035,
       drawdownBlockPct: 0.12,
+      rebalanceThresholdPct: 0.055,
       concentrationMultiplier: 1.1,
       cryptoPreference: 1,
       dividendPreference: 0.8,
       turnoverLimitPct: 0.32,
-      decisionCadence: "normal"
+      decisionCadence: "normal",
+      maxTradesPerCycle: 2,
+      maxTradesPerDay: 4,
+      cooldownMinutes: 240,
+      feeRate: 0.001,
+      slippageBps: 25,
+      volatilityWeight: 1.1,
+      momentumWeight: 1.25,
+      trendWeight: 1.2,
+      macroWeight: 0.55,
+      geopoliticalWeight: 0.35
     }
   },
   {
@@ -119,15 +181,28 @@ export const FIVE_STRATEGY_DEFINITIONS: ExperimentStrategyDefinition[] = [
     maxDailyLossPct: 0.055,
     parameters: {
       minConfidence: 0.48,
+      buyThreshold: 0.48,
+      sellThreshold: 0.48,
       maxNewTradePct: 0.18,
       maxPositionPct: 0.48,
       cashReservePct: 0.015,
       drawdownBlockPct: 0.18,
+      rebalanceThresholdPct: 0.035,
       concentrationMultiplier: 1.35,
       cryptoPreference: 1.25,
       dividendPreference: 0.55,
       turnoverLimitPct: 0.55,
-      decisionCadence: "fast"
+      decisionCadence: "fast",
+      maxTradesPerCycle: 3,
+      maxTradesPerDay: 8,
+      cooldownMinutes: 90,
+      feeRate: 0.001,
+      slippageBps: 25,
+      volatilityWeight: 1.35,
+      momentumWeight: 1.55,
+      trendWeight: 1.45,
+      macroWeight: 0.75,
+      geopoliticalWeight: 0.55
     }
   },
   {
@@ -140,15 +215,28 @@ export const FIVE_STRATEGY_DEFINITIONS: ExperimentStrategyDefinition[] = [
     maxDailyLossPct: 0.09,
     parameters: {
       minConfidence: 0.38,
+      buyThreshold: 0.38,
+      sellThreshold: 0.4,
       maxNewTradePct: 0.3,
       maxPositionPct: 0.65,
       cashReservePct: 0,
       drawdownBlockPct: 0.3,
+      rebalanceThresholdPct: 0.02,
       concentrationMultiplier: 1.8,
       cryptoPreference: 1.5,
       dividendPreference: 0.25,
       turnoverLimitPct: 4,
-      decisionCadence: "very_fast"
+      decisionCadence: "very_fast",
+      maxTradesPerCycle: 5,
+      maxTradesPerDay: 25,
+      cooldownMinutes: 30,
+      feeRate: 0.001,
+      slippageBps: 25,
+      volatilityWeight: 1.8,
+      momentumWeight: 2,
+      trendWeight: 1.7,
+      macroWeight: 1,
+      geopoliticalWeight: 0.8
     }
   }
 ];
@@ -254,6 +342,38 @@ export interface StrategyExperimentComparison {
   }>;
 }
 
+export interface FiveStrategyDryRunResult {
+  generatedAt: string;
+  experimentId: string;
+  baselineId: string;
+  mutating: false;
+  portfolios: Array<{
+    portfolioId: string;
+    strategyKey: string;
+    strategyName: string;
+    profileKey: string;
+    policy: ExperimentStrategyDefinition["parameters"];
+    valuationStatus: string;
+    marketDataTimestamp: string | null;
+    decisions: Array<{
+      symbol: string;
+      action: string;
+      side: "BUY" | "SELL" | null;
+      proposedTradeValueUsd: number;
+      proposedQuantity: number | null;
+      confidence: number;
+      reason: string;
+      riskAllowed: boolean;
+      riskChecks: string[];
+      wouldPassExecutionSafeguards: boolean;
+      quoteTimestamp: string | null;
+      quoteSource: string | null;
+      dataFreshness: string;
+      marketHoursAllowed: boolean;
+    }>;
+  }>;
+}
+
 interface ExperimentRow {
   id: string;
   experimentKey: string;
@@ -307,6 +427,23 @@ interface StrategyPortfolioRow {
   strategyDisplayName: string;
   experimentStartTimestamp: string;
   experimentStartingValueUsd: number;
+}
+
+interface ExperimentPortfolioStateRow {
+  id: string;
+  cashUsd: number;
+  startingBalanceUsd: number;
+}
+
+interface ReadOnlyMarketRow {
+  symbol: string;
+  assetClass: string;
+  source: string;
+  priceUsd: number;
+  priceAsOf: string;
+  volume: number | null;
+  candlesJson: string | null;
+  createdAt: string;
 }
 
 interface AssetPrecisionRow {
@@ -620,6 +757,102 @@ export async function getFiveStrategyExperimentComparison(db: D1Database): Promi
   };
 }
 
+export async function getFiveStrategyExperimentDryRun(db: D1Database, now = new Date()): Promise<FiveStrategyDryRunResult> {
+  const experiment = await getActiveExperiment(db);
+  if (!experiment) {
+    throw new Error("No active five-strategy experiment has been initialized.");
+  }
+  const strategyRows = await getStrategyPortfolioRows(db, experiment.id);
+  const portfolios = [];
+  for (const row of strategyRows) {
+    const profile = await getPortfolioProfile(db, row.portfolioId);
+    const valuation = await getPortfolioValuation(db, row.portfolioId, now);
+    const universe = await resolvePaperCandidateUniverse(db, row.portfolioId);
+    const portfolioRow = await getExperimentPortfolioRow(db, row.portfolioId);
+    const policy = await getInvestmentPolicy(db, row.portfolioId);
+    const decisions = [];
+    for (const asset of universe.assets) {
+      const marketData = await latestReadOnlyMarketData(db, asset, now);
+      const position = valuation.positions.find((item) => item.symbol === asset.symbol);
+      const prices = marketData.validated ? new Map([[asset.symbol, marketData.priceUsd]]) : new Map<string, number>();
+      const portfolioState = await calculatePortfolioState(db, portfolioRow, prices, row.portfolioId);
+      const exposure = exposureForAsset(asset, valuation.positions.map((item) => ({
+        id: `dry_run_${row.portfolioId}_${item.symbol}`,
+        symbol: item.symbol,
+        assetClass: item.assetClass,
+        quantity: item.quantity,
+        avgEntryPriceUsd: item.averageCostBasisUsd,
+        currentPriceUsd: item.currentMarketPriceUsd ?? item.averageCostBasisUsd,
+        marketValueUsd: item.currentPositionValueUsd
+      })), portfolioState.totalValueUsd, portfolioState.drawdownPct);
+      const screen = screenAsset({ asset, marketData, now, exposure });
+      const baseDecision = screen.eligible
+        ? applyDryRunProfilePolicy(decidePaperAction({ marketData, hasPosition: !!position && position.quantity > 0 }), profile)
+        : dryRunScreenedOutDecision(marketData, screen.reason);
+      const side = baseDecision.action === "BUY" || baseDecision.action === "SELL" ? baseDecision.action : null;
+      const proposedTradeValueUsd = baseDecision.action === "BUY"
+        ? Math.min(portfolioState.totalValueUsd * profile.parameters.maxNewTradePct, Math.max(0, portfolioState.cashUsd - portfolioState.totalValueUsd * profile.parameters.cashReservePct))
+        : baseDecision.action === "SELL" ? position?.currentPositionValueUsd ?? 0 : 0;
+      const marketHours = canExecuteAt(asset.assetType, now, asset.marketHoursMode);
+      const executionGateReasons = [];
+      if (side && !marketHours.allowed && marketHours.reason) executionGateReasons.push(marketHours.reason);
+      if (side && !asset.tradable) executionGateReasons.push(`${asset.symbol} is tracked but not enabled for production paper execution.`);
+      const risk = assessPaperTrade({
+        action: baseDecision.action,
+        marketData,
+        portfolioValueUsd: portfolioState.totalValueUsd,
+        cashUsd: portfolioState.cashUsd,
+        currentPositionValueUsd: position?.currentPositionValueUsd ?? 0,
+        proposedTradeValueUsd,
+        drawdownPct: portfolioState.drawdownPct,
+        duplicateSignal: await hasDryRunProcessedSignal(db, row.portfolioId, baseDecision.signalKey),
+        openedNewPositionThisRun: false,
+        hasPosition: !!position && position.quantity > 0,
+        maxNewTradePct: profile.parameters.maxNewTradePct,
+        maxPositionPct: profile.parameters.maxPositionPct,
+        drawdownBlockPct: profile.parameters.drawdownBlockPct,
+        investmentPolicy: policy,
+        orderIntent: baseDecision.action === "SELL" ? "long_sell" : "long_buy"
+      });
+      const riskChecks = [...risk.reasons, ...executionGateReasons];
+      const riskAllowed = risk.allowed && executionGateReasons.length === 0;
+      decisions.push({
+        symbol: asset.symbol,
+        action: riskAllowed ? baseDecision.action : "DO_NOTHING",
+        side,
+        proposedTradeValueUsd: roundMoney(proposedTradeValueUsd),
+        proposedQuantity: side && marketData.priceUsd > 0 ? roundRatio(proposedTradeValueUsd / marketData.priceUsd) : null,
+        confidence: baseDecision.confidenceScore,
+        reason: riskAllowed ? baseDecision.explanation : `Risk checks blocked execution: ${riskChecks.join(" ")}`,
+        riskAllowed,
+        riskChecks,
+        wouldPassExecutionSafeguards: riskAllowed && side !== null,
+        quoteTimestamp: marketData.asOf,
+        quoteSource: marketData.source,
+        dataFreshness: marketData.quality ?? (marketData.stale ? "stale" : "fresh"),
+        marketHoursAllowed: marketHours.allowed
+      });
+    }
+    portfolios.push({
+      portfolioId: row.portfolioId,
+      strategyKey: row.strategyKey,
+      strategyName: row.strategyDisplayName,
+      profileKey: profile.profileKey,
+      policy: profile.parameters as ExperimentStrategyDefinition["parameters"],
+      valuationStatus: valuation.dataStatus,
+      marketDataTimestamp: latestTimestamp(decisions.map((decision) => decision.quoteTimestamp)),
+      decisions
+    });
+  }
+  return {
+    generatedAt: now.toISOString(),
+    experimentId: experiment.id,
+    baselineId: FIVE_STRATEGY_BASELINE_ID,
+    mutating: false,
+    portfolios
+  };
+}
+
 export async function renderFiveStrategyExperimentHtml(db: D1Database): Promise<Response> {
   const experiment = await getActiveExperiment(db);
   if (!experiment) {
@@ -751,6 +984,113 @@ async function getStrategyPortfolioRows(db: D1Database, experimentId: string): P
        END`
     ).bind(experimentId)
   );
+}
+
+async function getExperimentPortfolioRow(db: D1Database, portfolioId: string): Promise<ExperimentPortfolioStateRow> {
+  const row = await db.prepare(
+    `SELECT id, cash_usd AS cashUsd, starting_balance_usd AS startingBalanceUsd
+     FROM portfolios
+     WHERE id = ?`
+  ).bind(portfolioId).first<ExperimentPortfolioStateRow>();
+  if (!row) {
+    throw new Error(`Experiment portfolio is missing: ${portfolioId}`);
+  }
+  return row;
+}
+
+async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryRecord, now: Date): Promise<MarketDataset> {
+  const row = await db.prepare(
+    `SELECT symbol, asset_class AS assetClass, source, price_usd AS priceUsd,
+      price_as_of AS priceAsOf, volume, candles_json AS candlesJson, created_at AS createdAt
+     FROM market_snapshots
+     WHERE symbol = ? AND validation_status = 'validated' AND price_usd > 0
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).bind(asset.symbol).first<ReadOnlyMarketRow>();
+  if (!row) {
+    return {
+      symbol: asset.symbol,
+      assetClass: asset.assetType,
+      priceUsd: 0,
+      asOf: nullTimestamp(now),
+      source: "none",
+      validated: false,
+      stale: true,
+      candles: [],
+      status: "unavailable",
+      quality: "invalid",
+      userMessage: "No trusted read-only market snapshot is available for dry-run evaluation.",
+      error: "No trusted read-only market snapshot is available for dry-run evaluation."
+    };
+  }
+  const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(row.createdAt).getTime()) / 1000));
+  const maxAgeSeconds = asset.assetType === "crypto" ? 30 * 60 : 4 * 24 * 60 * 60;
+  const stale = ageSeconds > maxAgeSeconds;
+  return {
+    symbol: asset.symbol,
+    assetClass: asset.assetType,
+    priceUsd: row.priceUsd,
+    asOf: row.priceAsOf,
+    source: row.source,
+    validated: !stale,
+    stale,
+    volume: row.volume ?? undefined,
+    candles: parseCandles(row.candlesJson),
+    status: stale ? "deferred" : "cached",
+    quality: stale ? "stale" : "acceptable_cached",
+    userMessage: stale ? "Trusted snapshot is too old for dry-run execution approval." : "Using trusted read-only market snapshot for dry-run evaluation.",
+    error: stale ? "Trusted snapshot is too old for dry-run execution approval." : undefined
+  };
+}
+
+function applyDryRunProfilePolicy(decision: StrategyDecision, profile: PortfolioProfile): StrategyDecision {
+  const threshold = decision.action === "SELL" ? profile.parameters.sellThreshold : profile.parameters.buyThreshold;
+  if ((decision.action !== "BUY" && decision.action !== "SELL") || decision.confidenceScore >= threshold) {
+    return decision;
+  }
+  return {
+    ...decision,
+    action: "DO_NOTHING",
+    confidenceScore: Math.max(decision.confidenceScore, 0.75),
+    riskScore: 0.05,
+    explanation: `${profile.displayName} requires at least ${Math.round(threshold * 100)}% confidence for ${decision.action}.`
+  };
+}
+
+function dryRunScreenedOutDecision(marketData: MarketDataset, reason: string): StrategyDecision {
+  return {
+    symbol: marketData.symbol,
+    action: "DO_NOTHING",
+    confidenceScore: 0.9,
+    riskScore: 0.05,
+    indicators: calculateIndicators(marketData.candles),
+    explanation: reason,
+    signalKey: `${marketData.symbol}:DO_NOTHING:dry-run:${marketData.asOf}:${reason.slice(0, 48)}`,
+    transactionCostEstimateUsd: 0
+  };
+}
+
+async function hasDryRunProcessedSignal(db: D1Database, portfolioId: string, signalKey: string): Promise<boolean> {
+  const row = await db.prepare("SELECT id FROM trades WHERE portfolio_id = ? AND signal_key = ? LIMIT 1").bind(portfolioId, signalKey).first<{ id: string }>();
+  return !!row;
+}
+
+function latestTimestamp(values: Array<string | null>): string | null {
+  return values.filter(Boolean).sort().at(-1) ?? null;
+}
+
+function parseCandles(value: string | null): MarketCandle[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as MarketCandle[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function nullTimestamp(now: Date): string {
+  return now.toISOString();
 }
 
 async function experimentInitializationResult(db: D1Database, experiment: ExperimentRow, idempotent: boolean): Promise<FiveStrategyExperimentResult> {

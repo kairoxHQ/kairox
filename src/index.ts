@@ -71,6 +71,7 @@ import { EventBus } from "./events/eventBus.ts";
 import { KnowledgeGraphService } from "./graph/knowledgeGraph.ts";
 import { listFounderReports } from "./reports/founderReport.ts";
 import {
+  getFiveStrategyExperimentDryRun,
   getFiveStrategyExperimentComparison,
   initializeFiveStrategyExperiment,
   renderFiveStrategyExperimentHtml
@@ -151,6 +152,7 @@ const protectedPostRoutes = new Set([
   "/portfolio-briefings/run",
   "/market-intelligence/run",
   "/strategy-experiment/initialize",
+  "/strategy-experiment/dry-run",
   "/events/process",
   "/events/replay",
   "/knowledge-graph/sync",
@@ -316,6 +318,10 @@ export default {
 
       if (url.pathname === "/strategy-experiment/initialize") {
         return json(await initializeFiveStrategyExperiment(env.DB));
+      }
+
+      if (url.pathname === "/strategy-experiment/dry-run") {
+        return json(await getFiveStrategyExperimentDryRun(env.DB));
       }
 
       if (url.pathname === "/research/run") {

@@ -18,6 +18,9 @@ import {
 
 const migration = readFileSync("migrations/0039_five_strategy_experiments.sql", "utf8");
 const serviceSource = readFileSync("src/experiments/fiveStrategyExperiment.ts", "utf8");
+const paperSource = readFileSync("src/paper/service.ts", "utf8");
+const observationSource = readFileSync("src/paper/observation.ts", "utf8");
+const assetSource = readFileSync("src/market/assets.ts", "utf8");
 
 test("five-strategy experiment migration stores immutable baseline and paper-only strategy portfolios", () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS strategy_experiments/);
@@ -54,6 +57,9 @@ test("strategy definitions are materially different and include the five request
   assert.ok(guardian.parameters.minConfidence > hyperactive.parameters.minConfidence);
   assert.ok(guardian.parameters.turnoverLimitPct < hyperactive.parameters.turnoverLimitPct);
   assert.ok(guardian.parameters.drawdownBlockPct < hyperactive.parameters.drawdownBlockPct);
+  assert.ok(guardian.parameters.maxTradesPerDay < hyperactive.parameters.maxTradesPerDay);
+  assert.ok(guardian.parameters.cooldownMinutes > hyperactive.parameters.cooldownMinutes);
+  assert.ok(guardian.parameters.buyThreshold > hyperactive.parameters.buyThreshold);
 });
 
 test("baseline scaling creates nine symbols and exactly 400 dollars without using source cost basis", () => {
@@ -166,6 +172,21 @@ test("experiment source does not create initialization trades or alter protected
   assert.doesNotMatch(serviceSource, /portfolio_tim_real_portfolio/);
   assert.match(serviceSource, /portfolio_tim_real_watchlist/);
   assert.match(serviceSource, /enabled, created_at, updated_at[\s\S]*\?, 0, \?, \?/);
+});
+
+test("experiment activation has dry-run, cadence, candidate, and startup cap safety hooks", () => {
+  assert.match(serviceSource, /getFiveStrategyExperimentDryRun/);
+  assert.match(serviceSource, /latestReadOnlyMarketData/);
+  assert.doesNotMatch(serviceSource, /getFiveStrategyExperimentDryRun[\s\S]*recordRecommendationAndJournal/);
+  assert.doesNotMatch(serviceSource, /getFiveStrategyExperimentDryRun[\s\S]*executePaperTrade/);
+  assert.match(assetSource, /isStrategyExperimentPortfolio/);
+  assert.match(assetSource, /strategy_experiment_portfolios/);
+  assert.match(observationSource, /cadenceMinutesForProfile/);
+  assert.match(observationSource, /dueProfiles/);
+  assert.match(paperSource, /completedTradesForAccountDay/);
+  assert.match(paperSource, /maxTradesPerDay/);
+  assert.match(paperSource, /maxTradesPerCycle/);
+  assert.match(paperSource, /cooldownMinutesRemaining/);
 });
 
 function sampleBaselineInput(): FrozenBaselineInput {

@@ -110,7 +110,11 @@ export async function resolvePaperCandidateUniverse(db: D1Database, portfolioId 
   }
 
   const account = await getLinkedPortfolioAccount(db, portfolioId);
-  if (account.accountType !== "paper_portfolio_twin" || account.readOnly) {
+  if (account.readOnly) {
+    return { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES };
+  }
+  const canUsePositionUniverse = account.accountType === "paper_portfolio_twin" || await isStrategyExperimentPortfolio(db, portfolioId);
+  if (!canUsePositionUniverse) {
     return { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES };
   }
 
@@ -118,6 +122,18 @@ export async function resolvePaperCandidateUniverse(db: D1Database, portfolioId 
   return positionAssets.length > 0
     ? { assets: positionAssets, source: "paper_twin_positions", reason: null }
     : { assets: [], source: "none", reason: NO_ENABLED_CANDIDATES };
+}
+
+async function isStrategyExperimentPortfolio(db: D1Database, portfolioId: string): Promise<boolean> {
+  try {
+    const row = await db.prepare("SELECT portfolio_id AS portfolioId FROM strategy_experiment_portfolios WHERE portfolio_id = ? LIMIT 1").bind(portfolioId).first<{ portfolioId: string }>();
+    return !!row;
+  } catch (error) {
+    if (/strategy_experiment_portfolios|no such table/i.test(error instanceof Error ? error.message : String(error))) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function listEnabledPositionAssets(db: D1Database, portfolioId: string): Promise<AssetRegistryRecord[]> {

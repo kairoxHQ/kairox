@@ -161,6 +161,8 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
   const progressInterval = Math.max(1, options.progressIntervalSymbols ?? 4);
   let persistedRecommendations = 0;
   let progressTradesExecuted = 0;
+  const tradesCompletedToday = await completedTradesForAccountDay(env.DB, portfolioId, now);
+  const latestTrade = await latestTradeForPortfolio(env.DB, portfolioId);
 
   for (const item of ranked) {
     const { asset, marketData, decision, screen } = item;
@@ -173,6 +175,16 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     const isExecutionAction = decision.action === "BUY" || decision.action === "SELL";
     if (isExecutionAction && !executionAllowedBySystem) {
       executionGateReasons.push("Automation is paused, so scheduled paper execution is blocked.");
+    }
+    if (isExecutionAction && progressTradesExecuted >= profile.parameters.maxTradesPerCycle) {
+      executionGateReasons.push(`${profile.displayName} reached its ${profile.parameters.maxTradesPerCycle} trade per cycle startup cap.`);
+    }
+    if (isExecutionAction && tradesCompletedToday + progressTradesExecuted >= profile.parameters.maxTradesPerDay) {
+      executionGateReasons.push(`${profile.displayName} reached its ${profile.parameters.maxTradesPerDay} completed trade per day startup cap.`);
+    }
+    const cooldownRemaining = cooldownMinutesRemaining(latestTrade?.executedAt ?? null, now, profile.parameters.cooldownMinutes);
+    if (isExecutionAction && cooldownRemaining > 0) {
+      executionGateReasons.push(`${profile.displayName} cooldown is active for another ${cooldownRemaining} minute(s).`);
     }
 
     if (isExecutionAction) {
@@ -557,6 +569,28 @@ async function getOpenPositions(db: D1Database, portfolioId: string): Promise<Po
       )
       .bind(portfolioId)
   );
+}
+
+async function completedTradesForAccountDay(db: D1Database, portfolioId: string, now: Date): Promise<number> {
+  const day = now.toISOString().slice(0, 10);
+  const row = await db.prepare(
+    "SELECT COUNT(*) AS count FROM trades WHERE portfolio_id = ? AND substr(executed_at, 1, 10) = ?"
+  ).bind(portfolioId, day).first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
+async function latestTradeForPortfolio(db: D1Database, portfolioId: string): Promise<{ executedAt: string | null } | null> {
+  return db.prepare(
+    "SELECT executed_at AS executedAt FROM trades WHERE portfolio_id = ? ORDER BY executed_at DESC LIMIT 1"
+  ).bind(portfolioId).first<{ executedAt: string | null }>();
+}
+
+function cooldownMinutesRemaining(latestTradeAt: string | null, now: Date, cooldownMinutes: number): number {
+  if (!latestTradeAt || cooldownMinutes <= 0) return 0;
+  const tradeTime = new Date(latestTradeAt.endsWith("Z") ? latestTradeAt : `${latestTradeAt.replace(" ", "T")}Z`).getTime();
+  if (!Number.isFinite(tradeTime)) return 0;
+  const elapsed = Math.floor((now.getTime() - tradeTime) / 60000);
+  return Math.max(0, cooldownMinutes - elapsed);
 }
 
 async function getMarketData(

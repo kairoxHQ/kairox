@@ -25,6 +25,21 @@ export interface ProfileParameters {
   concentrationMultiplier: number;
   cryptoPreference: number;
   dividendPreference: number;
+  turnoverLimitPct: number;
+  decisionCadence: string;
+  buyThreshold: number;
+  sellThreshold: number;
+  rebalanceThresholdPct: number;
+  maxTradesPerCycle: number;
+  maxTradesPerDay: number;
+  cooldownMinutes: number;
+  feeRate: number;
+  slippageBps: number;
+  volatilityWeight: number;
+  momentumWeight: number;
+  trendWeight: number;
+  macroWeight: number;
+  geopoliticalWeight: number;
 }
 
 interface ProfileRow {
@@ -59,7 +74,22 @@ const DEFAULT_PARAMETERS: ProfileParameters = {
   drawdownBlockPct: 0.1,
   concentrationMultiplier: 1,
   cryptoPreference: 1,
-  dividendPreference: 1
+  dividendPreference: 1,
+  turnoverLimitPct: 0.15,
+  decisionCadence: "normal",
+  buyThreshold: 0.6,
+  sellThreshold: 0.6,
+  rebalanceThresholdPct: 0.05,
+  maxTradesPerCycle: 1,
+  maxTradesPerDay: 2,
+  cooldownMinutes: 240,
+  feeRate: 0.001,
+  slippageBps: 25,
+  volatilityWeight: 1,
+  momentumWeight: 1,
+  trendWeight: 1,
+  macroWeight: 0,
+  geopoliticalWeight: 0
 };
 
 export async function listPortfolioProfiles(db: D1Database, options: ListPortfolioProfilesOptions = {}): Promise<PortfolioProfile[]> {

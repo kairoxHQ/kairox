@@ -204,7 +204,8 @@ export class PaperObservationService {
   }
 
   private async createParent(runKey: string, window: string, now: Date): Promise<PaperObservationRun> {
-    const profiles = await listPortfolioProfiles(this.db, { includeReadOnly: false });
+    const allProfiles = await listPortfolioProfiles(this.db, { includeReadOnly: false });
+    const profiles = await this.dueProfiles(allProfiles, now);
     const symbols = await this.uniqueSymbols(profiles);
     const marketData = new MarketDataService(this.db);
     const snapshot = await marketData.createSnapshot(symbols, "proposal", now);
@@ -416,6 +417,32 @@ export class PaperObservationService {
     return [...symbols].sort();
   }
 
+  private async dueProfiles(profiles: PortfolioProfile[], now: Date): Promise<PortfolioProfile[]> {
+    const due: PortfolioProfile[] = [];
+    for (const profile of profiles) {
+      if (await this.isProfileDue(profile, now)) {
+        due.push(profile);
+      }
+    }
+    return due;
+  }
+
+  private async isProfileDue(profile: PortfolioProfile, now: Date): Promise<boolean> {
+    const cadenceMinutes = cadenceMinutesForProfile(profile);
+    const latest = await this.db.prepare(
+      `SELECT finished_at AS finishedAt, started_at AS startedAt
+       FROM paper_observation_profile_runs
+       WHERE portfolio_id = ? AND status IN ('completed', 'no_action')
+       ORDER BY COALESCE(finished_at, started_at) DESC
+       LIMIT 1`
+    ).bind(profile.portfolioId).first<{ finishedAt: string | null; startedAt: string | null }>();
+    const latestTime = latest?.finishedAt ?? latest?.startedAt;
+    if (!latestTime) return true;
+    const latestMs = new Date(latestTime).getTime();
+    if (!Number.isFinite(latestMs)) return true;
+    return now.getTime() - latestMs >= cadenceMinutes * 60 * 1000;
+  }
+
   private async getParentByRunKey(runKey: string): Promise<PaperObservationRun | null> {
     const row = await this.db.prepare(`${PARENT_SELECT} WHERE run_key = ?`).bind(runKey).first<ParentRow>();
     return row ? mapParent(row) : null;
@@ -456,6 +483,23 @@ function childStatusFromSummary(summary: FounderReportProfileInput): Observation
   const symbols = summary.symbols ?? [];
   if (symbols.some((symbol) => symbol.executed)) return "completed";
   return "no_action";
+}
+
+export function cadenceMinutesForProfile(profile: Pick<PortfolioProfile, "parameters">): number {
+  switch (profile.parameters.decisionCadence) {
+    case "low":
+      return 24 * 60;
+    case "moderate":
+      return 6 * 60;
+    case "normal":
+      return 2 * 60;
+    case "fast":
+      return 60;
+    case "very_fast":
+      return 30;
+    default:
+      return 2 * 60;
+  }
 }
 
 function addBudget(left: RequestBudgetCounters, right: RequestBudgetCounters): RequestBudgetCounters {
