@@ -22,6 +22,7 @@ const protectedMutationRoutes = [
   "/daily-management-cycles/run",
   "/daily-reviews/run",
   "/strategy/run",
+  "/strategy-experiment/initialize",
   "/portfolio-decisions/run",
   "/portfolio-decisions/decision_123/accept",
   "/portfolio-decisions/decision_123/reject",
@@ -41,7 +42,7 @@ test("mutating portfolio state routes require the protected secret", () => {
 });
 
 test("read-only GET and JSON routes do not require mutation auth", () => {
-  for (const route of ["/status", "/portfolio", "/portfolio?format=json", "/allocation-proposals", "/paper-order-batches", "/quotes"]) {
+  for (const route of ["/status", "/portfolio", "/portfolio?format=json", "/strategy-experiment", "/allocation-proposals", "/paper-order-batches", "/quotes"]) {
     const pathname = new URL(route, "https://kairox.test").pathname;
     assert.equal(requiresMutationAuth("GET", pathname), false, route);
   }
@@ -67,6 +68,7 @@ test("unauthenticated nearby mutation routes are rejected before database access
     "/recommendation-proposals/proposal_123/regenerate",
     "/paper-order-batches/batch_123/ready",
     "/portfolio-decisions/decision_123/accept",
+    "/strategy-experiment/initialize",
     "/accounts/portfolio_ira/daily-orchestration",
     "/linked-portfolios/portfolio_real/manual-holdings",
     "/linked-portfolios/import-preview/approve",

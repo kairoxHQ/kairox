@@ -70,6 +70,11 @@ import { PortfolioResearchEngine, runScheduledResearch, type ResearchRankBy } fr
 import { EventBus } from "./events/eventBus.ts";
 import { KnowledgeGraphService } from "./graph/knowledgeGraph.ts";
 import { listFounderReports } from "./reports/founderReport.ts";
+import {
+  getFiveStrategyExperimentComparison,
+  initializeFiveStrategyExperiment,
+  renderFiveStrategyExperimentHtml
+} from "./experiments/fiveStrategyExperiment.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -145,6 +150,7 @@ const protectedPostRoutes = new Set([
   "/portfolio-decisions/run",
   "/portfolio-briefings/run",
   "/market-intelligence/run",
+  "/strategy-experiment/initialize",
   "/events/process",
   "/events/replay",
   "/knowledge-graph/sync",
@@ -226,6 +232,7 @@ export default {
       "/portfolio-briefings",
       "/portfolio-briefings/public-summary",
       "/strategy-lab",
+      "/strategy-experiment",
       "/research",
       "/research/securities",
       "/research/rankings",
@@ -305,6 +312,10 @@ export default {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         const result = await new StrategyEvaluationLabService(env.DB).run(portfolioId);
         return strategyLabActionResponse(request, portfolioId, result);
+      }
+
+      if (url.pathname === "/strategy-experiment/initialize") {
+        return json(await initializeFiveStrategyExperiment(env.DB));
       }
 
       if (url.pathname === "/research/run") {
@@ -899,6 +910,13 @@ export default {
       if (url.pathname === "/strategy-lab") {
         const portfolioId = await requestedExistingPortfolioId(env.DB, url) ?? "portfolio_ira";
         return json(await new StrategyEvaluationLabService(env.DB).summary(portfolioId));
+      }
+
+      if (url.pathname === "/strategy-experiment") {
+        if (wantsHtml(request, url)) {
+          return renderFiveStrategyExperimentHtml(env.DB);
+        }
+        return json(await getFiveStrategyExperimentComparison(env.DB));
       }
 
       if (url.pathname === "/research") {
