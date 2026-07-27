@@ -72,6 +72,10 @@ test("baseline scaling creates nine symbols and exactly 400 dollars without usin
   assert.ok(baseline.initialCashUsd >= 0);
   assert.ok(baseline.initialCashUsd < 1);
   assert.ok(baseline.positions.every((position) => position.experimentCostBasisUsd === position.scaledMarketValueUsd));
+  assert.equal(
+    round4(baseline.positions.reduce((sum, position) => sum + round4(position.frozenPriceUsd * position.scaledQuantity), 0)),
+    baseline.initialHoldingsValueUsd
+  );
 
   const copiedSourceCostBasis = baseline.positions.reduce((sum, position) => sum + position.sourceCostBasisUsd, 0);
   assert.notEqual(Math.round(copiedSourceCostBasis * 100) / 100, 400);
@@ -119,6 +123,8 @@ test("initializer creates exactly five paper portfolios from the same baseline a
   assert.ok(first.portfolios.every((portfolio) => portfolio.experimentStartingValueUsd === 400));
   assert.ok(first.portfolios.every((portfolio) => portfolio.initialCashUsd === first.baseline.initialCashUsd));
   assert.ok(first.portfolios.every((portfolio) => portfolio.initialTradeCount === 0));
+  const initializedRuntimeValue = round4(first.baseline.initialCashUsd + first.baseline.positions.reduce((sum, position) => sum + round4(position.frozenPriceUsd * position.scaledQuantity), 0));
+  assert.equal(initializedRuntimeValue, 400);
   assert.equal(db.state.portfolios.length, 5);
   assert.equal(db.state.tradesInserted, 0);
   assert.equal(db.state.ordersInserted, 0);
@@ -243,6 +249,10 @@ function sampleComparison(): StrategyExperimentComparison {
       dataStatus: "delayed"
     }]
   };
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
 
 function experimentDb() {

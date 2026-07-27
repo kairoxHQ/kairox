@@ -522,7 +522,7 @@ export function scaleFrozenBaseline(input: FrozenBaselineInput, options: {
 
   const sourceHoldingsValueUsd = roundMoney(input.holdings.reduce((sum, holding) => {
     validateHolding(holding);
-    return addMoney(sum, multiplyMoney(holding.sourceQuantity, holding.frozenPriceUsd));
+    return addMoney(sum, multiplyMoney(holding.frozenPriceUsd, holding.sourceQuantity));
   }, 0));
   if (sourceHoldingsValueUsd <= 0) {
     throw new Error("Experiment source holdings value must be positive.");
@@ -534,11 +534,11 @@ export function scaleFrozenBaseline(input: FrozenBaselineInput, options: {
     .sort((left, right) => left.symbol.localeCompare(right.symbol))
     .map((holding) => {
       const scaledQuantity = roundQuantity(holding.sourceQuantity * scaleFactor, holding.quantityPrecision);
-      const scaledMarketValueUsd = multiplyMoney(scaledQuantity, holding.frozenPriceUsd);
+      const scaledMarketValueUsd = multiplyMoney(holding.frozenPriceUsd, scaledQuantity);
       return {
         ...holding,
-        sourceMarketValueUsd: multiplyMoney(holding.sourceQuantity, holding.frozenPriceUsd),
-        sourceCostBasisUsd: multiplyMoney(holding.sourceQuantity, holding.sourceAverageCostUsd),
+        sourceMarketValueUsd: multiplyMoney(holding.frozenPriceUsd, holding.sourceQuantity),
+        sourceCostBasisUsd: multiplyMoney(holding.sourceAverageCostUsd, holding.sourceQuantity),
         scaledQuantity,
         scaledMarketValueUsd,
         experimentCostBasisUsd: scaledMarketValueUsd
