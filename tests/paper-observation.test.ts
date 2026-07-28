@@ -68,10 +68,10 @@ test("profile execution has terminal statuses for no action, success, and failur
   assert.match(observationSource, /partial_failure/);
 });
 
-test("observation child skips heavy maintenance unless a paper trade executes", () => {
+test("observation child skips heavy maintenance unless explicitly requested", () => {
   assert.match(observationSource, /runMaintenance: false/);
   assert.match(paperSource, /runMaintenance\?: boolean/);
-  assert.match(paperSource, /executedTradeCount > 0/);
+  assert.match(paperSource, /options\.runMaintenance \?\? true/);
   assert.match(paperSource, /runPostStrategyMaintenance/);
   assert.match(paperSource, /lightweightPerformanceSummary/);
   assert.match(paperSource, /skipped_no_trade_observation/);

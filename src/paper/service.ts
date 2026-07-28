@@ -282,7 +282,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
       budget: options.budget ?? null
     });
   }
-  const maintenanceResult = (options.runMaintenance ?? true) || executedTradeCount > 0
+  const maintenanceResult = options.runMaintenance ?? true
     ? await runPostStrategyMaintenance(env.DB, portfolioId, runStartedAt, now)
     : await lightweightPerformanceSummary(env.DB, portfolioId, runStartedAt);
   const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB, portfolioId), new Map(), portfolioId);
