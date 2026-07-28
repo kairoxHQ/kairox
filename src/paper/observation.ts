@@ -377,7 +377,16 @@ export class PaperObservationService {
 
   private async finalizeParent(parentId: string, now: Date): Promise<void> {
     const children = await this.children(parentId);
-    if (children.length === 0 || children.some((child) => child.status === "queued" || child.status === "running")) {
+    if (children.some((child) => child.status === "queued" || child.status === "running")) {
+      return;
+    }
+    if (children.length === 0) {
+      await this.db.prepare(
+        `UPDATE paper_observation_runs
+         SET status = 'no_action', profiles_completed = 0, profiles_no_action = 0,
+           profiles_failed = 0, request_budget_json = ?, finished_at = ?, updated_at = datetime('now')
+         WHERE id = ?`
+      ).bind(JSON.stringify(EMPTY_BUDGET), now.toISOString(), parentId).run();
       return;
     }
     const completed = children.filter((child) => child.status === "completed").length;

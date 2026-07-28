@@ -208,6 +208,11 @@ test("failed children are terminal and stale recovery re-finalizes affected pare
   assert.match(observationSource, /status = 'failed', phase = 'failed'/);
 });
 
+test("zero-profile parent runs finalize as no action instead of staying running", () => {
+  assert.match(observationSource, /children\.length === 0/);
+  assert.match(observationSource, /SET status = 'no_action', profiles_completed = 0, profiles_no_action = 0/);
+});
+
 test("scheduler passes parent child and profile audit context into paper execution", () => {
   assert.match(observationSource, /auditContext: \{/);
   assert.match(observationSource, /schedulerParentRunId: parent\.id/);
