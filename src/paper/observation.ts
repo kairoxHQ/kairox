@@ -168,9 +168,6 @@ export class PaperObservationService {
     if (!parent || parent.status === "completed" || parent.status === "failed" || parent.status === "partial_failure") {
       return null;
     }
-    if (await this.hasRunningChild(parent.id)) {
-      return null;
-    }
     const child = await this.nextQueuedChild(parent.id);
     if (!child) {
       await this.finalizeParent(parent.id, now);
@@ -481,11 +478,6 @@ export class PaperObservationService {
   private async nextQueuedChild(parentId: string): Promise<PaperObservationChildRun | null> {
     const row = await this.db.prepare(`${CHILD_SELECT} WHERE parent_run_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1`).bind(parentId).first<ChildRow>();
     return row ? mapChild(row) : null;
-  }
-
-  private async hasRunningChild(parentId: string): Promise<boolean> {
-    const row = await this.db.prepare("SELECT id FROM paper_observation_profile_runs WHERE parent_run_id = ? AND status = 'running' LIMIT 1").bind(parentId).first<{ id: string }>();
-    return !!row;
   }
 
   private async getChild(id: string): Promise<PaperObservationChildRun | null> {

@@ -177,12 +177,18 @@ test("cron workload isolation avoids sharing one failure budget", () => {
 });
 
 test("child claiming checks the row update before strategy work", () => {
-  assert.match(observationSource, /hasRunningChild\(parent\.id\)/);
-  assert.match(observationSource, /status = 'running' LIMIT 1/);
+  assert.doesNotMatch(observationSource, /hasRunningChild\(parent\.id\)/);
+  assert.doesNotMatch(observationSource, /status = 'running' LIMIT 1/);
   assert.match(observationSource, /const claim = await this\.db\.prepare/);
   assert.match(observationSource, /WHERE id = \? AND status = 'queued'/);
   assert.match(observationSource, /Number\(claim\.meta\?\.changes \?\? 0\) !== 1/);
   assert.match(observationSource, /return \(await this\.getChild\(child\.id\)\) \?\? child/);
+});
+
+test("one running child does not block queued child processing", () => {
+  assert.doesNotMatch(observationSource, /if \(await this\.hasRunningChild\(parent\.id\)\)/);
+  assert.match(observationSource, /const child = await this\.nextQueuedChild\(parent\.id\)/);
+  assert.match(observationSource, /WHERE id = \? AND status = 'queued'/);
 });
 
 test("final child or recovered child immediately finalizes parent and Founder Report", () => {
