@@ -23,6 +23,7 @@ import { getPortfolioValuation, recordValuationSnapshot } from "../portfolio/val
 import { evaluateAndAwardMilestones } from "../milestones/service.ts";
 import { recordValuationJourneyEvents } from "../journey/service.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { evaluateIraCashManagement, resolveIraCashManagementParameters, type IraCashManagementDecision } from "../policies/iraCashManagement.ts";
 import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 const SPREAD_RATE = 0.0025;
@@ -272,6 +273,26 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     }
   }
 
+  const cashManagementSummary = await evaluateIraIdleCashFallback({
+    db: env.DB,
+    portfolioId,
+    profile,
+    investmentPolicy,
+    assets,
+    evaluated,
+    hasOrdinaryExecution: progressTradesExecuted > 0,
+    executionAllowedBySystem,
+    auditContext: options.auditContext,
+    now
+  });
+  if (cashManagementSummary) {
+    summaries.push(cashManagementSummary.summary);
+    persistedRecommendations += 1;
+    if (cashManagementSummary.executed) {
+      progressTradesExecuted += 1;
+    }
+  }
+
   const executedTradeCount = summaries.filter((summary) => summary.executed).length;
   if (options.onProgress) {
     await options.onProgress({
@@ -314,6 +335,106 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
     .run();
 
   return summary;
+}
+
+async function evaluateIraIdleCashFallback(input: {
+  db: D1Database;
+  portfolioId: string;
+  profile: PortfolioProfile;
+  investmentPolicy: Awaited<ReturnType<typeof getInvestmentPolicy>>;
+  assets: AssetRegistryRecord[];
+  evaluated: RankedOpportunity[];
+  hasOrdinaryExecution: boolean;
+  executionAllowedBySystem: boolean;
+  auditContext?: PaperRunAuditContext;
+  now: Date;
+}): Promise<{ summary: RunSymbolSummary; executed: boolean } | null> {
+  if (input.portfolioId !== "portfolio_ira" || input.profile.profileKey !== "ira") {
+    return null;
+  }
+
+  const parameters = resolveIraCashManagementParameters(input.profile.parameters.iraCashManagement);
+  const targetAsset = firstSupportedIraCashAsset(parameters.conservativeAllowlist.map((asset) => asset.symbol), input.assets);
+  const targetMarketData = targetAsset
+    ? input.evaluated.find((item) => item.asset.symbol === targetAsset.symbol)?.marketData ?? null
+    : null;
+  const portfolio = await getPortfolioRow(input.db, input.portfolioId);
+  const position = targetAsset ? await getPosition(input.db, input.portfolioId, targetAsset.symbol) : null;
+  const state = await calculatePortfolioState(input.db, portfolio, targetMarketData ? new Map([[targetMarketData.symbol, targetMarketData.priceUsd]]) : new Map(), input.portfolioId);
+  const tradedTargetToday = targetAsset ? await hasTradedSymbolOnAccountDay(input.db, input.portfolioId, targetAsset.symbol, input.now) : false;
+  const policyDecision = evaluateIraCashManagement({
+    portfolioId: input.portfolioId,
+    cashUsd: state.cashUsd,
+    totalValueUsd: state.totalValueUsd,
+    existingPositionValueUsd: position?.marketValueUsd ?? 0,
+    asset: targetAsset,
+    marketData: targetMarketData,
+    hasOrdinaryExecution: input.hasOrdinaryExecution,
+    tradedTargetToday,
+    maxNewTradePct: input.profile.parameters.maxNewTradePct,
+    currentPositionLimitPct: input.profile.parameters.maxPositionPct,
+    feeRate: input.profile.parameters.feeRate,
+    slippageBps: input.profile.parameters.slippageBps,
+    now: input.now,
+    parameters
+  });
+  const marketData = targetMarketData ?? cashManagementPlaceholderMarketData(policyDecision, input.now);
+  const decision = iraCashStrategyDecision(marketData, policyDecision);
+  const executionGateReasons: string[] = [];
+  if (decision.action === "BUY") {
+    if (!input.executionAllowedBySystem) {
+      executionGateReasons.push("Automation is paused, so scheduled paper execution is blocked.");
+    }
+    if (!targetAsset?.tradable) {
+      executionGateReasons.push(`${policyDecision.targetSymbol ?? "Target asset"} is not enabled for paper execution.`);
+    }
+    if (targetAsset) {
+      const marketHours = canExecuteAt(marketData.assetClass, input.now, targetAsset.marketHoursMode);
+      if (!marketHours.allowed && marketHours.reason) {
+        executionGateReasons.push(marketHours.reason);
+      }
+    }
+  }
+  const baseRisk = assessPaperTrade({
+    action: decision.action,
+    marketData,
+    portfolioValueUsd: state.totalValueUsd,
+    cashUsd: state.cashUsd,
+    currentPositionValueUsd: position?.marketValueUsd ?? 0,
+    proposedTradeValueUsd: policyDecision.proposedDeploymentUsd,
+    drawdownPct: state.drawdownPct,
+    duplicateSignal: await hasProcessedSignal(input.db, input.portfolioId, decision.signalKey),
+    openedNewPositionThisRun: false,
+    hasPosition: !!position && position.quantity > 0,
+    maxNewTradePct: input.profile.parameters.maxNewTradePct,
+    maxPositionPct: input.profile.parameters.maxPositionPct,
+    drawdownBlockPct: input.profile.parameters.drawdownBlockPct,
+    investmentPolicy: input.investmentPolicy,
+    orderIntent: "long_buy"
+  });
+  const risk = executionGateReasons.length > 0
+    ? { allowed: false, riskScore: 0.9, reasons: [...baseRisk.reasons, ...executionGateReasons] }
+    : baseRisk;
+  const recommendationId = await recordRecommendationAndJournal(input.db, input.portfolioId, marketData, decision, risk, undefined, input.profile, input.auditContext);
+  let executed = false;
+  let reason = decision.action === "DO_NOTHING" ? decision.explanation : risk.reasons.join(" ");
+  if (risk.allowed && decision.action === "BUY" && targetAsset) {
+    const execution = await executePaperTrade(input.db, input.portfolioId, marketData, decision, policyDecision.proposedDeploymentUsd, position, input.profile, input.auditContext, recommendationId);
+    executed = execution.executed;
+    reason = execution.reason;
+  }
+  return {
+    executed,
+    summary: {
+      symbol: policyDecision.targetSymbol ?? "IRA_CASH",
+      action: risk.allowed ? decision.action : "DO_NOTHING",
+      executed,
+      reason,
+      signalKey: decision.signalKey,
+      rank: null,
+      screenScore: undefined
+    }
+  };
 }
 
 export async function recoverPaperStrategyRunFromPersistedWork(
@@ -593,12 +714,70 @@ async function latestTradeForPortfolio(db: D1Database, portfolioId: string): Pro
   ).bind(portfolioId).first<{ executedAt: string | null }>();
 }
 
+async function hasTradedSymbolOnAccountDay(db: D1Database, portfolioId: string, symbol: string, now: Date): Promise<boolean> {
+  const day = now.toISOString().slice(0, 10);
+  const row = await db.prepare(
+    "SELECT id FROM trades WHERE portfolio_id = ? AND symbol = ? AND substr(executed_at, 1, 10) = ? LIMIT 1"
+  ).bind(portfolioId, symbol, day).first<{ id: string }>();
+  return !!row;
+}
+
 function cooldownMinutesRemaining(latestTradeAt: string | null, now: Date, cooldownMinutes: number): number {
   if (!latestTradeAt || cooldownMinutes <= 0) return 0;
   const tradeTime = new Date(latestTradeAt.endsWith("Z") ? latestTradeAt : `${latestTradeAt.replace(" ", "T")}Z`).getTime();
   if (!Number.isFinite(tradeTime)) return 0;
   const elapsed = Math.floor((now.getTime() - tradeTime) / 60000);
   return Math.max(0, cooldownMinutes - elapsed);
+}
+
+function firstSupportedIraCashAsset(symbols: string[], assets: AssetRegistryRecord[]): AssetRegistryRecord | null {
+  const bySymbol = new Map(assets.map((asset) => [asset.symbol, asset]));
+  for (const symbol of symbols) {
+    const asset = bySymbol.get(symbol.toUpperCase());
+    if (asset) return asset;
+  }
+  return null;
+}
+
+function iraCashStrategyDecision(marketData: MarketDataset, policy: IraCashManagementDecision): StrategyDecision {
+  const action = policy.action;
+  const amount = policy.proposedDeploymentUsd > 0 ? ` Proposed deployment: $${policy.proposedDeploymentUsd.toFixed(2)}.` : "";
+  const audit = ` Cash before: $${policy.cashBeforeUsd.toFixed(2)}. Required reserve: $${policy.requiredReserveUsd.toFixed(2)}. Target reserve: $${policy.targetReserveUsd.toFixed(2)}. Deployable excess cash: $${policy.deployableExcessCashUsd.toFixed(2)}.${amount}`;
+  const day = marketData.asOf.slice(0, 10);
+  return {
+    symbol: marketData.symbol,
+    action,
+    confidenceScore: policy.confidenceScore,
+    riskScore: policy.riskScore,
+    indicators: {
+      shortMovingAverage: null,
+      longMovingAverage: null,
+      rsi: null,
+      momentumPct: null
+    },
+    explanation: `${policy.reason}${audit}`,
+    signalKey: `IRA_CASH:${marketData.symbol}:${action}:${day}`,
+    transactionCostEstimateUsd: policy.feeUsd + policy.slippageUsd
+  };
+}
+
+function cashManagementPlaceholderMarketData(policy: IraCashManagementDecision, now: Date): MarketDataset {
+  const symbol = policy.targetSymbol ?? "IRA_CASH";
+  const timestamp = policy.quoteTimestamp ?? now.toISOString();
+  return {
+    symbol,
+    assetClass: "yield",
+    priceUsd: policy.decisionPriceUsd ?? 0,
+    asOf: timestamp,
+    source: policy.quoteSource ?? "ira_cash_management_policy",
+    validated: false,
+    candles: [],
+    stale: true,
+    error: policy.reason,
+    userMessage: policy.reason,
+    status: "deferred",
+    quality: "invalid"
+  };
 }
 
 async function getMarketData(

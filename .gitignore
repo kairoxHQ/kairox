@@ -4,6 +4,7 @@ node_modules/
 .xdg-config/
 dist/
 migration-backup/
+backups/
 .dev.vars
 .env
 .env.*

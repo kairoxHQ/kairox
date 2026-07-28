@@ -5,6 +5,7 @@ import { formatCurrency, formatPercent, formatPrice, formatSignedCurrency, forma
 import { getPortfolioProfile, listPortfolioProfiles } from "./profiles.ts";
 import { getPortfolioValuation, type PortfolioValuation, type ValuedPosition } from "./valuation.ts";
 import { getLinkedPortfolioAccount, type LinkedPortfolioAccount } from "./accountTypes.ts";
+import { resolveIraCashManagementParameters } from "../policies/iraCashManagement.ts";
 
 interface PortfolioRow {
   id: string;
@@ -118,8 +119,24 @@ interface PortfolioPageData {
   valuation: PortfolioValuation;
   holdings: PortfolioPageHolding[];
   guardianSummary: string;
+  iraCashSummary?: IraCashSummary | null;
   recentActivity: PortfolioPageActivityRow[];
   generatedAt: string;
+}
+
+interface IraCashSummary {
+  availableCashUsd: number;
+  operationalReserveUsd: number;
+  targetReserveUsd: number;
+  excessIdleCashUsd: number;
+  cashEquivalentValueUsd: number;
+  bondValueUsd: number;
+  equityValueUsd: number;
+  investedPct: number;
+  operationalCashPct: number;
+  latestDecisionReason: string;
+  latestTrade: string;
+  cashPutToWorkUsd: number;
 }
 
 export async function renderPortfolioPage(db: D1Database, portfolioId = TIM_PORTFOLIO_ID): Promise<Response> {
@@ -133,7 +150,7 @@ export async function renderPortfolioPage(db: D1Database, portfolioId = TIM_PORT
 }
 
 async function getPortfolioPageData(db: D1Database, portfolioId: string): Promise<PortfolioPageData> {
-  const [portfolioData, profile, profiles, marketTicker, account, valuation, assetRows, priceHistoryRows, recentActivity] = await Promise.all([
+  const [portfolioData, profile, profiles, marketTicker, account, valuation, assetRows, priceHistoryRows, recentActivity, cashPutToWork] = await Promise.all([
     getPortfolio(db, portfolioId),
     getPortfolioProfile(db, portfolioId),
     listPortfolioProfiles(db),
@@ -158,7 +175,8 @@ async function getPortfolioPageData(db: D1Database, portfolioId: string): Promis
          ) latest ON latest.symbol = ms.symbol AND latest.createdAt = ms.created_at`
       )
     ),
-    getRecentPortfolioActivity(db, portfolioId)
+    getRecentPortfolioActivity(db, portfolioId),
+    getCashPutToWork(db, portfolioId)
   ]);
   const assets = new Map(assetRows.map((asset) => [asset.symbol, asset]));
   const previousCloseBySymbol = new Map(priceHistoryRows.map((row) => [row.symbol, previousCloseFromCandles(row.candlesJson)]));
@@ -187,9 +205,74 @@ async function getPortfolioPageData(db: D1Database, portfolioId: string): Promis
     valuation,
     holdings,
     guardianSummary: guardianSummary(valuation, holdings),
+    iraCashSummary: portfolioId === "portfolio_ira" ? await buildIraCashSummary(db, profile, valuation, holdings, assets, cashPutToWork) : null,
     recentActivity,
     generatedAt: new Date().toISOString()
   };
+}
+
+async function buildIraCashSummary(
+  db: D1Database,
+  profile: Awaited<ReturnType<typeof getPortfolioProfile>>,
+  valuation: PortfolioValuation,
+  holdings: PortfolioPageHolding[],
+  assets: Map<string, PortfolioPageAsset>,
+  cashPutToWorkUsd: number
+): Promise<IraCashSummary> {
+  const parameters = resolveIraCashManagementParameters(profile.parameters.iraCashManagement);
+  const total = valuation.totalAccountValueUsd > 0 ? valuation.totalAccountValueUsd : 1;
+  const operationalReserveUsd = Math.max(parameters.minOperationalCashReserveUsd, valuation.totalAccountValueUsd * parameters.minOperationalCashReservePct);
+  const targetReserveUsd = Math.max(operationalReserveUsd, valuation.totalAccountValueUsd * parameters.targetOperationalCashReservePct);
+  const conservativeSymbols = new Set(parameters.conservativeAllowlist.map((asset) => asset.symbol));
+  const cashEquivalentValueUsd = holdings
+    .filter((holding) => conservativeSymbols.has(holding.symbol) && isCashEquivalentAsset(assets.get(holding.symbol)))
+    .reduce((sum, holding) => sum + holding.currentValueUsd, 0);
+  const bondValueUsd = holdings
+    .filter((holding) => isBondAsset(assets.get(holding.symbol)))
+    .reduce((sum, holding) => sum + holding.currentValueUsd, 0);
+  const equityValueUsd = holdings
+    .filter((holding) => isEquityAsset(assets.get(holding.symbol)))
+    .reduce((sum, holding) => sum + holding.currentValueUsd, 0);
+  const [latestDecision, latestTrade] = await Promise.all([
+    db.prepare(
+      `SELECT explanation
+       FROM decision_journal
+       WHERE portfolio_id = 'portfolio_ira' AND signal_key LIKE 'IRA_CASH:%'
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).first<{ explanation: string }>(),
+    db.prepare(
+      `SELECT symbol, side, quantity, price_usd AS priceUsd, fees_usd AS feesUsd, executed_at AS executedAt
+       FROM trades
+       WHERE portfolio_id = 'portfolio_ira'
+       ORDER BY executed_at DESC
+       LIMIT 1`
+    ).first<{ symbol: string; side: string; quantity: number; priceUsd: number; feesUsd: number; executedAt: string }>()
+  ]);
+
+  return {
+    availableCashUsd: valuation.cashUsd,
+    operationalReserveUsd,
+    targetReserveUsd,
+    excessIdleCashUsd: Math.max(0, valuation.cashUsd - targetReserveUsd),
+    cashEquivalentValueUsd,
+    bondValueUsd,
+    equityValueUsd,
+    investedPct: valuation.totalPortfolioValueUsd / total,
+    operationalCashPct: valuation.cashUsd / total,
+    latestDecisionReason: latestDecision?.explanation ?? "IRA cash-management policy has not recorded a decision yet.",
+    latestTrade: latestTrade ? `${latestTrade.side} ${latestTrade.symbol} at ${money(latestTrade.priceUsd)} on ${formatDate(latestTrade.executedAt)}` : "No paper trade recorded yet.",
+    cashPutToWorkUsd
+  };
+}
+
+async function getCashPutToWork(db: D1Database, portfolioId: string): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COALESCE(SUM(quantity * price_usd + fees_usd), 0) AS cashPutToWorkUsd
+     FROM trades
+     WHERE portfolio_id = ? AND side = 'BUY'`
+  ).bind(portfolioId).first<{ cashPutToWorkUsd: number }>();
+  return Number(row?.cashPutToWorkUsd ?? 0);
 }
 
 async function getRecentPortfolioActivity(db: D1Database, portfolioId: string): Promise<PortfolioPageActivityRow[]> {
@@ -393,6 +476,7 @@ export function renderPortfolioHtml(data: PortfolioPageData): string {
       <h2>Guardian Summary</h2>
       <p>${escapeHtml(data.guardianSummary)}</p>
     </section>
+    ${data.iraCashSummary ? renderIraCashSummary(data.iraCashSummary) : ""}
     <section class="panel" id="holdings">
       <h2>Holdings</h2>
       <div class="holdings">
@@ -477,6 +561,24 @@ function compactTickerItem(item: NormalizedQuote): string {
   </a>`;
 }
 
+function renderIraCashSummary(summary: IraCashSummary): string {
+  return `<section class="panel" id="ira-cash-management">
+    <h2>IRA Cash Management</h2>
+    <div class="metric-grid">
+      ${metric("Available cash", money(summary.availableCashUsd), "Uninvested paper cash available after completed trades")}
+      ${metric("Operational reserve", money(summary.operationalReserveUsd), `Target reserve ${money(summary.targetReserveUsd)}`)}
+      ${metric("Excess idle cash", money(summary.excessIdleCashUsd), "Eligible for review by the conservative IRA cash policy")}
+      ${metric("Cash-equivalent investments", money(summary.cashEquivalentValueUsd), "Treasury or money-market substitutes when supported")}
+      ${metric("Bond investments", money(summary.bondValueUsd), "Conservative fixed-income paper holdings")}
+      ${metric("Equity investments", money(summary.equityValueUsd), "Diversified equity or dividend-oriented paper holdings")}
+      ${metric("Invested", pct(summary.investedPct), `${pct(summary.operationalCashPct)} held as operational cash`)}
+      ${metric("Cash put to work", money(summary.cashPutToWorkUsd), "Completed paper buys since account initialization")}
+      ${metric("Latest trade", summary.latestTrade, "Most recent paper fill for this IRA")}
+    </div>
+    <p class="muted"><strong>Latest cash-management decision:</strong> ${escapeHtml(summary.latestDecisionReason)}</p>
+  </section>`;
+}
+
 function quoteIndicator(direction: string): string {
   if (direction === "up") return "Up";
   if (direction === "down") return "Down";
@@ -518,6 +620,18 @@ function holdingRow(holding: PortfolioPageHolding): string {
     <div><div class="label">Today</div><div class="${signedClass(holding.todayChangeUsd ?? 0)}">${escapeHtml(today)}</div></div>
     <div><div class="label">Allocation</div><div>${escapeHtml(pct(holding.allocationPct))}</div></div>
   </article>`;
+}
+
+function isCashEquivalentAsset(asset: PortfolioPageAsset | undefined): boolean {
+  return asset?.assetType === "money_market";
+}
+
+function isBondAsset(asset: PortfolioPageAsset | undefined): boolean {
+  return asset?.assetType === "bond_fund";
+}
+
+function isEquityAsset(asset: PortfolioPageAsset | undefined): boolean {
+  return asset?.assetType === "stock" || asset?.assetType === "etf" || asset?.assetType === "reit";
 }
 
 function activityItem(item: PortfolioPageActivityRow): string {

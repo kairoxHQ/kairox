@@ -40,6 +40,30 @@ export interface ProfileParameters {
   trendWeight: number;
   macroWeight: number;
   geopoliticalWeight: number;
+  iraCashManagement?: {
+    enabled?: boolean;
+    minOperationalCashReserveUsd?: number;
+    minOperationalCashReservePct?: number;
+    targetOperationalCashReservePct?: number;
+    maxUnallocatedCashPct?: number;
+    minimumDeploymentUsd?: number;
+    minimumRebalanceUsd?: number;
+    dailyDeploymentLimitPctOfExcess?: number;
+    dailyDeploymentLimitUsd?: number | null;
+    reviewCadence?: "trading_day";
+    conservativeAllowlist?: Array<{
+      symbol: string;
+      category:
+        | "treasury_bill_etf"
+        | "ultra_short_treasury_etf"
+        | "government_money_market"
+        | "short_term_treasury_fund"
+        | "short_duration_investment_grade_bond"
+        | "broad_bond_market_etf";
+      targetAllocationPct: number;
+      priority: number;
+    }>;
+  };
 }
 
 interface ProfileRow {
