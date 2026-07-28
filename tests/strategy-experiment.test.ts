@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  applyProfileDecisionPolicy
+} from "../src/paper/service.ts";
+import {
   EXPECTED_EXPERIMENT_SYMBOLS,
   FIVE_STRATEGY_BASELINE_ID,
   FIVE_STRATEGY_DEFINITIONS,
@@ -17,6 +20,7 @@ import {
 } from "../src/experiments/fiveStrategyExperiment.ts";
 
 const migration = readFileSync("migrations/0039_five_strategy_experiments.sql", "utf8");
+const auditMigration = readFileSync("migrations/0040_strategy_execution_audit_links.sql", "utf8");
 const serviceSource = readFileSync("src/experiments/fiveStrategyExperiment.ts", "utf8");
 const paperSource = readFileSync("src/paper/service.ts", "utf8");
 const observationSource = readFileSync("src/paper/observation.ts", "utf8");
@@ -140,6 +144,7 @@ test("initializer creates exactly five paper portfolios from the same baseline a
   assert.equal(db.state.positions.length, 45);
   assert.equal(new Set(db.state.positions.map((position) => position.symbol)).has("BTC-USD"), true);
   assert.ok(db.state.profileEnabled.every((enabled) => enabled === 0));
+  assert.ok(db.state.strategyPortfolios.every((portfolio) => String(portfolio.id).includes("experiment_tim_real_five_strategy_400_v2")));
 });
 
 test("comparison page uses experiment wording and 400 dollar denominator", () => {
@@ -149,11 +154,18 @@ test("comparison page uses experiment wording and 400 dollar denominator", () =>
   assert.match(html, /Return since experiment start/);
   assert.match(html, /Experiment start timestamp/);
   assert.match(html, /Trade/);
-  assert.match(html, /baseline_tim_real_five_strategy_400_v1/);
+  assert.match(html, /baseline_tim_real_five_strategy_400_v2/);
   assert.doesNotMatch(html, /since account funding/i);
   assert.match(html, /\$400\.00/);
   assert.match(html, /\+\$20\.00/);
   assert.match(html, /\+5\.00%/);
+  assert.match(html, /Latest Strategy Audit/);
+  assert.match(html, /Latest decision/);
+  assert.match(html, /Trade or HOLD/);
+  assert.match(html, /Quote timestamp/);
+  assert.match(html, /Scheduler status/);
+  assert.match(html, /Open holdings/);
+  assert.match(html, /Closed positions/);
 });
 
 test("comparison page states clearly when the experiment has not been initialized", async () => {
@@ -188,6 +200,76 @@ test("experiment activation has dry-run, cadence, candidate, and startup cap saf
   assert.match(paperSource, /maxTradesPerDay/);
   assert.match(paperSource, /maxTradesPerCycle/);
   assert.match(paperSource, /cooldownMinutesRemaining/);
+});
+
+test("real paper execution applies the same profile thresholds as dry-run", () => {
+  const guardian = FIVE_STRATEGY_DEFINITIONS.find((strategy) => strategy.key === "guardian")!;
+  const blockedSell = applyProfileDecisionPolicy({
+    symbol: "BTC-USD",
+    action: "SELL",
+    confidenceScore: 0.6888881174355375,
+    riskScore: 0.35,
+    indicators: {
+      shortMovingAverage: 64492.552,
+      longMovingAverage: 64322.3175,
+      rsi: 55.8197,
+      momentumPct: -0.0362
+    },
+    explanation: "Exit signal from moving averages, RSI, or negative momentum passed the confidence threshold.",
+    signalKey: "BTC-USD:SELL:2026-07-28T00:00:14.083567698Z:64492.5520:64322.3175:55.8197:-0.0362",
+    transactionCostEstimateUsd: 0.01
+  }, {
+    id: "profile_guardian",
+    portfolioId: "portfolio_guardian",
+    profileKey: "tim_real_five_strategy_400_v2_guardian",
+    displayName: guardian.displayName,
+    philosophy: guardian.philosophy,
+    riskPosture: guardian.riskPosture,
+    comparisonStartTimestamp: "2026-07-28T00:00:00.000Z",
+    comparisonStartEquityUsd: 400,
+    normalizedStartIndex: 100,
+    parameters: guardian.parameters,
+    account: {
+      portfolioId: "portfolio_guardian",
+      accountType: "paper",
+      linkedPortfolioId: null,
+      relationshipLabel: "Five-strategy paper experiment portfolio",
+      manualEntryEnabled: false,
+      managedByKairox: true,
+      readOnly: false,
+      badgeLabel: "Paper",
+      tradingAllowed: true,
+      orderGenerationAllowed: true,
+      rebalanceAllowed: true
+    }
+  });
+
+  assert.equal(blockedSell.action, "DO_NOTHING");
+  assert.match(blockedSell.explanation, /requires at least 72% confidence for SELL/);
+});
+
+test("execution audit migration directly links recommendations, journal entries, orders, and trades", () => {
+  for (const table of ["recommendations", "decision_journal", "orders", "trades"]) {
+    assert.match(auditMigration, new RegExp(`ALTER TABLE ${table} ADD COLUMN scheduler_parent_run_id TEXT`));
+    assert.match(auditMigration, new RegExp(`ALTER TABLE ${table} ADD COLUMN scheduler_child_run_id TEXT`));
+    assert.match(auditMigration, new RegExp(`ALTER TABLE ${table} ADD COLUMN strategy_profile_key TEXT`));
+    assert.match(auditMigration, new RegExp(`ALTER TABLE ${table} ADD COLUMN quote_source TEXT`));
+    assert.match(auditMigration, new RegExp(`ALTER TABLE ${table} ADD COLUMN quote_timestamp TEXT`));
+  }
+  assert.match(auditMigration, /ALTER TABLE orders ADD COLUMN recommendation_id TEXT/);
+  assert.match(auditMigration, /ALTER TABLE trades ADD COLUMN recommendation_id TEXT/);
+  assert.match(auditMigration, /ALTER TABLE orders ADD COLUMN decision_confidence REAL/);
+  assert.match(auditMigration, /ALTER TABLE trades ADD COLUMN decision_confidence REAL/);
+});
+
+test("real execution writes scheduler audit context through recommendations, orders, and trades", () => {
+  assert.match(paperSource, /auditContext\?: PaperRunAuditContext/);
+  assert.match(paperSource, /schedulerParentRunId/);
+  assert.match(paperSource, /schedulerChildRunId/);
+  assert.match(paperSource, /strategyProfileKey/);
+  assert.match(paperSource, /recommendation_id/);
+  assert.match(paperSource, /decision_confidence/);
+  assert.match(paperSource, /quote_timestamp/);
 });
 
 function sampleBaselineInput(): FrozenBaselineInput {
@@ -229,7 +311,7 @@ function sampleComparison(): StrategyExperimentComparison {
   return {
     experiment: {
       id: FIVE_STRATEGY_EXPERIMENT_ID,
-      key: "tim_real_five_strategy_400_v1",
+      key: "tim_real_five_strategy_400_v2",
       sourcePortfolioId: FIVE_STRATEGY_SOURCE_PORTFOLIO_ID,
       name: "Tim Real Five-Strategy $400 Paper Experiment",
       targetStartingValueUsd: 400,
@@ -256,7 +338,7 @@ function sampleComparison(): StrategyExperimentComparison {
       initialSymbols: [...EXPECTED_EXPERIMENT_SYMBOLS]
     },
     portfolios: [{
-      portfolioId: "portfolio_experiment_tim_real_five_strategy_400_v1_guardian",
+      portfolioId: "portfolio_experiment_tim_real_five_strategy_400_v2_guardian",
       strategyKey: "guardian",
       strategyName: "Guardian",
       currentAccountValueUsd: 420,
@@ -266,12 +348,39 @@ function sampleComparison(): StrategyExperimentComparison {
       experimentStartTimestamp: "2026-07-27T18:40:33.996Z",
       holdingsCount: 9,
       tradeCount: 0,
+      orderCount: 0,
       cashUsd: 0,
       holdingsValueUsd: 420,
       realizedGainLossUsd: 0,
       unrealizedGainLossUsd: 20,
       feesUsd: 0,
-      dataStatus: "delayed"
+      dataStatus: "delayed",
+      openHoldingsCount: 9,
+      closedPositionsCount: 0,
+      totalPositionRows: 9,
+      latestDecision: {
+        symbol: "BTC-USD",
+        action: "HOLD",
+        reason: "Guardian requires at least 72% confidence for SELL.",
+        confidence: 0.6889,
+        quoteTimestamp: "2026-07-28T00:00:14.083Z",
+        quoteSource: "coinbase_public_market_data",
+        schedulerParentRunId: "paper_observation_parent",
+        schedulerChildRunId: "paper_observation_child",
+        strategyProfileKey: "tim_real_five_strategy_400_v2_guardian",
+        createdAt: "2026-07-28T00:00:15.000Z"
+      },
+      latestTrade: null,
+      schedulerStatus: {
+        parentRunId: "paper_observation_parent",
+        childRunId: "paper_observation_child",
+        profileKey: "tim_real_five_strategy_400_v2_guardian",
+        status: "no_action",
+        phase: "finalized",
+        startedAt: "2026-07-28T00:00:10.000Z",
+        finishedAt: "2026-07-28T00:00:20.000Z",
+        errorMessage: null
+      }
     }]
   };
 }
@@ -398,6 +507,7 @@ function applyStatement(sql: string, params: unknown[], state: ReturnType<typeof
     const portfolioId = String(params[3]);
     if (!state.strategyPortfolios.some((portfolio) => portfolio.portfolioId === portfolioId)) {
       state.strategyPortfolios.push({
+        id: params[0],
         portfolioId,
         strategyKey: params[4],
         strategyDisplayName: params[5],

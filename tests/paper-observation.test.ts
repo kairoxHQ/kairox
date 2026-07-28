@@ -192,6 +192,22 @@ test("final child or recovered child immediately finalizes parent and Founder Re
   assert.match(observationSource, /generateFounderReport/);
 });
 
+test("failed children are terminal and stale recovery re-finalizes affected parents", () => {
+  assert.match(observationSource, /const affectedParentIds = new Set<string>\(\)/);
+  assert.match(observationSource, /affectedParentIds\.add\(child\.parentRunId\)/);
+  assert.match(observationSource, /for \(const parentId of affectedParentIds\)[\s\S]*await this\.finalizeParent\(parentId, now\)/);
+  assert.match(observationSource, /finalizeTerminalActiveParents\(now\)/);
+  assert.match(observationSource, /SELECT id FROM paper_observation_runs WHERE status IN \('running', 'queued'\)/);
+  assert.match(observationSource, /status = 'failed', phase = 'failed'/);
+});
+
+test("scheduler passes parent child and profile audit context into paper execution", () => {
+  assert.match(observationSource, /auditContext: \{/);
+  assert.match(observationSource, /schedulerParentRunId: parent\.id/);
+  assert.match(observationSource, /schedulerChildRunId: child\.id/);
+  assert.match(observationSource, /strategyProfileKey: child\.profileKey/);
+});
+
 test("request-budget counters cover provider, D1, cache, profile, symbol, retry, and fallback dimensions", () => {
   for (const field of [
     "outboundProviderRequests",

@@ -65,6 +65,13 @@ export interface PaperRunOptions {
   runMaintenance?: boolean;
   onProgress?: (progress: PaperRunProgress) => Promise<void>;
   progressIntervalSymbols?: number;
+  auditContext?: PaperRunAuditContext;
+}
+
+export interface PaperRunAuditContext {
+  schedulerParentRunId?: string | null;
+  schedulerChildRunId?: string | null;
+  strategyProfileKey?: string | null;
 }
 
 export interface PaperRunProgress {
@@ -227,14 +234,14 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
           }
         : baseRisk;
 
-    await recordRecommendationAndJournal(env.DB, portfolioId, marketData, decision, risk, screen);
+    const recommendationId = await recordRecommendationAndJournal(env.DB, portfolioId, marketData, decision, risk, screen, profile, options.auditContext);
     persistedRecommendations += 1;
 
     let executed = false;
     let reason = risk.reasons.join(" ");
 
     if (risk.allowed && (decision.action === "BUY" || decision.action === "SELL")) {
-      const execution = await executePaperTrade(env.DB, portfolioId, marketData, decision, proposedTradeValueUsd, position);
+      const execution = await executePaperTrade(env.DB, portfolioId, marketData, decision, proposedTradeValueUsd, position, profile, options.auditContext, recommendationId);
       executed = execution.executed;
       reason = execution.reason;
       if (executed) {
@@ -681,11 +688,12 @@ function screenedOutDecision(marketData: MarketDataset, screen: ScreenResult): S
   };
 }
 
-function applyProfileDecisionPolicy(decision: StrategyDecision, profile: PortfolioProfile): StrategyDecision {
-  if (decision.action !== "BUY") {
+export function applyProfileDecisionPolicy(decision: StrategyDecision, profile: PortfolioProfile): StrategyDecision {
+  if (decision.action !== "BUY" && decision.action !== "SELL") {
     return decision;
   }
-  if (decision.confidenceScore >= profile.parameters.minConfidence) {
+  const threshold = decision.action === "SELL" ? profile.parameters.sellThreshold : profile.parameters.buyThreshold;
+  if (decision.confidenceScore >= threshold) {
     return decision;
   }
   return {
@@ -693,7 +701,7 @@ function applyProfileDecisionPolicy(decision: StrategyDecision, profile: Portfol
     action: "DO_NOTHING",
     confidenceScore: Math.max(decision.confidenceScore, 0.75),
     riskScore: 0.05,
-    explanation: `${profile.displayName} requires at least ${Math.round(profile.parameters.minConfidence * 100)}% confidence before opening a new paper position.`
+    explanation: `${profile.displayName} requires at least ${Math.round(threshold * 100)}% confidence for ${decision.action}.`
   };
 }
 
@@ -782,8 +790,10 @@ async function recordRecommendationAndJournal(
   marketData: MarketDataset,
   decision: StrategyDecision,
   risk: { allowed: boolean; riskScore: number; reasons: string[] },
-  screen?: ScreenResult
-): Promise<void> {
+  screen: ScreenResult | undefined,
+  profile: PortfolioProfile,
+  auditContext?: PaperRunAuditContext
+): Promise<string> {
   const action = risk.allowed ? decision.action : "DO_NOTHING";
   const explanation = risk.allowed ? decision.explanation : `Risk checks blocked execution: ${risk.reasons.join(" ")}`;
   const recommendationId = id("rec", `${portfolioId}:${decision.signalKey}`);
@@ -795,8 +805,10 @@ async function recordRecommendationAndJournal(
         id, portfolio_id, symbol, action, explanation, confidence_score, risk_score,
         market_data_source, price_usd, price_as_of, signal_key, indicators_json,
         transaction_cost_estimate_usd, asset_type, screen_eligible, screen_score,
-        screen_rank, screen_reason, data_freshness, current_exposure_pct
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        screen_rank, screen_reason, data_freshness, current_exposure_pct,
+        scheduler_parent_run_id, scheduler_child_run_id, strategy_profile_key,
+        quote_source, quote_timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       recommendationId,
@@ -818,7 +830,12 @@ async function recordRecommendationAndJournal(
       screen?.rank ?? null,
       screen?.reason ?? null,
       screen?.dataFreshness ?? null,
-      screen?.currentExposurePct ?? null
+      screen?.currentExposurePct ?? null,
+      auditContext?.schedulerParentRunId ?? null,
+      auditContext?.schedulerChildRunId ?? null,
+      auditContext?.strategyProfileKey ?? profile.profileKey,
+      marketData.source,
+      marketData.asOf
     )
     .run();
 
@@ -826,8 +843,10 @@ async function recordRecommendationAndJournal(
     .prepare(
       `INSERT OR IGNORE INTO decision_journal (
         id, portfolio_id, recommendation_id, decision, explanation,
-        confidence_score, risk_score, price_data_json, signal_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        confidence_score, risk_score, price_data_json, signal_key,
+        scheduler_parent_run_id, scheduler_child_run_id, strategy_profile_key,
+        quote_source, quote_timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       journalId,
@@ -845,9 +864,15 @@ async function recordRecommendationAndJournal(
         priceAsOf: marketData.asOf,
         volume: marketData.volume
       }),
-      decision.signalKey
+      decision.signalKey,
+      auditContext?.schedulerParentRunId ?? null,
+      auditContext?.schedulerChildRunId ?? null,
+      auditContext?.strategyProfileKey ?? profile.profileKey,
+      marketData.source,
+      marketData.asOf
     )
     .run();
+  return recommendationId;
 }
 
 async function hasProcessedSignal(db: D1Database, portfolioId: string, signalKey: string): Promise<boolean> {
@@ -861,7 +886,10 @@ async function executePaperTrade(
   marketData: MarketDataset,
   decision: StrategyDecision,
   proposedTradeValueUsd: number,
-  position: PositionRow | null
+  position: PositionRow | null,
+  profile: PortfolioProfile,
+  auditContext: PaperRunAuditContext | undefined,
+  recommendationId: string
 ): Promise<{ executed: boolean; reason: string }> {
   const side = decision.action;
   const orderId = id("order", `${portfolioId}:${decision.signalKey}`);
@@ -880,8 +908,8 @@ async function executePaperTrade(
     }
 
     await db.batch([
-      insertOrderStatement(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision),
-      insertTradeStatement(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey),
+      insertOrderStatement(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision, profile, auditContext, recommendationId),
+      insertTradeStatement(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision, profile, auditContext, recommendationId),
       upsertPositionStatement(db, portfolioId, marketData, quantity, fillPrice, position),
       updateCashStatement(db, portfolioId, -(quantity * fillPrice + fee))
     ]);
@@ -895,8 +923,8 @@ async function executePaperTrade(
     const fee = Math.max(0.01, gross * FEE_RATE);
 
     await db.batch([
-      insertOrderStatement(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision),
-      insertTradeStatement(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision.signalKey),
+      insertOrderStatement(db, portfolioId, orderId, marketData, side, quantity, fillPrice, fee, idempotencyKey, decision, profile, auditContext, recommendationId),
+      insertTradeStatement(db, portfolioId, tradeId, orderId, marketData, side, quantity, fillPrice, fee, decision, profile, auditContext, recommendationId),
       closePositionStatement(db, position.id, marketData, fillPrice),
       updateCashStatement(db, portfolioId, gross - fee)
     ]);
@@ -956,15 +984,20 @@ function insertOrderStatement(
   fillPrice: number,
   fee: number,
   idempotencyKey: string,
-  decision: StrategyDecision
+  decision: StrategyDecision,
+  profile: PortfolioProfile,
+  auditContext: PaperRunAuditContext | undefined,
+  recommendationId: string
 ): D1PreparedStatement {
   return db
     .prepare(
       `INSERT OR IGNORE INTO orders (
         id, portfolio_id, symbol, asset_class, side, order_type, quantity,
         status, paper_only, risk_checked, explanation, signal_key,
-        estimated_fee_usd, fill_price_usd, idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        estimated_fee_usd, fill_price_usd, idempotency_key, recommendation_id,
+        scheduler_parent_run_id, scheduler_child_run_id, strategy_profile_key,
+        decision_confidence, quote_source, quote_timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       orderId,
@@ -981,7 +1014,14 @@ function insertOrderStatement(
       decision.signalKey,
       fee,
       fillPrice,
-      idempotencyKey
+      idempotencyKey,
+      recommendationId,
+      auditContext?.schedulerParentRunId ?? null,
+      auditContext?.schedulerChildRunId ?? null,
+      auditContext?.strategyProfileKey ?? profile.profileKey,
+      decision.confidenceScore,
+      marketData.source,
+      marketData.asOf
     );
 }
 
@@ -1018,16 +1058,40 @@ function insertTradeStatement(
   quantity: number,
   fillPrice: number,
   fee: number,
-  signalKey: string
+  decision: StrategyDecision,
+  profile: PortfolioProfile,
+  auditContext: PaperRunAuditContext | undefined,
+  recommendationId: string
 ): D1PreparedStatement {
   return db
     .prepare(
       `INSERT OR IGNORE INTO trades (
         id, order_id, portfolio_id, symbol, asset_class, side,
-        quantity, price_usd, fees_usd, paper_only, signal_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        quantity, price_usd, fees_usd, paper_only, signal_key, recommendation_id,
+        scheduler_parent_run_id, scheduler_child_run_id, strategy_profile_key,
+        decision_confidence, quote_source, quote_timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(tradeId, orderId, portfolioId, marketData.symbol, marketData.assetClass, side, quantity, fillPrice, fee, 1, signalKey);
+    .bind(
+      tradeId,
+      orderId,
+      portfolioId,
+      marketData.symbol,
+      marketData.assetClass,
+      side,
+      quantity,
+      fillPrice,
+      fee,
+      1,
+      decision.signalKey,
+      recommendationId,
+      auditContext?.schedulerParentRunId ?? null,
+      auditContext?.schedulerChildRunId ?? null,
+      auditContext?.strategyProfileKey ?? profile.profileKey,
+      decision.confidenceScore,
+      marketData.source,
+      marketData.asOf
+    );
 }
 
 async function upsertPosition(

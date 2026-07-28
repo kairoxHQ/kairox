@@ -4,8 +4,8 @@ import { canExecuteAt } from "../market/hours.ts";
 import { calculateIndicators } from "../strategy/indicators.ts";
 import { decidePaperAction, type StrategyDecision } from "../strategy/paperStrategy.ts";
 import { assessPaperTrade } from "../risk/checks.ts";
-import { getPortfolioProfile, type PortfolioProfile } from "../portfolio/profiles.ts";
-import { calculatePortfolioState, exposureForAsset } from "../paper/service.ts";
+import { getPortfolioProfile } from "../portfolio/profiles.ts";
+import { applyProfileDecisionPolicy, calculatePortfolioState, exposureForAsset } from "../paper/service.ts";
 import { screenAsset } from "../strategy/screener.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
 import { listRows } from "../shared/db.ts";
@@ -14,9 +14,9 @@ import { addMoney, multiplyMoney, roundMoney, roundRatio, subtractMoney } from "
 import type { MarketCandle, MarketDataset } from "../shared/types.ts";
 import type { NormalizedQuote } from "../market/service.ts";
 
-export const FIVE_STRATEGY_EXPERIMENT_KEY = "tim_real_five_strategy_400_v1";
-export const FIVE_STRATEGY_EXPERIMENT_ID = "experiment_tim_real_five_strategy_400_v1";
-export const FIVE_STRATEGY_BASELINE_ID = "baseline_tim_real_five_strategy_400_v1";
+export const FIVE_STRATEGY_EXPERIMENT_KEY = "tim_real_five_strategy_400_v2";
+export const FIVE_STRATEGY_EXPERIMENT_ID = "experiment_tim_real_five_strategy_400_v2";
+export const FIVE_STRATEGY_BASELINE_ID = "baseline_tim_real_five_strategy_400_v2";
 export const FIVE_STRATEGY_SOURCE_PORTFOLIO_ID = "portfolio_tim_real_watchlist";
 export const FIVE_STRATEGY_TARGET_VALUE_USD = 400;
 
@@ -340,7 +340,53 @@ export interface StrategyExperimentComparison {
     unrealizedGainLossUsd: number;
     feesUsd: number;
     dataStatus: string;
+    latestDecision: StrategyExperimentLatestDecision | null;
+    latestTrade: StrategyExperimentLatestTrade | null;
+    schedulerStatus: StrategyExperimentSchedulerStatus | null;
+    openHoldingsCount: number;
+    closedPositionsCount: number;
+    totalPositionRows: number;
+    orderCount: number;
   }>;
+}
+
+export interface StrategyExperimentLatestDecision {
+  symbol: string | null;
+  action: string;
+  reason: string;
+  confidence: number | null;
+  quoteTimestamp: string | null;
+  quoteSource: string | null;
+  schedulerParentRunId: string | null;
+  schedulerChildRunId: string | null;
+  strategyProfileKey: string | null;
+  createdAt: string | null;
+}
+
+export interface StrategyExperimentLatestTrade {
+  symbol: string;
+  side: string;
+  quantity: number;
+  fillPriceUsd: number;
+  feeUsd: number;
+  confidence: number | null;
+  reason: string | null;
+  quoteTimestamp: string | null;
+  quoteSource: string | null;
+  schedulerParentRunId: string | null;
+  schedulerChildRunId: string | null;
+  executedAt: string;
+}
+
+export interface StrategyExperimentSchedulerStatus {
+  parentRunId: string;
+  childRunId: string;
+  profileKey: string;
+  status: string;
+  phase: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  errorMessage: string | null;
 }
 
 export interface FiveStrategyDryRunResult {
@@ -420,6 +466,53 @@ interface BaselinePositionRow {
   scaledQuantity: number;
   scaledMarketValueUsd: number;
   experimentCostBasisUsd: number;
+}
+
+interface ExperimentCountsRow {
+  openHoldingsCount: number;
+  closedPositionsCount: number;
+  totalPositionRows: number;
+  tradeCount: number;
+  orderCount: number;
+}
+
+interface LatestDecisionRow {
+  symbol: string | null;
+  action: string;
+  reason: string;
+  confidence: number | null;
+  quoteTimestamp: string | null;
+  quoteSource: string | null;
+  schedulerParentRunId: string | null;
+  schedulerChildRunId: string | null;
+  strategyProfileKey: string | null;
+  createdAt: string | null;
+}
+
+interface LatestTradeRow {
+  symbol: string;
+  side: string;
+  quantity: number;
+  fillPriceUsd: number;
+  feeUsd: number;
+  confidence: number | null;
+  reason: string | null;
+  quoteTimestamp: string | null;
+  quoteSource: string | null;
+  schedulerParentRunId: string | null;
+  schedulerChildRunId: string | null;
+  executedAt: string;
+}
+
+interface LatestSchedulerRow {
+  parentRunId: string;
+  childRunId: string;
+  profileKey: string;
+  status: string;
+  phase: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  errorMessage: string | null;
 }
 
 interface StrategyPortfolioRow {
@@ -614,7 +707,7 @@ export async function initializeFiveStrategyExperiment(
           status, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 'initialized', ?, ?)`
       ).bind(
-        `strategy_experiment_portfolio_${sanitizeId(strategy.key)}`,
+        `strategy_experiment_portfolio_${sanitizeId(baseline.experimentId)}_${sanitizeId(strategy.key)}`,
         baseline.experimentId,
         baseline.baselineId,
         portfolioId,
@@ -728,13 +821,12 @@ export async function getFiveStrategyExperimentComparison(db: D1Database): Promi
     getStrategyPortfolioRows(db, experiment.id)
   ]);
   const portfolios = await Promise.all(strategyRows.map(async (row) => {
-    const [valuation, counts] = await Promise.all([
+    const [valuation, counts, latestDecision, latestTrade, schedulerStatus] = await Promise.all([
       getPortfolioValuation(db, row.portfolioId),
-      db.prepare(
-        `SELECT
-          (SELECT COUNT(*) FROM positions WHERE portfolio_id = ? AND quantity > 0) AS holdingsCount,
-          (SELECT COUNT(*) FROM trades WHERE portfolio_id = ?) AS tradeCount`
-      ).bind(row.portfolioId, row.portfolioId).first<{ holdingsCount: number; tradeCount: number }>()
+      getExperimentCounts(db, row.portfolioId),
+      getLatestExperimentDecision(db, row.portfolioId),
+      getLatestExperimentTrade(db, row.portfolioId),
+      getLatestExperimentSchedulerStatus(db, row.portfolioId)
     ]);
     const gainLoss = subtractMoney(valuation.totalAccountValueUsd, row.experimentStartingValueUsd);
     return {
@@ -746,14 +838,21 @@ export async function getFiveStrategyExperimentComparison(db: D1Database): Promi
       experimentGainLossUsd: gainLoss,
       experimentReturnPct: row.experimentStartingValueUsd > 0 ? roundRatio(gainLoss / row.experimentStartingValueUsd) : 0,
       experimentStartTimestamp: row.experimentStartTimestamp,
-      holdingsCount: counts?.holdingsCount ?? 0,
+      holdingsCount: counts?.openHoldingsCount ?? 0,
       tradeCount: counts?.tradeCount ?? 0,
       cashUsd: valuation.cashUsd,
       holdingsValueUsd: valuation.totalPortfolioValueUsd,
       realizedGainLossUsd: valuation.realizedProfitLossUsd,
       unrealizedGainLossUsd: valuation.unrealizedProfitLossUsd,
       feesUsd: valuation.feesUsd,
-      dataStatus: valuation.dataStatus
+      dataStatus: valuation.dataStatus,
+      latestDecision,
+      latestTrade,
+      schedulerStatus,
+      openHoldingsCount: counts?.openHoldingsCount ?? 0,
+      closedPositionsCount: counts?.closedPositionsCount ?? 0,
+      totalPositionRows: counts?.totalPositionRows ?? 0,
+      orderCount: counts?.orderCount ?? 0
     };
   }));
 
@@ -797,7 +896,7 @@ export async function getFiveStrategyExperimentDryRun(db: D1Database, now = new 
       })), portfolioState.totalValueUsd, portfolioState.drawdownPct);
       const screen = screenAsset({ asset, marketData, now, exposure });
       const baseDecision = screen.eligible
-        ? applyDryRunProfilePolicy(decidePaperAction({ marketData, hasPosition: !!position && position.quantity > 0 }), profile)
+        ? applyProfileDecisionPolicy(decidePaperAction({ marketData, hasPosition: !!position && position.quantity > 0 }), profile)
         : dryRunScreenedOutDecision(marketData, screen.reason);
       const side = baseDecision.action === "BUY" || baseDecision.action === "SELL" ? baseDecision.action : null;
       const proposedTradeValueUsd = baseDecision.action === "BUY"
@@ -1008,6 +1107,103 @@ async function getExperimentPortfolioRow(db: D1Database, portfolioId: string): P
   return row;
 }
 
+async function getExperimentCounts(db: D1Database, portfolioId: string): Promise<ExperimentCountsRow | null> {
+  return db.prepare(
+    `SELECT
+      (SELECT COUNT(*) FROM positions WHERE portfolio_id = ? AND quantity > 0) AS openHoldingsCount,
+      (SELECT COUNT(*) FROM positions WHERE portfolio_id = ? AND quantity = 0) AS closedPositionsCount,
+      (SELECT COUNT(*) FROM positions WHERE portfolio_id = ?) AS totalPositionRows,
+      (SELECT COUNT(*) FROM trades WHERE portfolio_id = ?) AS tradeCount,
+      (SELECT COUNT(*) FROM orders WHERE portfolio_id = ?) AS orderCount`
+  ).bind(portfolioId, portfolioId, portfolioId, portfolioId, portfolioId).first<ExperimentCountsRow>();
+}
+
+async function getLatestExperimentDecision(db: D1Database, portfolioId: string): Promise<StrategyExperimentLatestDecision | null> {
+  const row = await db.prepare(
+    `SELECT r.symbol, j.decision AS action, j.explanation AS reason,
+      j.confidence_score AS confidence,
+      COALESCE(j.quote_timestamp, r.quote_timestamp, r.price_as_of) AS quoteTimestamp,
+      COALESCE(j.quote_source, r.quote_source, r.market_data_source) AS quoteSource,
+      COALESCE(j.scheduler_parent_run_id, r.scheduler_parent_run_id) AS schedulerParentRunId,
+      COALESCE(j.scheduler_child_run_id, r.scheduler_child_run_id) AS schedulerChildRunId,
+      COALESCE(j.strategy_profile_key, r.strategy_profile_key) AS strategyProfileKey,
+      j.created_at AS createdAt
+     FROM decision_journal j
+     LEFT JOIN recommendations r ON r.id = j.recommendation_id
+     WHERE j.portfolio_id = ?
+     ORDER BY j.created_at DESC
+     LIMIT 1`
+  ).bind(portfolioId).first<LatestDecisionRow>();
+  return row ? {
+    symbol: row.symbol,
+    action: row.action,
+    reason: row.reason,
+    confidence: row.confidence,
+    quoteTimestamp: row.quoteTimestamp,
+    quoteSource: row.quoteSource,
+    schedulerParentRunId: row.schedulerParentRunId,
+    schedulerChildRunId: row.schedulerChildRunId,
+    strategyProfileKey: row.strategyProfileKey,
+    createdAt: row.createdAt
+  } : null;
+}
+
+async function getLatestExperimentTrade(db: D1Database, portfolioId: string): Promise<StrategyExperimentLatestTrade | null> {
+  const row = await db.prepare(
+    `SELECT t.symbol, t.side, t.quantity, t.price_usd AS fillPriceUsd,
+      t.fees_usd AS feeUsd,
+      COALESCE(t.decision_confidence, o.decision_confidence, r.confidence_score) AS confidence,
+      COALESCE(o.explanation, r.explanation) AS reason,
+      COALESCE(t.quote_timestamp, o.quote_timestamp, r.quote_timestamp, r.price_as_of) AS quoteTimestamp,
+      COALESCE(t.quote_source, o.quote_source, r.quote_source, r.market_data_source) AS quoteSource,
+      COALESCE(t.scheduler_parent_run_id, o.scheduler_parent_run_id, r.scheduler_parent_run_id) AS schedulerParentRunId,
+      COALESCE(t.scheduler_child_run_id, o.scheduler_child_run_id, r.scheduler_child_run_id) AS schedulerChildRunId,
+      t.executed_at AS executedAt
+     FROM trades t
+     LEFT JOIN orders o ON o.id = t.order_id
+     LEFT JOIN recommendations r ON r.id = COALESCE(t.recommendation_id, o.recommendation_id)
+     WHERE t.portfolio_id = ?
+     ORDER BY t.executed_at DESC
+     LIMIT 1`
+  ).bind(portfolioId).first<LatestTradeRow>();
+  return row ? {
+    symbol: row.symbol,
+    side: row.side,
+    quantity: row.quantity,
+    fillPriceUsd: row.fillPriceUsd,
+    feeUsd: row.feeUsd,
+    confidence: row.confidence,
+    reason: row.reason,
+    quoteTimestamp: row.quoteTimestamp,
+    quoteSource: row.quoteSource,
+    schedulerParentRunId: row.schedulerParentRunId,
+    schedulerChildRunId: row.schedulerChildRunId,
+    executedAt: row.executedAt
+  } : null;
+}
+
+async function getLatestExperimentSchedulerStatus(db: D1Database, portfolioId: string): Promise<StrategyExperimentSchedulerStatus | null> {
+  const row = await db.prepare(
+    `SELECT parent_run_id AS parentRunId, id AS childRunId, profile_key AS profileKey,
+      status, phase, started_at AS startedAt, finished_at AS finishedAt,
+      COALESCE(error_message, phase_error_message) AS errorMessage
+     FROM paper_observation_profile_runs
+     WHERE portfolio_id = ?
+     ORDER BY COALESCE(finished_at, started_at, created_at) DESC
+     LIMIT 1`
+  ).bind(portfolioId).first<LatestSchedulerRow>();
+  return row ? {
+    parentRunId: row.parentRunId,
+    childRunId: row.childRunId,
+    profileKey: row.profileKey,
+    status: row.status,
+    phase: row.phase,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt,
+    errorMessage: row.errorMessage
+  } : null;
+}
+
 async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryRecord, now: Date): Promise<MarketDataset> {
   const snapshotRow = await db.prepare(
     `SELECT symbol, asset_class AS assetClass, source, price_usd AS priceUsd,
@@ -1115,20 +1311,6 @@ function latestReadOnlyMarketUnavailable(asset: AssetRegistryRecord, now: Date):
     quality: "invalid",
     userMessage: "No trusted read-only market data is available for dry-run evaluation.",
     error: "No trusted read-only market data is available for dry-run evaluation."
-  };
-}
-
-function applyDryRunProfilePolicy(decision: StrategyDecision, profile: PortfolioProfile): StrategyDecision {
-  const threshold = decision.action === "SELL" ? profile.parameters.sellThreshold : profile.parameters.buyThreshold;
-  if ((decision.action !== "BUY" && decision.action !== "SELL") || decision.confidenceScore >= threshold) {
-    return decision;
-  }
-  return {
-    ...decision,
-    action: "DO_NOTHING",
-    confidenceScore: Math.max(decision.confidenceScore, 0.75),
-    riskScore: 0.05,
-    explanation: `${profile.displayName} requires at least ${Math.round(threshold * 100)}% confidence for ${decision.action}.`
   };
 }
 
@@ -1340,8 +1522,11 @@ export function renderComparisonHtml(comparison: StrategyExperimentComparison): 
     <td>${escapeHtml(formatSignedCurrency(portfolio.experimentGainLossUsd))}</td>
     <td>${escapeHtml(formatSignedPercent(portfolio.experimentReturnPct))}</td>
     <td>${escapeHtml(portfolio.experimentStartTimestamp)}</td>
-    <td>${portfolio.holdingsCount}</td>
+    <td>${portfolio.openHoldingsCount}</td>
+    <td>${portfolio.closedPositionsCount}</td>
+    <td>${portfolio.totalPositionRows}</td>
     <td>${portfolio.tradeCount}</td>
+    <td>${portfolio.orderCount}</td>
     <td>${escapeHtml(formatCurrency(portfolio.cashUsd))}</td>
     <td>${escapeHtml(formatCurrency(portfolio.holdingsValueUsd))}</td>
     <td>${escapeHtml(formatSignedCurrency(portfolio.realizedGainLossUsd))}</td>
@@ -1349,6 +1534,25 @@ export function renderComparisonHtml(comparison: StrategyExperimentComparison): 
     <td>${escapeHtml(formatCurrency(portfolio.feesUsd))}</td>
     <td>${escapeHtml(portfolio.dataStatus)}</td>
   </tr>`).join("");
+  const auditRows = comparison.portfolios.map((portfolio) => {
+    const latest = portfolio.latestTrade;
+    const decision = portfolio.latestDecision;
+    const scheduler = portfolio.schedulerStatus;
+    return `<tr>
+      <td>${escapeHtml(portfolio.strategyName)}</td>
+      <td>${escapeHtml(decision?.action ?? "None")}</td>
+      <td>${escapeHtml(latest ? `${latest.side} ${latest.symbol}` : decision?.symbol ?? "None")}</td>
+      <td>${escapeHtml(latest ? String(latest.quantity) : "0")}</td>
+      <td>${escapeHtml(latest ? formatCurrency(latest.fillPriceUsd) : "n/a")}</td>
+      <td>${escapeHtml(latest ? formatCurrency(latest.feeUsd) : formatCurrency(0))}</td>
+      <td>${escapeHtml(formatOptionalPercent(decision?.confidence ?? latest?.confidence ?? null))}</td>
+      <td>${escapeHtml(decision?.reason ?? latest?.reason ?? "No decision recorded yet.")}</td>
+      <td>${escapeHtml(decision?.quoteTimestamp ?? latest?.quoteTimestamp ?? "n/a")}</td>
+      <td>${escapeHtml(decision?.quoteSource ?? latest?.quoteSource ?? "n/a")}</td>
+      <td>${escapeHtml(scheduler ? `${scheduler.status} / ${scheduler.phase}` : "No scheduler run")}</td>
+      <td>${escapeHtml(scheduler?.childRunId ?? decision?.schedulerChildRunId ?? latest?.schedulerChildRunId ?? "n/a")}</td>
+    </tr>`;
+  }).join("");
   const warnings = comparison.baseline.warnings.length
     ? `<ul>${comparison.baseline.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
     : "<p>No baseline warnings recorded.</p>";
@@ -1397,8 +1601,15 @@ export function renderComparisonHtml(comparison: StrategyExperimentComparison): 
     <section class="panel">
       <h2>Strategy Comparison</h2>
       <table>
-        <thead><tr><th>Strategy</th><th>Current value</th><th>Experiment starting value</th><th>Gain/loss since experiment start</th><th>Return since experiment start</th><th>Experiment start timestamp</th><th>Holdings</th><th>Trades</th><th>Cash</th><th>Holdings value</th><th>Realized</th><th>Unrealized</th><th>Fees</th><th>Data</th></tr></thead>
+        <thead><tr><th>Strategy</th><th>Current value</th><th>Experiment starting value</th><th>Gain/loss since experiment start</th><th>Return since experiment start</th><th>Experiment start timestamp</th><th>Open holdings</th><th>Closed positions</th><th>Total position rows</th><th>Trades</th><th>Orders</th><th>Cash</th><th>Holdings value</th><th>Realized</th><th>Unrealized</th><th>Fees</th><th>Data</th></tr></thead>
         <tbody>${rows}</tbody>
+      </table>
+    </section>
+    <section class="panel">
+      <h2>Latest Strategy Audit</h2>
+      <table>
+        <thead><tr><th>Strategy</th><th>Latest decision</th><th>Trade or HOLD</th><th>Quantity</th><th>Fill price</th><th>Fee</th><th>Confidence</th><th>Decision reason</th><th>Quote timestamp</th><th>Quote source</th><th>Scheduler status</th><th>Child run</th></tr></thead>
+        <tbody>${auditRows}</tbody>
       </table>
     </section>
     <section class="panel">
@@ -1413,6 +1624,10 @@ export function renderComparisonHtml(comparison: StrategyExperimentComparison): 
 
 function metric(label: string, value: string): string {
   return `<div class="metric"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`;
+}
+
+function formatOptionalPercent(value: number | null): string {
+  return value === null ? "n/a" : formatPercent(value);
 }
 
 function escapeHtml(value: string): string {

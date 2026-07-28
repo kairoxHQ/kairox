@@ -140,6 +140,7 @@ export class PaperObservationService {
 
   async start(now = new Date(), processOneChild = true): Promise<PaperObservationStartResult> {
     const staleRecovered = await this.reconcileStaleRuns(now);
+    await this.finalizeTerminalActiveParents(now);
     const activeParent = await this.nextActiveParent();
     if (activeParent) {
       if (processOneChild) {
@@ -185,8 +186,10 @@ export class PaperObservationService {
       this.db.prepare(`${CHILD_SELECT} WHERE status = 'running' AND COALESCE(heartbeat_at, started_at) < ? ORDER BY created_at ASC`).bind(cutoff)
     );
     let recoveredOrFailed = 0;
+    const affectedParentIds = new Set<string>();
     for (const childRow of staleChildren) {
       const child = mapChild(childRow);
+      affectedParentIds.add(child.parentRunId);
       if (await this.recoverRunningChild(child, now)) {
         recoveredOrFailed += 1;
         continue;
@@ -199,6 +202,9 @@ export class PaperObservationService {
          WHERE id = ? AND status = 'running'`
       ).bind(now.toISOString(), now.toISOString(), message, message, now.toISOString(), child.id).run();
       recoveredOrFailed += Number(childResult.meta?.changes ?? 0);
+    }
+    for (const parentId of affectedParentIds) {
+      await this.finalizeParent(parentId, now);
     }
     return recoveredOrFailed;
   }
@@ -279,6 +285,11 @@ export class PaperObservationService {
         marketDataSnapshot: snapshot ?? undefined,
         budget,
         runMaintenance: false,
+        auditContext: {
+          schedulerParentRunId: parent.id,
+          schedulerChildRunId: child.id,
+          strategyProfileKey: child.profileKey
+        },
         onProgress: async (progress) => {
           await this.recordChildProgress(child.id, progress.phase, budget);
         }
@@ -406,6 +417,15 @@ export class PaperObservationService {
       payload: { parentRunId: parentId, status, completed, noAction, failed, founderReportId: report.id, budget },
       occurredAt: now
     });
+  }
+
+  private async finalizeTerminalActiveParents(now: Date): Promise<void> {
+    const parents = await listRows<{ id: string }>(
+      this.db.prepare("SELECT id FROM paper_observation_runs WHERE status IN ('running', 'queued') ORDER BY created_at ASC")
+    );
+    for (const parent of parents) {
+      await this.finalizeParent(parent.id, now);
+    }
   }
 
   private async uniqueSymbols(profiles: PortfolioProfile[]): Promise<string[]> {
