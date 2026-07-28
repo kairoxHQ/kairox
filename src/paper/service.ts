@@ -325,6 +325,7 @@ export async function recoverPaperStrategyRunFromPersistedWork(
     now: Date;
     expectedSymbols: number;
     budget?: PaperRunBudget;
+    runMaintenance?: boolean;
   }
 ): Promise<unknown | null> {
   const existingRun = await env.DB.prepare("SELECT summary_json AS summaryJson FROM strategy_runs WHERE run_key = ?")
@@ -364,7 +365,7 @@ export async function recoverPaperStrategyRunFromPersistedWork(
   const executedSignals = new Set(trades.map((row) => row.signalKey));
   const profile = await getPortfolioProfile(env.DB, options.portfolioId);
   const executedTradeCount = executedSignals.size;
-  const maintenanceResult = executedTradeCount > 0
+  const maintenanceResult = options.runMaintenance ?? (executedTradeCount > 0)
     ? await runPostStrategyMaintenance(env.DB, options.portfolioId, options.startedAt, options.now)
     : await lightweightPerformanceSummary(env.DB, options.portfolioId, options.startedAt);
   const finalPortfolio = await calculatePortfolioState(env.DB, await getPortfolioRow(env.DB, options.portfolioId), new Map(), options.portfolioId);

@@ -342,7 +342,8 @@ export class PaperObservationService {
       startedAt: child.startedAt,
       now,
       expectedSymbols,
-      budget
+      budget,
+      runMaintenance: false
     }) as FounderReportProfileInput | null;
     if (!summary) return false;
     const status: ObservationChildStatus = childStatusFromSummary(summary);

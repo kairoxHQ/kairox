@@ -117,6 +117,7 @@ test("stale child recovery uses persisted recommendations and trades before fail
   assert.match(paperSource, /INSERT OR IGNORE INTO strategy_runs/);
   assert.match(observationSource, /phase = 'recovered_finalized'/);
   assert.match(observationSource, /PaperObservation\.ProfileRecovered/);
+  assert.match(observationSource, /runMaintenance: false/);
 });
 
 test("paper execution accounting is atomic before recovery trusts persisted trades", () => {
