@@ -741,8 +741,11 @@ function firstSupportedIraCashAsset(symbols: string[], assets: AssetRegistryReco
 
 function iraCashStrategyDecision(marketData: MarketDataset, policy: IraCashManagementDecision): StrategyDecision {
   const action = policy.action;
-  const amount = policy.proposedDeploymentUsd > 0 ? ` Proposed deployment: $${policy.proposedDeploymentUsd.toFixed(2)}.` : "";
-  const audit = ` Cash before: $${policy.cashBeforeUsd.toFixed(2)}. Required reserve: $${policy.requiredReserveUsd.toFixed(2)}. Target reserve: $${policy.targetReserveUsd.toFixed(2)}. Deployable excess cash: $${policy.deployableExcessCashUsd.toFixed(2)}.${amount}`;
+  const amount = policy.proposedDeploymentUsd > 0 ? ` Proposed deployment: $${policy.proposedDeploymentUsd.toFixed(4)}.` : " Proposed deployment: $0.0000.";
+  const quote = policy.decisionPriceUsd
+    ? ` Quote: $${policy.decisionPriceUsd.toFixed(4)} from ${policy.quoteSource ?? "unknown source"} at ${policy.quoteTimestamp ?? "unknown time"}; freshness ${policy.quoteFreshness}.`
+    : ` Quote: unavailable; freshness ${policy.quoteFreshness}.`;
+  const audit = ` Cash before: $${policy.cashBeforeUsd.toFixed(2)}. Required reserve: $${policy.requiredReserveUsd.toFixed(2)}. Target reserve: $${policy.targetReserveUsd.toFixed(2)}. Deployable excess cash: $${policy.deployableExcessCashUsd.toFixed(2)}. Maximum risk-cap amount: $${policy.maxNewTradeUsd.toFixed(4)}.${amount} Selected asset: ${policy.targetSymbol ?? "none"}.${quote} Estimated fee: $${policy.feeUsd.toFixed(4)}. Estimated slippage: $${policy.slippageUsd.toFixed(4)}.`;
   const day = marketData.asOf.slice(0, 10);
   return {
     symbol: marketData.symbol,

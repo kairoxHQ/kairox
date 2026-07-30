@@ -135,6 +135,14 @@ interface IraCashSummary {
   investedPct: number;
   operationalCashPct: number;
   latestDecisionReason: string;
+  latestEvaluationAt: string | null;
+  latestOutcome: string;
+  latestProposedDeploymentUsd: number | null;
+  latestMaxRiskCapUsd: number | null;
+  latestSelectedAsset: string | null;
+  latestQuotePriceUsd: number | null;
+  latestQuoteTimestamp: string | null;
+  latestQuoteFreshness: string | null;
   latestTrade: string;
   cashPutToWorkUsd: number;
 }
@@ -235,12 +243,13 @@ async function buildIraCashSummary(
     .reduce((sum, holding) => sum + holding.currentValueUsd, 0);
   const [latestDecision, latestTrade] = await Promise.all([
     db.prepare(
-      `SELECT explanation
-       FROM decision_journal
+      `SELECT symbol, action, explanation, price_usd AS priceUsd, price_as_of AS priceAsOf,
+        quote_timestamp AS quoteTimestamp, created_at AS createdAt
+       FROM recommendations
        WHERE portfolio_id = 'portfolio_ira' AND signal_key LIKE 'IRA_CASH:%'
        ORDER BY created_at DESC
        LIMIT 1`
-    ).first<{ explanation: string }>(),
+    ).first<{ symbol: string; action: string; explanation: string; priceUsd: number | null; priceAsOf: string | null; quoteTimestamp: string | null; createdAt: string }>(),
     db.prepare(
       `SELECT symbol, side, quantity, price_usd AS priceUsd, fees_usd AS feesUsd, executed_at AS executedAt
        FROM trades
@@ -261,6 +270,14 @@ async function buildIraCashSummary(
     investedPct: valuation.totalPortfolioValueUsd / total,
     operationalCashPct: valuation.cashUsd / total,
     latestDecisionReason: latestDecision?.explanation ?? "IRA cash-management policy has not recorded a decision yet.",
+    latestEvaluationAt: latestDecision?.createdAt ?? null,
+    latestOutcome: latestDecision ? latestPolicyOutcome(latestDecision.action, latestDecision.explanation) : "No evaluation recorded",
+    latestProposedDeploymentUsd: latestDecision ? amountAfterLabel(latestDecision.explanation, "Proposed deployment") : null,
+    latestMaxRiskCapUsd: latestDecision ? amountAfterLabel(latestDecision.explanation, "Maximum risk-cap amount") : null,
+    latestSelectedAsset: latestDecision?.symbol ?? null,
+    latestQuotePriceUsd: latestDecision?.priceUsd ?? null,
+    latestQuoteTimestamp: latestDecision?.quoteTimestamp ?? latestDecision?.priceAsOf ?? null,
+    latestQuoteFreshness: latestDecision ? quoteFreshnessFromExplanation(latestDecision.explanation) : null,
     latestTrade: latestTrade ? `${latestTrade.side} ${latestTrade.symbol} at ${money(latestTrade.priceUsd)} on ${formatDate(latestTrade.executedAt)}` : "No paper trade recorded yet.",
     cashPutToWorkUsd
   };
@@ -273,6 +290,32 @@ async function getCashPutToWork(db: D1Database, portfolioId: string): Promise<nu
      WHERE portfolio_id = ? AND side = 'BUY'`
   ).bind(portfolioId).first<{ cashPutToWorkUsd: number }>();
   return Number(row?.cashPutToWorkUsd ?? 0);
+}
+
+function amountAfterLabel(text: string, label: string): number | null {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text.match(new RegExp(`${escaped}: \\$([0-9]+(?:\\.[0-9]+)?)`));
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function quoteFreshnessFromExplanation(text: string): string | null {
+  const match = text.match(/freshness ([a-z_ -]+)\./i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function latestPolicyOutcome(action: string, explanation: string): string {
+  if (/Risk checks blocked execution/i.test(explanation)) {
+    return "Rejected by risk checks";
+  }
+  if (/defer/i.test(explanation)) {
+    return "Deferred";
+  }
+  if (action === "BUY") {
+    return "Approved for paper buy";
+  }
+  return action.replace(/_/g, " ");
 }
 
 async function getRecentPortfolioActivity(db: D1Database, portfolioId: string): Promise<PortfolioPageActivityRow[]> {
@@ -574,6 +617,15 @@ function renderIraCashSummary(summary: IraCashSummary): string {
       ${metric("Invested", pct(summary.investedPct), `${pct(summary.operationalCashPct)} held as operational cash`)}
       ${metric("Cash put to work", money(summary.cashPutToWorkUsd), "Completed paper buys since account initialization")}
       ${metric("Latest trade", summary.latestTrade, "Most recent paper fill for this IRA")}
+    </div>
+    <div class="metric-grid" aria-label="Latest IRA cash-management evaluation">
+      ${metric("Evaluation time", summary.latestEvaluationAt ? formatDate(summary.latestEvaluationAt) : "Not recorded", "Latest IRA cash-policy recommendation")}
+      ${metric("Proposed deployment", summary.latestProposedDeploymentUsd === null ? "Not recorded" : money(summary.latestProposedDeploymentUsd), "Final amount after reserve, daily, allocation, and cap limits")}
+      ${metric("Maximum risk cap", summary.latestMaxRiskCapUsd === null ? "Not recorded" : money(summary.latestMaxRiskCapUsd), "Configured max-new-trade limit")}
+      ${metric("Selected asset", summary.latestSelectedAsset ?? "None", "Conservative allowlisted target")}
+      ${metric("Quote price", summary.latestQuotePriceUsd === null ? "Unavailable" : money(summary.latestQuotePriceUsd), summary.latestQuoteTimestamp ? `As of ${formatDate(summary.latestQuoteTimestamp)}` : "Quote timestamp unavailable")}
+      ${metric("Quote freshness", titleCase(summary.latestQuoteFreshness ?? "unknown"), "Symbol-level execution quote status")}
+      ${metric("Final outcome", summary.latestOutcome, "Most recent policy result")}
     </div>
     <p class="muted"><strong>Latest cash-management decision:</strong> ${escapeHtml(summary.latestDecisionReason)}</p>
   </section>`;

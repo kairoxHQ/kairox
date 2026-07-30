@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { evaluateIraCashManagement, resolveIraCashManagementParameters, type IraCashManagementInput } from "../src/policies/iraCashManagement.ts";
+import { evaluateIraCashManagement, resolveIraCashManagementParameters, sizeTradeDownToCap, type IraCashManagementInput } from "../src/policies/iraCashManagement.ts";
 import type { AssetRegistryRecord } from "../src/market/assets.ts";
 import type { MarketDataset } from "../src/shared/types.ts";
+import { assessPaperTrade } from "../src/risk/checks.ts";
 
 const policySource = readFileSync("src/policies/iraCashManagement.ts", "utf8");
 const paperSource = readFileSync("src/paper/service.ts", "utf8");
@@ -132,10 +133,87 @@ test("daily deployment limit is enforced", () => {
   assert.equal(decision.proposedDeploymentUsd, 240);
 });
 
+test("policy amount exactly equal to the raw max-new-trade cap passes", () => {
+  const decision = evaluateIraCashManagement(input({
+    cashUsd: 600,
+    totalValueUsd: 2384.5,
+    maxNewTradePct: 0.1,
+    parameters: { dailyDeploymentLimitPctOfExcess: 1 }
+  }));
+  assert.equal(decision.action, "BUY");
+  assert.equal(decision.proposedDeploymentUsd, 238.45);
+  assert.equal(decision.proposedDeploymentUsd <= 2384.5 * 0.1, true);
+});
+
+test("rounded policy amount never exceeds the raw risk cap", () => {
+  const rawCap = 238.45415;
+  assert.equal(sizeTradeDownToCap(238.4542, rawCap), 238.4541);
+  const decision = evaluateIraCashManagement(input({
+    cashUsd: 1909.8485985848502,
+    totalValueUsd: 2384.5415,
+    maxNewTradePct: 0.1,
+    parameters: { dailyDeploymentLimitPctOfExcess: 1 }
+  }));
+  assert.equal(decision.proposedDeploymentUsd, 238.4541);
+  assert.equal(decision.proposedDeploymentUsd <= decision.maxNewTradeUsd, true);
+  assert.equal(decision.proposedDeploymentUsd <= 2384.5415 * 0.1, true);
+});
+
+test("raw cap with more precision than supported money amount rounds downward", () => {
+  assert.equal(sizeTradeDownToCap(1000, 238.45415), 238.4541);
+  assert.notEqual(sizeTradeDownToCap(1000, 238.45415), 238.4542);
+});
+
+test("$238.4542 versus $238.45415 produces a safe executable amount", () => {
+  const decision = evaluateIraCashManagement(input({
+    cashUsd: 1909.8485985848502,
+    totalValueUsd: 2384.5415,
+    maxNewTradePct: 0.1,
+    parameters: { dailyDeploymentLimitPctOfExcess: 1 }
+  }));
+  assert.equal(decision.proposedDeploymentUsd, 238.4541);
+  const risk = assessPaperTrade({
+    action: "BUY",
+    marketData: validQuote,
+    portfolioValueUsd: 2384.5415,
+    cashUsd: 1909.8485985848502,
+    currentPositionValueUsd: 0,
+    proposedTradeValueUsd: decision.proposedDeploymentUsd,
+    drawdownPct: 0,
+    duplicateSignal: false,
+    openedNewPositionThisRun: false,
+    hasPosition: false,
+    maxNewTradePct: 0.1,
+    maxPositionPct: 0.2,
+    drawdownBlockPct: 0.1,
+    investmentPolicy: null,
+    orderIntent: "long_buy"
+  });
+  assert.equal(risk.allowed, true);
+});
+
+test("fees and slippage do not push the effective cash outlay above the max-new-trade cap", () => {
+  const decision = evaluateIraCashManagement(input({
+    cashUsd: 1909.8485985848502,
+    totalValueUsd: 2384.5415,
+    maxNewTradePct: 0.1,
+    parameters: { dailyDeploymentLimitPctOfExcess: 1 }
+  }));
+  const spendableBeforeFill = decision.proposedDeploymentUsd - decision.feeUsd;
+  const estimatedCashOutlay = spendableBeforeFill + decision.feeUsd;
+  assert.equal(estimatedCashOutlay <= 2384.5415 * 0.1, true);
+  assert.equal(decision.slippageUsd > 0, true);
+});
+
 test("same-day repeated cash-equivalent churn is prevented", () => {
   const decision = evaluateIraCashManagement(input({ tradedTargetToday: true }));
   assert.equal(decision.action, "DO_NOTHING");
   assert.match(decision.reason, /same-day/);
+});
+
+test("prior-day BND activity does not permanently block later deployment", () => {
+  const decision = evaluateIraCashManagement(input({ tradedTargetToday: false }));
+  assert.equal(decision.action, "BUY");
 });
 
 test("purchase cannot exceed available cash", () => {
@@ -147,6 +225,16 @@ test("fees and slippage are included", () => {
   const decision = evaluateIraCashManagement(input());
   assert.equal(decision.feeUsd, 0.24);
   assert.equal(decision.slippageUsd, 0.6);
+});
+
+test("fresh BND quote permits a BUY while stale BND quote blocks with clear reason", () => {
+  const fresh = evaluateIraCashManagement(input({ now: new Date("2026-07-29T15:30:00.000Z") }));
+  const stale = evaluateIraCashManagement(input({ marketData: { ...validQuote, stale: true, quality: "stale" } }));
+  assert.equal(fresh.action, "BUY");
+  assert.equal(fresh.quoteFreshness, "fresh");
+  assert.equal(stale.action, "DO_NOTHING");
+  assert.equal(stale.quoteFreshness, "stale");
+  assert.match(stale.reason, /quote is stale or invalid/);
 });
 
 test("cash-management parameters are configurable and migrated only for the IRA", () => {
@@ -190,6 +278,16 @@ test("UI distinguishes operational cash from cash-equivalent holdings", () => {
 test("UI displays excess idle cash and latest decision reason", () => {
   assert.match(portfolioSource, /Excess idle cash/);
   assert.match(portfolioSource, /Latest cash-management decision/);
+});
+
+test("UI displays latest IRA policy amount, cap, quote freshness, and outcome", () => {
+  assert.match(portfolioSource, /Latest IRA cash-management evaluation/);
+  assert.match(portfolioSource, /Proposed deployment/);
+  assert.match(portfolioSource, /Maximum risk cap/);
+  assert.match(portfolioSource, /Quote freshness/);
+  assert.match(portfolioSource, /Final outcome/);
+  assert.match(paperSource, /Maximum risk-cap amount/);
+  assert.match(paperSource, /freshness \$\{policy\.quoteFreshness\}/);
 });
 
 test("existing ETF holdings remain unchanged unless a valid strategy decision changes them", () => {

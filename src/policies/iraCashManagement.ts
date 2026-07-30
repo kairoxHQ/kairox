@@ -57,12 +57,14 @@ export interface IraCashManagementDecision {
   requiredReserveUsd: number;
   targetReserveUsd: number;
   deployableExcessCashUsd: number;
+  maxNewTradeUsd: number;
   proposedDeploymentUsd: number;
   feeUsd: number;
   slippageUsd: number;
   decisionPriceUsd: number | null;
   quoteSource: string | null;
   quoteTimestamp: string | null;
+  quoteFreshness: "fresh" | "stale" | "invalid" | "missing";
   confidenceScore: number;
   riskScore: number;
 }
@@ -114,12 +116,14 @@ export function evaluateIraCashManagement(input: IraCashManagementInput): IraCas
     requiredReserveUsd,
     targetReserveUsd,
     deployableExcessCashUsd,
+    maxNewTradeUsd: roundMoneyDown(Math.max(0, totalValueUsd * input.maxNewTradePct)),
     proposedDeploymentUsd: 0,
     feeUsd: 0,
     slippageUsd: 0,
     decisionPriceUsd: input.marketData?.priceUsd ?? null,
     quoteSource: input.marketData?.source ?? null,
     quoteTimestamp: input.marketData?.asOf ?? null,
+    quoteFreshness: quoteFreshness(input.marketData),
     confidenceScore: 0.9,
     riskScore: 0.05
   } satisfies Omit<IraCashManagementDecision, "action" | "reason">;
@@ -159,10 +163,13 @@ export function evaluateIraCashManagement(input: IraCashManagementInput): IraCas
     return { ...base, ...targetFields, action: "DO_NOTHING", reason: "Defer cash deployment because quote is stale or invalid." };
   }
 
-  const positionLimitUsd = roundMoney(Math.max(0, totalValueUsd * Math.min(input.currentPositionLimitPct, assetConfig.targetAllocationPct) - input.existingPositionValueUsd));
-  const dailyLimitUsd = roundMoney(deploymentDailyLimit(parameters, deployableExcessCashUsd));
-  const newTradeLimitUsd = roundMoney(Math.max(0, totalValueUsd * input.maxNewTradePct));
-  const proposedDeploymentUsd = roundMoney(Math.min(deployableExcessCashUsd, positionLimitUsd, dailyLimitUsd, newTradeLimitUsd, cashBeforeUsd - requiredReserveUsd));
+  const positionLimitUsd = roundMoneyDown(Math.max(0, totalValueUsd * Math.min(input.currentPositionLimitPct, assetConfig.targetAllocationPct) - input.existingPositionValueUsd));
+  const dailyLimitUsd = roundMoneyDown(deploymentDailyLimit(parameters, deployableExcessCashUsd));
+  const rawNewTradeLimitUsd = Math.max(0, totalValueUsd * input.maxNewTradePct);
+  const proposedDeploymentUsd = sizeTradeDownToCap(
+    Math.min(deployableExcessCashUsd, positionLimitUsd, dailyLimitUsd, rawNewTradeLimitUsd, cashBeforeUsd - requiredReserveUsd),
+    rawNewTradeLimitUsd
+  );
 
   if (proposedDeploymentUsd < parameters.minimumDeploymentUsd) {
     return { ...base, ...targetFields, action: "DO_NOTHING", reason: "Defer cash deployment because deployable amount is below minimum after reserve, allocation, and daily limits." };
@@ -181,6 +188,7 @@ export function evaluateIraCashManagement(input: IraCashManagementInput): IraCas
     reason: assetConfig.category === "broad_bond_market_etf"
       ? "Deploy excess IRA cash to approved conservative bond ETF."
       : "Deploy excess IRA cash to approved Treasury cash equivalent.",
+    maxNewTradeUsd: roundMoneyDown(rawNewTradeLimitUsd),
     proposedDeploymentUsd,
     feeUsd,
     slippageUsd,
@@ -219,6 +227,24 @@ function deploymentDailyLimit(parameters: IraCashManagementParameters, deployabl
   return parameters.dailyDeploymentLimitUsd === null ? pctLimit : Math.min(pctLimit, parameters.dailyDeploymentLimitUsd);
 }
 
+export function sizeTradeDownToCap(candidateUsd: number, rawCapUsd: number): number {
+  const clamped = Math.min(Math.max(0, candidateUsd), Math.max(0, rawCapUsd));
+  const rounded = roundMoneyDown(clamped);
+  return rounded <= rawCapUsd ? rounded : roundMoneyDown(rawCapUsd);
+}
+
 function roundMoney(value: number): number {
   return Math.round(value * 10000) / 10000;
+}
+
+function roundMoneyDown(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.floor(Math.max(0, value) * 10000) / 10000;
+}
+
+function quoteFreshness(marketData: MarketDataset | null): IraCashManagementDecision["quoteFreshness"] {
+  if (!marketData) return "missing";
+  if (!marketData.validated || marketData.priceUsd <= 0 || marketData.quality === "invalid") return "invalid";
+  if (marketData.stale || marketData.quality === "stale") return "stale";
+  return "fresh";
 }
