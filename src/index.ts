@@ -76,6 +76,11 @@ import {
   initializeFiveStrategyExperiment,
   renderFiveStrategyExperimentHtml
 } from "./experiments/fiveStrategyExperiment.ts";
+import {
+  getIraAlternativesComparison,
+  initializeIraAlternativesComparison,
+  renderIraAlternativesHtml
+} from "./benchmarks/iraAlternatives.ts";
 
 function safetyStatus(env: Env) {
   return {
@@ -153,6 +158,7 @@ const protectedPostRoutes = new Set([
   "/market-intelligence/run",
   "/strategy-experiment/initialize",
   "/strategy-experiment/dry-run",
+  "/ira-alternatives/initialize",
   "/events/process",
   "/events/replay",
   "/knowledge-graph/sync",
@@ -235,6 +241,7 @@ export default {
       "/portfolio-briefings/public-summary",
       "/strategy-lab",
       "/strategy-experiment",
+      "/ira-alternatives",
       "/research",
       "/research/securities",
       "/research/rankings",
@@ -322,6 +329,10 @@ export default {
 
       if (url.pathname === "/strategy-experiment/dry-run") {
         return json(await getFiveStrategyExperimentDryRun(env.DB));
+      }
+
+      if (url.pathname === "/ira-alternatives/initialize") {
+        return json(await initializeIraAlternativesComparison(env.DB));
       }
 
       if (url.pathname === "/research/run") {
@@ -923,6 +934,14 @@ export default {
           return renderFiveStrategyExperimentHtml(env.DB);
         }
         return json(await getFiveStrategyExperimentComparison(env.DB));
+      }
+
+      if (url.pathname === "/ira-alternatives") {
+        const comparison = await getIraAlternativesComparison(env.DB);
+        if (wantsHtml(request, url)) {
+          return renderIraAlternativesHtml(comparison);
+        }
+        return json(comparison);
       }
 
       if (url.pathname === "/research") {
