@@ -698,12 +698,12 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
     ).bind(comparison.id)),
     listRows<StrategyRow>(db.prepare(
       `SELECT sp.id, sp.portfolio_id AS portfolioId, sp.strategy_key AS strategyKey,
-        display_name AS displayName, starting_value_usd AS startingValueUsd,
-        start_timestamp AS startTimestamp, parameters_json AS parametersJson,
-        asset_universe_json AS assetUniverseJson, COALESCE(pp.enabled, sp.profile_enabled) AS profileEnabled,
-        paper_only AS paperOnly, live_trading_enabled AS liveTradingEnabled,
-        automatic_live_execution_enabled AS automaticLiveExecutionEnabled, status,
-        activation_timestamp AS activationTimestamp
+        sp.display_name AS displayName, sp.starting_value_usd AS startingValueUsd,
+        sp.start_timestamp AS startTimestamp, sp.parameters_json AS parametersJson,
+        sp.asset_universe_json AS assetUniverseJson, COALESCE(pp.enabled, sp.profile_enabled) AS profileEnabled,
+        sp.paper_only AS paperOnly, sp.live_trading_enabled AS liveTradingEnabled,
+        sp.automatic_live_execution_enabled AS automaticLiveExecutionEnabled, sp.status,
+        sp.activation_timestamp AS activationTimestamp
        FROM ira_alternative_strategy_portfolios sp
        LEFT JOIN portfolio_profiles pp ON pp.portfolio_id = sp.portfolio_id
        WHERE sp.comparison_id = ?
