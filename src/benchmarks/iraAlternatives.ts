@@ -697,7 +697,7 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
        ORDER BY CASE alternative_key WHEN 'ira_share_150apy' THEN 1 WHEN 'ira_certificate_370apy' THEN 2 ELSE 99 END`
     ).bind(comparison.id)),
     listRows<StrategyRow>(db.prepare(
-      `SELECT id, portfolio_id AS portfolioId, strategy_key AS strategyKey,
+      `SELECT sp.id, sp.portfolio_id AS portfolioId, sp.strategy_key AS strategyKey,
         display_name AS displayName, starting_value_usd AS startingValueUsd,
         start_timestamp AS startTimestamp, parameters_json AS parametersJson,
         asset_universe_json AS assetUniverseJson, COALESCE(pp.enabled, sp.profile_enabled) AS profileEnabled,
