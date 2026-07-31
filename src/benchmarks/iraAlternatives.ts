@@ -1,4 +1,14 @@
+import { canExecuteAt } from "../market/hours.ts";
+import type { AssetRegistryRecord } from "../market/assets.ts";
 import { listRows, TIM_USER_ID } from "../shared/db.ts";
+import type { MarketCandle, MarketDataset } from "../shared/types.ts";
+import type { NormalizedQuote } from "../market/service.ts";
+import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { getPortfolioProfile, type PortfolioProfile } from "../portfolio/profiles.ts";
+import { assessPaperTrade } from "../risk/checks.ts";
+import { decidePaperAction, type StrategyDecision } from "../strategy/paperStrategy.ts";
+import { calculateIndicators } from "../strategy/indicators.ts";
+import { rankOpportunities, screenAsset, type RankedOpportunity, type ScreenResult } from "../strategy/screener.ts";
 
 export const IRA_ALTERNATIVES_COMPARISON_ID = "ira_alternatives_2400_v1";
 export const IRA_ALTERNATIVES_BASELINE_ID = "ira_alternatives_2400_baseline_v1";
@@ -49,7 +59,7 @@ export const IRA_ALTERNATIVE_STRATEGIES = [
       cryptoPreference: 0,
       dividendPreference: 1.35,
       turnoverLimitPct: 0.06,
-      decisionCadence: "slow",
+      decisionCadence: "low",
       buyThreshold: 0.72,
       sellThreshold: 0.7,
       rebalanceThresholdPct: 0.08,
@@ -89,7 +99,7 @@ export const IRA_ALTERNATIVE_STRATEGIES = [
       cryptoPreference: 0,
       dividendPreference: 1.15,
       turnoverLimitPct: 0.04,
-      decisionCadence: "slow",
+      decisionCadence: "low",
       buyThreshold: 0.78,
       sellThreshold: 0.74,
       rebalanceThresholdPct: 0.1,
@@ -192,6 +202,49 @@ export const IRA_ALTERNATIVE_STRATEGIES = [
   }
 ] as const;
 
+const ACTIVE_ASSET_SYMBOLS = ["BND", "SCHD", "VTI", "VOO", "SPY"] as const;
+const FUTURE_TREASURY_SYMBOLS = ["SGOV", "BIL", "SHV", "VGSH", "SCHO"] as const;
+
+const STARTUP_MAX_TRADES_PER_DAY: Record<IraStrategyKey, number> = {
+  conservative: 2,
+  guardian: 1,
+  growth: 4,
+  aggressive: 8
+};
+
+const WATCHLIST_PRIORITY: Record<IraStrategyKey, Array<{ symbol: typeof ACTIVE_ASSET_SYMBOLS[number]; priority: number; role: string }>> = {
+  conservative: [
+    { symbol: "BND", priority: 10, role: "Core bond-fund stabilizer; not cash and not a money-market fund." },
+    { symbol: "SCHD", priority: 20, role: "Dividend-oriented equity sleeve." },
+    { symbol: "VTI", priority: 30, role: "Broad-market equity exposure." },
+    { symbol: "VOO", priority: 40, role: "Large-cap equity exposure." },
+    { symbol: "SPY", priority: 50, role: "Liquid broad-market proxy." }
+  ],
+  guardian: [
+    { symbol: "BND", priority: 10, role: "Primary defensive bond-fund exposure; not cash and not a money-market fund." },
+    { symbol: "SCHD", priority: 20, role: "Lower-turnover dividend equity candidate." },
+    { symbol: "VOO", priority: 40, role: "Large-cap equity exposure with strict gates." },
+    { symbol: "VTI", priority: 50, role: "Broad-market equity exposure with strict gates." },
+    { symbol: "SPY", priority: 60, role: "Liquid broad-market proxy with strict gates." }
+  ],
+  growth: [
+    { symbol: "VTI", priority: 10, role: "Primary broad-market growth exposure." },
+    { symbol: "VOO", priority: 20, role: "Large-cap equity growth exposure." },
+    { symbol: "SCHD", priority: 30, role: "Dividend stabilizer." },
+    { symbol: "SPY", priority: 40, role: "Liquid broad-market proxy." },
+    { symbol: "BND", priority: 60, role: "Bond-fund diversifier; not cash and not a money-market fund." }
+  ],
+  aggressive: [
+    { symbol: "SPY", priority: 10, role: "Highest-liquidity equity proxy." },
+    { symbol: "VOO", priority: 20, role: "Large-cap equity growth exposure." },
+    { symbol: "VTI", priority: 30, role: "Broad-market equity growth exposure." },
+    { symbol: "SCHD", priority: 50, role: "Dividend equity diversifier." },
+    { symbol: "BND", priority: 80, role: "Bond-fund diversifier; not cash and not a money-market fund." }
+  ]
+};
+
+type IraStrategyKey = typeof IRA_ALTERNATIVE_STRATEGIES[number]["key"];
+
 interface ComparisonRow {
   id: string;
   baselineId: string;
@@ -233,6 +286,7 @@ interface StrategyRow {
   liveTradingEnabled: number;
   automaticLiveExecutionEnabled: number;
   status: string;
+  activationTimestamp?: string | null;
 }
 
 interface StrategyValuationRow {
@@ -240,6 +294,147 @@ interface StrategyValuationRow {
   holdingsValueUsd: number | null;
   tradeCount: number;
   feesUsd: number | null;
+}
+
+interface ReadOnlyMarketRow {
+  symbol: string;
+  assetClass: string;
+  source: string;
+  priceUsd: number;
+  priceAsOf: string;
+  volume: number | null;
+  candlesJson: string | null;
+  createdAt: string;
+}
+
+interface TrustedQuoteCacheRow {
+  symbol: string;
+  normalizedQuoteJson: string;
+  qualityStatus: string;
+  provider: string;
+  providerTimestamp: string | null;
+  retrievalTimestamp: string;
+}
+
+interface ActivationAssetRow {
+  id: string;
+  symbol: string;
+  displayName: string;
+  assetType: string;
+  market: string;
+  currency: string;
+  providerSymbol: string;
+  enabled: number;
+  tradable: number;
+  fractionalSupported: number;
+  dividendCapable: number;
+  expenseRatio: number | null;
+  minimumInvestment: number | null;
+  marketHoursMode: string;
+  pricePrecision: number;
+  quantityPrecision: number;
+}
+
+interface ActivationPreflightRow {
+  strategyKey: IraStrategyKey;
+  portfolioId: string;
+  profileId: string;
+  profileKey: string;
+  profileEnabled: number;
+  comparisonStartTimestamp: string;
+  comparisonStartEquityUsd: number;
+  parametersJson: string;
+  cashUsd: number;
+  startingBalanceUsd: number;
+  paperOnly: number;
+  liveTradingEnabled: number;
+  automaticLiveExecutionEnabled: number;
+  positions: number;
+  orders: number;
+  trades: number;
+  fees: number;
+}
+
+export interface IraAlternativesDryRunResult {
+  generatedAt: string;
+  comparisonId: string;
+  baselineId: string;
+  mutating: false;
+  marketStatus: {
+    cronCadence: string;
+    currentMarketHours: string;
+    expectedFirstRegularMarketWindow: string;
+  };
+  assetUniverse: {
+    activeSymbols: AssetSupportSummary[];
+    unsupportedTreasuryCandidates: AssetSupportSummary[];
+    limitation: string;
+  };
+  strategies: IraAlternativeDryRunStrategy[];
+}
+
+export interface AssetSupportSummary {
+  symbol: string;
+  registrySupported: boolean;
+  quoteProviderSupported: boolean;
+  paperExecutionSupported: boolean;
+  valuationSupported: boolean;
+  marketHoursMode: string | null;
+  quoteFreshnessHandling: string;
+  limitation?: string;
+}
+
+export interface IraAlternativeDryRunStrategy {
+  strategyKey: IraStrategyKey;
+  portfolioId: string;
+  profileId: string;
+  profileKey: string;
+  displayName: string;
+  profileEnabled: boolean;
+  policy: Record<string, unknown>;
+  symbolsEvaluated: string[];
+  canBuildInitialPortfolioFromCash: boolean;
+  decisions: Array<{
+    symbol: string;
+    action: string;
+    proposedActionDuringMarketHours: string;
+    proposedTradeValueUsd: number;
+    confidence: number;
+    reason: string;
+    riskAllowed: boolean;
+    riskChecks: string[];
+    quoteTimestamp: string;
+    quoteSource: string;
+    quoteFreshness: string;
+    marketHoursAllowed: boolean;
+    executableDuringValidMarketHours: boolean;
+    intendedAllocationPct: number;
+    screenRank: number | null;
+    screenScore: number;
+  }>;
+}
+
+export interface IraAlternativesActivationResult {
+  activated: true;
+  generatedAt: string;
+  sharedActivationTimestamp: string;
+  comparisonId: string;
+  baselineId: string;
+  portfolios: Array<{
+    portfolioId: string;
+    profileId: string;
+    strategyKey: IraStrategyKey;
+    profileKey: string;
+    effectiveCadenceMinutes: number;
+    maxTradesPerDay: number;
+    cashUsd: number;
+    positions: number;
+    orders: number;
+    trades: number;
+  }>;
+  watchlistsSeeded: number;
+  watchlistAssetsSeeded: number;
+  expectedFirstRegularMarketWindow: string;
 }
 
 export interface IraAlternativeComparison {
@@ -505,11 +700,13 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
       `SELECT id, portfolio_id AS portfolioId, strategy_key AS strategyKey,
         display_name AS displayName, starting_value_usd AS startingValueUsd,
         start_timestamp AS startTimestamp, parameters_json AS parametersJson,
-        asset_universe_json AS assetUniverseJson, profile_enabled AS profileEnabled,
+        asset_universe_json AS assetUniverseJson, COALESCE(pp.enabled, sp.profile_enabled) AS profileEnabled,
         paper_only AS paperOnly, live_trading_enabled AS liveTradingEnabled,
-        automatic_live_execution_enabled AS automaticLiveExecutionEnabled, status
-       FROM ira_alternative_strategy_portfolios
-       WHERE comparison_id = ?
+        automatic_live_execution_enabled AS automaticLiveExecutionEnabled, status,
+        activation_timestamp AS activationTimestamp
+       FROM ira_alternative_strategy_portfolios sp
+       LEFT JOIN portfolio_profiles pp ON pp.portfolio_id = sp.portfolio_id
+       WHERE sp.comparison_id = ?
        ORDER BY CASE strategy_key WHEN 'conservative' THEN 1 WHEN 'guardian' THEN 2 WHEN 'growth' THEN 3 WHEN 'aggressive' THEN 4 ELSE 99 END`
     ).bind(comparison.id))
   ]);
@@ -583,6 +780,161 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
     },
     alternatives: [...bankAlternatives, ...strategyAlternatives],
     disclosures: disclosures()
+  };
+}
+
+export async function getIraAlternativesDryRun(db: D1Database, now = new Date()): Promise<IraAlternativesDryRunResult> {
+  const comparison = await getComparison(db);
+  if (!comparison) {
+    throw new Error("IRA alternatives comparison is not initialized.");
+  }
+  const [activeAssets, treasuryAssets, preflight] = await Promise.all([
+    supportedAssets(db, [...ACTIVE_ASSET_SYMBOLS]),
+    supportedAssets(db, [...FUTURE_TREASURY_SYMBOLS]),
+    activationPreflightRows(db)
+  ]);
+  const activeSupport = assetSupportSummaries(activeAssets, [...ACTIVE_ASSET_SYMBOLS]);
+  const treasurySupport = assetSupportSummaries(treasuryAssets, [...FUTURE_TREASURY_SYMBOLS]);
+  assertCleanPreflight(preflight);
+  assertActiveAssetsSupported(activeSupport);
+
+  const strategies = await Promise.all(IRA_ALTERNATIVE_STRATEGIES.map(async (strategy) => {
+    const row = preflight.find((item) => item.strategyKey === strategy.key);
+    if (!row) {
+      throw new Error(`${strategy.key} IRA alternatives portfolio mapping is missing.`);
+    }
+    const profile = await getPortfolioProfile(db, strategy.portfolioId);
+    const assets = plannedAssetsForStrategy(activeAssets, strategy.key);
+    const decisions = await dryRunDecisionsForProfile(db, profile, assets, now);
+    return {
+      strategyKey: strategy.key,
+      portfolioId: strategy.portfolioId,
+      profileId: row.profileId,
+      profileKey: row.profileKey,
+      displayName: strategy.displayName,
+      profileEnabled: row.profileEnabled === 1,
+      policy: policySummary(profile),
+      symbolsEvaluated: decisions.map((decision) => decision.symbol),
+      canBuildInitialPortfolioFromCash: assets.length > 0 && decisions.length > 0,
+      decisions
+    };
+  }));
+
+  return {
+    generatedAt: now.toISOString(),
+    comparisonId: comparison.id,
+    baselineId: comparison.baselineId,
+    mutating: false,
+    marketStatus: {
+      cronCadence: "*/30 * * * *",
+      currentMarketHours: "US stock and ETF execution is limited to regular market hours.",
+      expectedFirstRegularMarketWindow: expectedFirstRegularMarketWindow()
+    },
+    assetUniverse: {
+      activeSymbols: activeSupport,
+      unsupportedTreasuryCandidates: treasurySupport,
+      limitation: "The retirement comparison currently lacks a true Treasury-bill or cash-equivalent trading asset. BND is a bond fund, not cash and not a money-market fund."
+    },
+    strategies
+  };
+}
+
+export async function activateIraAlternativesProfiles(db: D1Database, now = new Date()): Promise<IraAlternativesActivationResult> {
+  const comparison = await getComparison(db);
+  if (!comparison) {
+    throw new Error("IRA alternatives comparison is not initialized.");
+  }
+  const preflight = await activationPreflightRows(db);
+  assertCleanPreflight(preflight, { requireDisabledProfiles: true });
+  const activeAssets = await supportedAssets(db, [...ACTIVE_ASSET_SYMBOLS]);
+  assertActiveAssetsSupported(assetSupportSummaries(activeAssets, [...ACTIVE_ASSET_SYMBOLS]));
+  const dryRun = await getIraAlternativesDryRun(db, now);
+  if (dryRun.strategies.some((strategy) => !strategy.canBuildInitialPortfolioFromCash)) {
+    throw new Error("At least one IRA alternatives strategy cannot build an initial portfolio from cash.");
+  }
+
+  const activationTimestamp = now.toISOString();
+  const statements: D1PreparedStatement[] = [];
+  let watchlistAssetsSeeded = 0;
+  for (const strategy of IRA_ALTERNATIVE_STRATEGIES) {
+    const profile = await getPortfolioProfile(db, strategy.portfolioId);
+    const parameters = {
+      ...strategy.parameters,
+      maxTradesPerDay: STARTUP_MAX_TRADES_PER_DAY[strategy.key]
+    };
+    const watchlistId = `watchlist_${sanitizeId(strategy.portfolioId)}_ira_alternatives`;
+    statements.push(
+      db.prepare(
+        `INSERT OR IGNORE INTO watchlists (id, portfolio_id, name, description, enabled)
+         VALUES (?, ?, ?, ?, 1)`
+      ).bind(
+        watchlistId,
+        strategy.portfolioId,
+        `${strategy.displayName} IRA Alternatives Universe`,
+        "Activation-seeded paper-only IRA alternatives universe. Treasury candidates remain unsupported unless separately verified."
+      ),
+      db.prepare(
+        `UPDATE portfolio_profiles
+         SET enabled = 1, parameters_json = ?, updated_at = ?
+         WHERE id = ? AND portfolio_id = ? AND enabled = 0`
+      ).bind(JSON.stringify(parameters), activationTimestamp, `portfolio_profile_${sanitizeId(strategy.portfolioId)}`, strategy.portfolioId),
+      db.prepare(
+        `UPDATE ira_alternative_strategy_portfolios
+         SET status = 'active', activation_timestamp = ?, activated_by = 'protected_ira_alternatives_activation', updated_at = ?
+         WHERE comparison_id = ? AND portfolio_id = ? AND status = 'initialized'`
+      ).bind(activationTimestamp, activationTimestamp, IRA_ALTERNATIVES_COMPARISON_ID, strategy.portfolioId)
+    );
+    for (const item of WATCHLIST_PRIORITY[strategy.key]) {
+      const asset = activeAssets.get(item.symbol);
+      if (!asset) {
+        throw new Error(`${item.symbol} is missing from the supported active asset map.`);
+      }
+      watchlistAssetsSeeded += 1;
+      statements.push(
+        db.prepare(
+          `INSERT OR IGNORE INTO watchlist_assets (id, watchlist_id, asset_id, enabled, ranking_priority, notes)
+           VALUES (?, ?, ?, 1, ?, ?)`
+        ).bind(
+          `watchlist_asset_${sanitizeId(strategy.portfolioId)}_${sanitizeId(item.symbol)}`,
+          watchlistId,
+          asset.id,
+          item.priority,
+          item.role
+        )
+      );
+    }
+  }
+  await db.batch(statements);
+  const verification = await activationPreflightRows(db);
+  const activated = verification.filter((row) => row.profileEnabled === 1);
+  if (activated.length !== 4 || activated.some((row) => !IRA_ALTERNATIVE_STRATEGIES.some((strategy) => strategy.key === row.strategyKey))) {
+    throw new Error("Activation did not produce exactly the four intended IRA alternatives profiles.");
+  }
+
+  return {
+    activated: true,
+    generatedAt: now.toISOString(),
+    sharedActivationTimestamp: activationTimestamp,
+    comparisonId: comparison.id,
+    baselineId: comparison.baselineId,
+    portfolios: activated.sort((left, right) => strategyOrder(left.strategyKey) - strategyOrder(right.strategyKey)).map((row) => {
+      const parameters = parseJson<Record<string, unknown>>(row.parametersJson, {});
+      return {
+        portfolioId: row.portfolioId,
+        profileId: row.profileId,
+        strategyKey: row.strategyKey,
+        profileKey: row.profileKey,
+        effectiveCadenceMinutes: cadenceMinutesFromParameters(parameters),
+        maxTradesPerDay: Number(parameters.maxTradesPerDay ?? 0),
+        cashUsd: row.cashUsd,
+        positions: row.positions,
+        orders: row.orders,
+        trades: row.trades
+      };
+    }),
+    watchlistsSeeded: IRA_ALTERNATIVE_STRATEGIES.length,
+    watchlistAssetsSeeded,
+    expectedFirstRegularMarketWindow: expectedFirstRegularMarketWindow()
   };
 }
 
@@ -815,6 +1167,410 @@ async function strategyValuation(db: D1Database, portfolioId: string): Promise<S
 
 function benchmarkValue(row: BenchmarkRow | undefined, startTimestamp: string, now: Date): number | null {
   return row ? calculateApyAccrualValue(row.startingValueUsd, row.apy, startTimestamp, now) : null;
+}
+
+async function activationPreflightRows(db: D1Database): Promise<ActivationPreflightRow[]> {
+  return listRows<ActivationPreflightRow>(db.prepare(
+    `SELECT sp.strategy_key AS strategyKey, sp.portfolio_id AS portfolioId,
+      pp.id AS profileId, pp.profile_key AS profileKey, pp.enabled AS profileEnabled,
+      pp.comparison_start_timestamp AS comparisonStartTimestamp,
+      pp.comparison_start_equity_usd AS comparisonStartEquityUsd,
+      pp.parameters_json AS parametersJson,
+      p.cash_usd AS cashUsd, p.starting_balance_usd AS startingBalanceUsd,
+      sp.paper_only AS paperOnly, sp.live_trading_enabled AS liveTradingEnabled,
+      sp.automatic_live_execution_enabled AS automaticLiveExecutionEnabled,
+      (SELECT COUNT(*) FROM positions WHERE portfolio_id = p.id) AS positions,
+      (SELECT COUNT(*) FROM orders WHERE portfolio_id = p.id) AS orders,
+      (SELECT COUNT(*) FROM trades WHERE portfolio_id = p.id) AS trades,
+      (SELECT COALESCE(SUM(fees_usd), 0) FROM trades WHERE portfolio_id = p.id) AS fees
+     FROM ira_alternative_strategy_portfolios sp
+     JOIN portfolios p ON p.id = sp.portfolio_id
+     JOIN portfolio_profiles pp ON pp.portfolio_id = p.id
+     WHERE sp.comparison_id = ?
+     ORDER BY CASE sp.strategy_key WHEN 'conservative' THEN 1 WHEN 'guardian' THEN 2 WHEN 'growth' THEN 3 WHEN 'aggressive' THEN 4 ELSE 99 END`
+  ).bind(IRA_ALTERNATIVES_COMPARISON_ID));
+}
+
+function assertCleanPreflight(rows: ActivationPreflightRow[], options: { requireDisabledProfiles?: boolean } = {}): void {
+  const expected = new Set<IraStrategyKey>(IRA_ALTERNATIVE_STRATEGIES.map((strategy) => strategy.key));
+  if (rows.length !== 4) {
+    throw new Error(`Expected exactly four IRA alternatives strategy portfolios; found ${rows.length}.`);
+  }
+  for (const row of rows) {
+    if (!expected.has(row.strategyKey)) {
+      throw new Error(`Unexpected IRA alternatives strategy key: ${row.strategyKey}.`);
+    }
+    if (row.startingBalanceUsd !== IRA_ALTERNATIVES_STARTING_VALUE_USD || row.cashUsd !== IRA_ALTERNATIVES_STARTING_VALUE_USD) {
+      throw new Error(`${row.strategyKey} is no longer at the clean $2,400.00 cash baseline.`);
+    }
+    if (row.comparisonStartEquityUsd !== IRA_ALTERNATIVES_STARTING_VALUE_USD) {
+      throw new Error(`${row.strategyKey} comparison start value is not $2,400.00.`);
+    }
+    if (row.paperOnly !== 1 || row.liveTradingEnabled !== 0 || row.automaticLiveExecutionEnabled !== 0) {
+      throw new Error(`${row.strategyKey} paper-only safety flags are not intact.`);
+    }
+    if (options.requireDisabledProfiles && row.profileEnabled !== 0) {
+      throw new Error(`${row.strategyKey} profile is already enabled; refusing repeated activation.`);
+    }
+    if (row.positions !== 0 || row.orders !== 0 || row.trades !== 0 || row.fees !== 0) {
+      throw new Error(`${row.strategyKey} no longer has zero positions, orders, trades, and fees.`);
+    }
+  }
+}
+
+async function supportedAssets(db: D1Database, symbols: string[]): Promise<Map<string, AssetRegistryRecord>> {
+  if (symbols.length === 0) {
+    return new Map();
+  }
+  const placeholders = symbols.map(() => "?").join(", ");
+  const rows = await listRows<ActivationAssetRow>(db.prepare(
+    `SELECT id, symbol, display_name AS displayName, asset_type AS assetType,
+      market, currency, provider_symbol AS providerSymbol, enabled, tradable,
+      fractional_supported AS fractionalSupported, dividend_capable AS dividendCapable,
+      expense_ratio AS expenseRatio, minimum_investment AS minimumInvestment,
+      market_hours_mode AS marketHoursMode, price_precision AS pricePrecision,
+      quantity_precision AS quantityPrecision
+     FROM assets
+     WHERE symbol IN (${placeholders})`
+  ).bind(...symbols));
+  return new Map(rows.map((row) => [row.symbol, parseActivationAssetRow(row)]));
+}
+
+function parseActivationAssetRow(row: ActivationAssetRow): AssetRegistryRecord {
+  return {
+    id: row.id,
+    symbol: row.symbol,
+    displayName: row.displayName,
+    assetType: row.assetType as AssetRegistryRecord["assetType"],
+    market: row.market,
+    currency: row.currency,
+    providerSymbol: row.providerSymbol,
+    enabled: row.enabled === 1,
+    tradable: row.tradable === 1,
+    fractionalSupported: row.fractionalSupported === 1,
+    dividendCapable: row.dividendCapable === 1,
+    expenseRatio: row.expenseRatio,
+    minimumInvestment: row.minimumInvestment,
+    marketHoursMode: row.marketHoursMode as AssetRegistryRecord["marketHoursMode"],
+    pricePrecision: row.pricePrecision,
+    quantityPrecision: row.quantityPrecision
+  };
+}
+
+function assetSupportSummaries(assetMap: Map<string, AssetRegistryRecord>, symbols: string[]): AssetSupportSummary[] {
+  return symbols.map((symbol) => {
+    const asset = assetMap.get(symbol);
+    const supported = Boolean(asset?.enabled && asset.tradable && asset.market === "US" && asset.currency === "USD");
+    return {
+      symbol,
+      registrySupported: Boolean(asset?.enabled),
+      quoteProviderSupported: Boolean(asset?.providerSymbol),
+      paperExecutionSupported: supported,
+      valuationSupported: Boolean(asset?.enabled && asset.providerSymbol),
+      marketHoursMode: asset?.marketHoursMode ?? null,
+      quoteFreshnessHandling: asset ? `${asset.marketHoursMode} market-hours classification with strict paper-execution quote freshness.` : "No registry row; not eligible for quote, valuation, or paper execution.",
+      limitation: asset ? undefined : "Unsupported treasury/cash-equivalent candidate; not activated."
+    };
+  });
+}
+
+function assertActiveAssetsSupported(summaries: AssetSupportSummary[]): void {
+  const unsupported = summaries.filter((asset) => !asset.registrySupported || !asset.quoteProviderSupported || !asset.paperExecutionSupported || !asset.valuationSupported);
+  if (unsupported.length > 0) {
+    throw new Error(`Cannot activate IRA alternatives because active symbols are unsupported: ${unsupported.map((asset) => asset.symbol).join(", ")}.`);
+  }
+}
+
+function plannedAssetsForStrategy(assetMap: Map<string, AssetRegistryRecord>, strategyKey: IraStrategyKey): AssetRegistryRecord[] {
+  return WATCHLIST_PRIORITY[strategyKey].flatMap((item) => {
+    const asset = assetMap.get(item.symbol);
+    return asset ? [{ ...asset, rankingPriority: item.priority, notes: item.role }] : [];
+  });
+}
+
+async function dryRunDecisionsForProfile(db: D1Database, profile: PortfolioProfile, assets: AssetRegistryRecord[], now: Date): Promise<IraAlternativeDryRunStrategy["decisions"]> {
+  const investmentPolicy = await getInvestmentPolicy(db, profile.portfolioId);
+  const rankedInput: RankedOpportunity[] = [];
+  for (const asset of assets) {
+    const marketData = await latestReadOnlyMarketData(db, asset, now);
+    const exposure = {
+      portfolioValueUsd: IRA_ALTERNATIVES_STARTING_VALUE_USD,
+      drawdownPct: 0,
+      symbolExposurePct: 0,
+      categoryExposurePct: 0
+    };
+    const screen = adjustDryRunScreenForProfile(screenAsset({ asset, marketData, now, exposure }), profile);
+    const decision = screen.eligible ? decidePaperAction({ marketData, hasPosition: false }) : dryRunScreenedOutDecision(marketData, screen.reason);
+    rankedInput.push({
+      asset,
+      marketData,
+      decision: applyDryRunProfileDecisionPolicy(decision, profile),
+      screen,
+      positionValueUsd: 0,
+      hasPosition: false
+    });
+  }
+  return rankOpportunities(rankedInput).map((item) => {
+    const marketHours = canExecuteAt(item.asset.assetType, now, item.asset.marketHoursMode);
+    const signalDuringMarketHours = item.marketData.validated
+      ? applyDryRunProfileDecisionPolicy(decidePaperAction({ marketData: item.marketData, hasPosition: false }), profile)
+      : item.decision;
+    const proposedTradeValueUsd = signalDuringMarketHours.action === "BUY"
+      ? roundMoney(Math.min(
+        IRA_ALTERNATIVES_STARTING_VALUE_USD * profile.parameters.maxNewTradePct,
+        Math.max(0, IRA_ALTERNATIVES_STARTING_VALUE_USD - IRA_ALTERNATIVES_STARTING_VALUE_USD * profile.parameters.cashReservePct)
+      ))
+      : 0;
+    const risk = assessPaperTrade({
+      action: signalDuringMarketHours.action,
+      marketData: item.marketData,
+      portfolioValueUsd: IRA_ALTERNATIVES_STARTING_VALUE_USD,
+      cashUsd: IRA_ALTERNATIVES_STARTING_VALUE_USD,
+      currentPositionValueUsd: 0,
+      proposedTradeValueUsd,
+      drawdownPct: 0,
+      duplicateSignal: false,
+      openedNewPositionThisRun: false,
+      hasPosition: false,
+      maxNewTradePct: profile.parameters.maxNewTradePct,
+      maxPositionPct: profile.parameters.maxPositionPct,
+      drawdownBlockPct: profile.parameters.drawdownBlockPct,
+      investmentPolicy,
+      orderIntent: signalDuringMarketHours.action === "SELL" ? "long_sell" : "long_buy"
+    });
+    const riskChecks = [...risk.reasons];
+    if ((signalDuringMarketHours.action === "BUY" || signalDuringMarketHours.action === "SELL") && !marketHours.allowed && marketHours.reason) {
+      riskChecks.push(marketHours.reason);
+    }
+    return {
+      symbol: item.asset.symbol,
+      action: marketHours.allowed ? signalDuringMarketHours.action : "DO_NOTHING",
+      proposedActionDuringMarketHours: signalDuringMarketHours.action,
+      proposedTradeValueUsd,
+      confidence: signalDuringMarketHours.confidenceScore,
+      reason: marketHours.allowed ? signalDuringMarketHours.explanation : `Market is closed now: ${marketHours.reason ?? "regular market hours are required."} ${signalDuringMarketHours.explanation}`,
+      riskAllowed: risk.allowed && marketHours.allowed,
+      riskChecks,
+      quoteTimestamp: item.marketData.asOf,
+      quoteSource: item.marketData.source,
+      quoteFreshness: item.marketData.quality ?? item.marketData.status ?? "unknown",
+      marketHoursAllowed: marketHours.allowed,
+      executableDuringValidMarketHours: risk.allowed && (signalDuringMarketHours.action === "BUY" || signalDuringMarketHours.action === "SELL"),
+      intendedAllocationPct: signalDuringMarketHours.action === "BUY" ? roundRatio(proposedTradeValueUsd / IRA_ALTERNATIVES_STARTING_VALUE_USD) : 0,
+      screenRank: item.screen.rank,
+      screenScore: item.screen.score
+    };
+  });
+}
+
+async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryRecord, now: Date): Promise<MarketDataset> {
+  const snapshotRow = await db.prepare(
+    `SELECT symbol, asset_class AS assetClass, source, price_usd AS priceUsd,
+      price_as_of AS priceAsOf, volume, candles_json AS candlesJson, created_at AS createdAt
+     FROM market_snapshots
+     WHERE symbol = ? AND validation_status = 'validated' AND price_usd > 0
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).bind(asset.symbol).first<ReadOnlyMarketRow>();
+  const trustedRow = await db.prepare(
+    `SELECT symbol, normalized_quote_json AS normalizedQuoteJson, quality_status AS qualityStatus,
+      provider, provider_timestamp AS providerTimestamp, retrieval_timestamp AS retrievalTimestamp
+     FROM trusted_quote_cache
+     WHERE symbol = ?`
+  ).bind(asset.symbol).first<TrustedQuoteCacheRow>();
+  const candidates = [
+    snapshotRow ? marketDatasetFromSnapshot(snapshotRow, asset, now) : null,
+    trustedRow ? marketDatasetFromTrustedQuote(trustedRow, asset, now) : null
+  ].filter((candidate): candidate is MarketDataset => candidate !== null);
+  return candidates.sort((a, b) => new Date(b.asOf).getTime() - new Date(a.asOf).getTime())[0] ?? latestReadOnlyMarketUnavailable(asset, now);
+}
+
+function marketDatasetFromSnapshot(row: ReadOnlyMarketRow, asset: AssetRegistryRecord, now: Date): MarketDataset {
+  const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(row.createdAt).getTime()) / 1000));
+  const maxAgeSeconds = maxReadOnlyAgeSeconds(asset.assetType);
+  const stale = ageSeconds > maxAgeSeconds;
+  return {
+    symbol: asset.symbol,
+    assetClass: asset.assetType,
+    priceUsd: row.priceUsd,
+    asOf: row.priceAsOf,
+    source: row.source,
+    validated: !stale,
+    stale,
+    volume: row.volume ?? undefined,
+    candles: parseCandles(row.candlesJson),
+    status: stale ? "deferred" : "cached",
+    quality: stale ? "stale" : "acceptable_cached",
+    userMessage: stale ? "Trusted snapshot is too old for dry-run execution approval." : "Using trusted read-only market snapshot for dry-run evaluation.",
+    error: stale ? "Trusted snapshot is too old for dry-run execution approval." : undefined
+  };
+}
+
+function marketDatasetFromTrustedQuote(row: TrustedQuoteCacheRow, asset: AssetRegistryRecord, now: Date): MarketDataset | null {
+  const quote = parseTrustedQuote(row.normalizedQuoteJson);
+  const price = quote?.lastPrice;
+  if (!quote || !Number.isFinite(price) || (price ?? 0) <= 0) {
+    return null;
+  }
+  const asOf = quote.providerTimestamp ?? row.providerTimestamp ?? quote.receivedTimestamp ?? row.retrievalTimestamp;
+  const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(asOf).getTime()) / 1000));
+  const stale = ageSeconds > maxReadOnlyAgeSeconds(asset.assetType) || /stale|missing|failure|unavailable|conflicting|anomalous/i.test(quote.dataQualityStatus ?? row.qualityStatus);
+  return {
+    symbol: asset.symbol,
+    assetClass: asset.assetType,
+    priceUsd: price as number,
+    asOf,
+    source: quote.providerName ?? row.provider,
+    validated: !stale,
+    stale,
+    volume: quote.volume ?? undefined,
+    candles: quote.candles ?? [],
+    status: stale ? "deferred" : "cached",
+    quality: stale ? "stale" : "acceptable_cached",
+    userMessage: stale ? "Trusted quote cache is too old for dry-run execution approval." : "Using trusted read-only quote cache for dry-run evaluation.",
+    error: stale ? "Trusted quote cache is too old for dry-run execution approval." : undefined
+  };
+}
+
+function parseTrustedQuote(value: string | null): NormalizedQuote | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as NormalizedQuote : null;
+  } catch {
+    return null;
+  }
+}
+
+function maxReadOnlyAgeSeconds(assetType: string): number {
+  return assetType === "crypto" ? 30 * 60 : 4 * 24 * 60 * 60;
+}
+
+function latestReadOnlyMarketUnavailable(asset: AssetRegistryRecord, now: Date): MarketDataset {
+  return {
+    symbol: asset.symbol,
+    assetClass: asset.assetType,
+    priceUsd: 0,
+    asOf: new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString(),
+    source: "none",
+    validated: false,
+    stale: true,
+    candles: [],
+    status: "unavailable",
+    quality: "invalid",
+    userMessage: "No trusted read-only market data is available for dry-run evaluation.",
+    error: "No trusted read-only market data is available for dry-run evaluation."
+  };
+}
+
+function dryRunScreenedOutDecision(marketData: MarketDataset, reason: string): StrategyDecision {
+  return {
+    symbol: marketData.symbol,
+    action: "DO_NOTHING",
+    confidenceScore: 0.9,
+    riskScore: 0.05,
+    indicators: calculateIndicators(marketData.candles),
+    explanation: reason,
+    signalKey: `${marketData.symbol}:DO_NOTHING:dry-run:${marketData.asOf}:${reason.slice(0, 48)}`,
+    transactionCostEstimateUsd: 0
+  };
+}
+
+function applyDryRunProfileDecisionPolicy(decision: StrategyDecision, profile: PortfolioProfile): StrategyDecision {
+  if (decision.action !== "BUY" && decision.action !== "SELL") {
+    return decision;
+  }
+  const threshold = decision.action === "SELL" ? profile.parameters.sellThreshold : profile.parameters.buyThreshold;
+  if (decision.confidenceScore >= threshold) {
+    return decision;
+  }
+  return {
+    ...decision,
+    action: "DO_NOTHING",
+    confidenceScore: Math.max(decision.confidenceScore, 0.75),
+    riskScore: 0.05,
+    explanation: `${profile.displayName} requires at least ${Math.round(threshold * 100)}% confidence for ${decision.action}.`
+  };
+}
+
+function adjustDryRunScreenForProfile(screen: ScreenResult, profile: PortfolioProfile): ScreenResult {
+  let score = screen.score;
+  const reasons: string[] = [];
+  if (screen.assetType === "crypto") {
+    score *= profile.parameters.cryptoPreference;
+    reasons.push("Crypto is excluded from this IRA alternatives comparison.");
+  }
+  if (screen.assetType === "bond_fund" || screen.symbol === "SCHD") {
+    score *= profile.parameters.dividendPreference;
+  }
+  const eligible = screen.eligible && reasons.length === 0;
+  return {
+    ...screen,
+    eligible,
+    score: roundRatio(Math.max(0, Math.min(100, score))),
+    reason: eligible ? screen.reason : [screen.reason, ...reasons].join(" ")
+  };
+}
+
+function parseCandles(value: string | null): MarketCandle[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as MarketCandle[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function policySummary(profile: PortfolioProfile): Record<string, unknown> {
+  return {
+    cashReservePct: profile.parameters.cashReservePct,
+    maxNewTradePct: profile.parameters.maxNewTradePct,
+    maxPositionPct: profile.parameters.maxPositionPct,
+    minConfidence: profile.parameters.minConfidence,
+    buyThreshold: profile.parameters.buyThreshold,
+    sellThreshold: profile.parameters.sellThreshold,
+    maxTradesPerCycle: profile.parameters.maxTradesPerCycle,
+    maxTradesPerDay: profile.parameters.maxTradesPerDay,
+    cooldownMinutes: profile.parameters.cooldownMinutes,
+    turnoverLimitPct: profile.parameters.turnoverLimitPct,
+    drawdownBlockPct: profile.parameters.drawdownBlockPct,
+    decisionCadence: profile.parameters.decisionCadence,
+    cryptoPreference: profile.parameters.cryptoPreference,
+    leverageAllowed: false,
+    marginAllowed: false,
+    shortSellingAllowed: false,
+    optionsAllowed: false,
+    futuresAllowed: false,
+    activeAssetAllowlist: ACTIVE_ASSET_SYMBOLS
+  };
+}
+
+function cadenceMinutesFromParameters(parameters: Record<string, unknown>): number {
+  switch (parameters.decisionCadence) {
+    case "low":
+      return 24 * 60;
+    case "moderate":
+      return 6 * 60;
+    case "normal":
+      return 2 * 60;
+    case "fast":
+      return 60;
+    case "very_fast":
+      return 30;
+    default:
+      return 2 * 60;
+  }
+}
+
+function expectedFirstRegularMarketWindow(): string {
+  return "Monday, August 3, 2026, on or after the regular US market open at 9:30 AM America/New_York, subject to the */30 cron cadence, quote freshness, and profile due checks.";
+}
+
+function strategyOrder(key: IraStrategyKey): number {
+  return IRA_ALTERNATIVE_STRATEGIES.findIndex((strategy) => strategy.key === key);
 }
 
 function alternativeSummary(input: Omit<IraAlternativeSummary, "returnPct">): IraAlternativeSummary {

@@ -15,6 +15,7 @@ import {
 import { requiresMutationAuth } from "../src/index.ts";
 
 const migration = readFileSync("migrations/0042_ira_alternatives_2400.sql", "utf8");
+const activationMigration = readFileSync("migrations/0043_ira_alternatives_activation.sql", "utf8");
 const serviceSource = readFileSync("src/benchmarks/iraAlternatives.ts", "utf8");
 const indexSource = readFileSync("src/index.ts", "utf8");
 
@@ -68,7 +69,19 @@ test("strategy definitions are disabled paper strategy candidates with materiall
   assert.ok(conservative.parameters.maxNewTradePct < aggressive.parameters.maxNewTradePct);
   assert.ok(conservative.parameters.cashReservePct > aggressive.parameters.cashReservePct);
   assert.ok(conservative.parameters.drawdownBlockPct < aggressive.parameters.drawdownBlockPct);
+  assert.equal(conservative.parameters.decisionCadence, "low");
+  assert.equal(IRA_ALTERNATIVE_STRATEGIES[1].parameters.decisionCadence, "low");
+  assert.equal(IRA_ALTERNATIVE_STRATEGIES[2].parameters.decisionCadence, "normal");
+  assert.equal(aggressive.parameters.decisionCadence, "fast");
   assert.equal(conservative.assetUniverse.futureTreasurySupportStatus, "not_activated_without_registry_and_provider_verification");
+});
+
+test("activation migration records a shared activation timestamp without rewriting the baseline", () => {
+  assert.match(activationMigration, /ALTER TABLE ira_alternative_strategy_portfolios/);
+  assert.match(activationMigration, /ADD COLUMN activation_timestamp TEXT/);
+  assert.match(activationMigration, /ADD COLUMN activated_by TEXT/);
+  assert.doesNotMatch(activationMigration, /ira_alternative_comparisons[\s\S]*start_timestamp/i);
+  assert.doesNotMatch(activationMigration, /ira_alternative_baselines[\s\S]*start_timestamp/i);
 });
 
 test("APY benchmark uses daily effective accrual from exact elapsed days", () => {
@@ -123,7 +136,11 @@ test("uninitialized page is explicit and the initialized page has required discl
 test("routes expose read-only comparison and protected initializer", () => {
   assert.match(indexSource, /"\/ira-alternatives"/);
   assert.match(indexSource, /"\/ira-alternatives\/initialize"/);
+  assert.match(indexSource, /"\/ira-alternatives\/dry-run"/);
+  assert.match(indexSource, /"\/ira-alternatives\/activate"/);
   assert.equal(requiresMutationAuth("POST", "/ira-alternatives/initialize"), true);
+  assert.equal(requiresMutationAuth("POST", "/ira-alternatives/dry-run"), true);
+  assert.equal(requiresMutationAuth("POST", "/ira-alternatives/activate"), true);
   assert.equal(requiresMutationAuth("GET", "/ira-alternatives"), false);
 });
 
@@ -135,6 +152,12 @@ test("IRA alternatives source does not create trades, orders, or touch existing 
   assert.doesNotMatch(serviceSource, /portfolio_tim_real_five_strategy_400_v2/);
   assert.match(serviceSource, /live_trading_allowed, created_at[\s\S]*0, 0, 0, 0/);
   assert.match(serviceSource, /enabled, created_at, updated_at[\s\S]*\?, 0, \?, \?/);
+  assert.match(serviceSource, /STARTUP_MAX_TRADES_PER_DAY[\s\S]*conservative: 2[\s\S]*guardian: 1[\s\S]*growth: 4[\s\S]*aggressive: 8/);
+  assert.match(serviceSource, /WATCHLIST_PRIORITY[\s\S]*BND[\s\S]*SCHD[\s\S]*VTI[\s\S]*VOO[\s\S]*SPY/);
+  assert.match(serviceSource, /SGOV[\s\S]*BIL[\s\S]*SHV[\s\S]*VGSH[\s\S]*SCHO/);
+  assert.match(serviceSource, /UPDATE portfolio_profiles[\s\S]*SET enabled = 1/);
+  assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_comparisons[\s\S]*start_timestamp/i);
+  assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_baselines[\s\S]*start_timestamp/i);
 });
 
 function iraDb() {

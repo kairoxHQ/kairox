@@ -77,7 +77,9 @@ import {
   renderFiveStrategyExperimentHtml
 } from "./experiments/fiveStrategyExperiment.ts";
 import {
+  activateIraAlternativesProfiles,
   getIraAlternativesComparison,
+  getIraAlternativesDryRun,
   initializeIraAlternativesComparison,
   renderIraAlternativesHtml
 } from "./benchmarks/iraAlternatives.ts";
@@ -159,6 +161,8 @@ const protectedPostRoutes = new Set([
   "/strategy-experiment/initialize",
   "/strategy-experiment/dry-run",
   "/ira-alternatives/initialize",
+  "/ira-alternatives/dry-run",
+  "/ira-alternatives/activate",
   "/events/process",
   "/events/replay",
   "/knowledge-graph/sync",
@@ -333,6 +337,14 @@ export default {
 
       if (url.pathname === "/ira-alternatives/initialize") {
         return json(await initializeIraAlternativesComparison(env.DB));
+      }
+
+      if (url.pathname === "/ira-alternatives/dry-run") {
+        return json(await getIraAlternativesDryRun(env.DB));
+      }
+
+      if (url.pathname === "/ira-alternatives/activate") {
+        return json(await activateIraAlternativesProfiles(env.DB));
       }
 
       if (url.pathname === "/research/run") {
