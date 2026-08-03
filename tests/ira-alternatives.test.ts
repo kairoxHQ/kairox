@@ -147,6 +147,64 @@ test("enabled IRA alternatives do not render as disabled paper strategies", asyn
   assert.match(serviceSource, /strategy\.status === "initialized" \? "active" : strategy\.status/);
 });
 
+test("IRA alternatives strategy cards isolate valuation and activity by exact portfolio id", async () => {
+  const db = iraDb();
+  await initializeIraAlternativesComparison(db, new Date("2026-07-30T18:00:00.000Z"));
+  db.state.portfolios.find((row) => row.id === "portfolio_ira_alternatives_2400_v1_conservative")!.cashUsd = 2100;
+  db.state.portfolios.find((row) => row.id === "portfolio_ira_alternatives_2400_v1_growth")!.cashUsd = 2250;
+  db.state.positions.push(
+    { portfolioId: "portfolio_ira_alternatives_2400_v1_conservative", symbol: "BND", quantity: 4, marketValueUsd: 300 },
+    { portfolioId: "portfolio_ira_alternatives_2400_v1_growth", symbol: "SPY", quantity: 1, marketValueUsd: 150 },
+    { portfolioId: "ira_alternatives_2400_v1_guardian", symbol: "VOO", quantity: 1, marketValueUsd: 9999 }
+  );
+  db.state.orders.push({ portfolioId: "portfolio_ira_alternatives_2400_v1_growth" });
+  db.state.trades.push({ portfolioId: "portfolio_ira_alternatives_2400_v1_conservative", feesUsd: 0.42 });
+  db.state.recommendations.push({ portfolioId: "portfolio_ira_alternatives_2400_v1_guardian" });
+
+  const comparison = await getIraAlternativesComparison(db, new Date("2026-08-03T18:00:00.000Z"));
+  const conservative = comparison.alternatives.find((alternative) => alternative.key === "conservative")!;
+  const guardian = comparison.alternatives.find((alternative) => alternative.key === "guardian")!;
+  const growth = comparison.alternatives.find((alternative) => alternative.key === "growth")!;
+
+  assert.equal(conservative.cashUsd, 2100);
+  assert.equal(conservative.holdingsValueUsd, 300);
+  assert.equal(conservative.currentValueUsd, 2400);
+  assert.equal(conservative.positionCount, 1);
+  assert.equal(conservative.orderCount, 0);
+  assert.equal(conservative.tradeCount, 1);
+  assert.equal(conservative.feesUsd, 0.42);
+  assert.equal(guardian.cashUsd, 2400);
+  assert.equal(guardian.holdingsValueUsd, 0);
+  assert.equal(guardian.currentValueUsd, 2400);
+  assert.equal(guardian.positionCount, 0);
+  assert.equal(guardian.orderCount, 0);
+  assert.equal(guardian.tradeCount, 0);
+  assert.equal(growth.cashUsd, 2250);
+  assert.equal(growth.holdingsValueUsd, 150);
+  assert.equal(growth.orderCount, 1);
+  assert.equal(growth.tradeCount, 0);
+});
+
+test("IRA alternatives all-cash Conservative renders exact cash holdings positions and trades", async () => {
+  const db = iraDb();
+  await initializeIraAlternativesComparison(db, new Date("2026-07-30T18:00:00.000Z"));
+
+  const comparison = await getIraAlternativesComparison(db, new Date("2026-08-03T18:00:00.000Z"));
+  const conservative = comparison.alternatives.find((alternative) => alternative.key === "conservative")!;
+  const html = await renderIraAlternativesHtml(comparison).text();
+
+  assert.equal(conservative.cashUsd, 2400);
+  assert.equal(conservative.holdingsValueUsd, 0);
+  assert.equal(conservative.currentValueUsd, 2400);
+  assert.equal(conservative.tradeCount, 0);
+  assert.equal(conservative.positionCount, 0);
+  assert.match(html, /<h2>Conservative IRA Strategy<\/h2>/);
+  assert.match(html, /<dt>Cash<\/dt><dd>\$2,400\.00<\/dd>/);
+  assert.match(html, /<dt>Holdings<\/dt><dd>\$0\.00<\/dd>/);
+  assert.match(html, /<dt>Positions<\/dt><dd>0<\/dd>/);
+  assert.match(html, /<dt>Trades<\/dt><dd>0<\/dd>/);
+});
+
 test("routes expose read-only comparison and protected initializer", () => {
   assert.match(indexSource, /"\/ira-alternatives"/);
   assert.match(indexSource, /"\/ira-alternatives\/initialize"/);
@@ -181,6 +239,10 @@ function iraDb() {
     benchmarks: [] as Record<string, unknown>[],
     strategies: [] as Record<string, unknown>[],
     portfolios: [] as Record<string, unknown>[],
+    positions: [] as Record<string, unknown>[],
+    orders: [] as Record<string, unknown>[],
+    trades: [] as Record<string, unknown>[],
+    recommendations: [] as Record<string, unknown>[],
     profileEnabled: new Map<string, number>(),
     snapshots: [] as Record<string, unknown>[],
     tradesInserted: 0,
@@ -215,9 +277,9 @@ function statement(sql: string, params: unknown[], state: ReturnType<typeof iraD
         const portfolioId = String(params[3]);
         const portfolio = state.portfolios.find((row) => row.id === portfolioId);
         return {
-          positionCount: 0,
-          orderCount: 0,
-          tradeCount: 0,
+          positionCount: openPositions(state, portfolioId).length,
+          orderCount: state.orders.filter((row) => row.portfolioId === portfolioId).length,
+          tradeCount: state.trades.filter((row) => row.portfolioId === portfolioId).length,
           startingCashUsd: portfolio?.cashUsd ?? 0,
           profileEnabled: state.profileEnabled.get(portfolioId) ?? 0
         };
@@ -225,11 +287,15 @@ function statement(sql: string, params: unknown[], state: ReturnType<typeof iraD
       if (/FROM portfolios p/i.test(sql)) {
         const portfolioId = String(params[0]);
         const portfolio = state.portfolios.find((row) => row.id === portfolioId);
+        const positions = openPositions(state, portfolioId);
+        const trades = state.trades.filter((row) => row.portfolioId === portfolioId);
         return {
           cashUsd: portfolio?.cashUsd ?? 0,
-          holdingsValueUsd: 0,
-          tradeCount: 0,
-          feesUsd: 0
+          holdingsValueUsd: positions.reduce((sum, row) => sum + Number(row.marketValueUsd ?? 0), 0),
+          orderCount: state.orders.filter((row) => row.portfolioId === portfolioId).length,
+          tradeCount: trades.length,
+          positionCount: positions.length,
+          feesUsd: trades.reduce((sum, row) => sum + Number(row.feesUsd ?? 0), 0)
         };
       }
       return null;
@@ -313,4 +379,8 @@ function applyStatement(sql: string, params: unknown[], state: ReturnType<typeof
   } else if (/INSERT/i.test(sql) && /\bpositions\b/i.test(sql)) {
     state.positionsInserted += 1;
   }
+}
+
+function openPositions(state: ReturnType<typeof iraDb>["state"], portfolioId: string) {
+  return state.positions.filter((row) => row.portfolioId === portfolioId && Number(row.quantity ?? 0) > 0);
 }

@@ -292,7 +292,9 @@ interface StrategyRow {
 interface StrategyValuationRow {
   cashUsd: number;
   holdingsValueUsd: number | null;
+  orderCount: number;
   tradeCount: number;
+  positionCount: number;
   feesUsd: number | null;
 }
 
@@ -467,7 +469,9 @@ export interface IraAlternativeSummary {
   diffVsCertificateUsd: number | null;
   cashUsd: number | null;
   holdingsValueUsd: number | null;
+  orderCount: number;
   tradeCount: number;
+  positionCount: number;
   feesUsd: number | null;
   dataStatus: string;
   notes: string[];
@@ -726,7 +730,9 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
       diffVsCertificateUsd: certificateValue === null ? null : currentValueUsd - certificateValue,
       cashUsd: null,
       holdingsValueUsd: null,
+      orderCount: 0,
       tradeCount: 0,
+      positionCount: 0,
       feesUsd: null,
       dataStatus: "modeled",
       notes: [
@@ -751,7 +757,9 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
       diffVsCertificateUsd: certificateValue === null ? null : currentValueUsd - certificateValue,
       cashUsd: valuation.cashUsd,
       holdingsValueUsd: valuation.holdingsValueUsd ?? 0,
+      orderCount: valuation.orderCount,
       tradeCount: valuation.tradeCount,
+      positionCount: valuation.positionCount,
       feesUsd: valuation.feesUsd ?? 0,
       dataStatus: strategy.status === "initialized" && strategy.profileEnabled === 0 ? "initialized_disabled_no_trading" : strategy.status === "initialized" ? "active" : strategy.status,
       notes: [
@@ -1010,6 +1018,10 @@ function renderComparisonHtml(comparison: IraAlternativeComparison): string {
             <td>${formatPercent(alternative.returnPct)}</td>
             <td>${alternative.diffVsShareUsd === null ? "n/a" : formatSignedMoney(alternative.diffVsShareUsd)}</td>
             <td>${alternative.diffVsCertificateUsd === null ? "n/a" : formatSignedMoney(alternative.diffVsCertificateUsd)}</td>
+            <td>${alternative.cashUsd === null ? "n/a" : formatMoney(alternative.cashUsd)}</td>
+            <td>${alternative.holdingsValueUsd === null ? "n/a" : formatMoney(alternative.holdingsValueUsd)}</td>
+            <td>${alternative.positionCount}</td>
+            <td>${alternative.orderCount}</td>
             <td>${alternative.tradeCount}</td>
             <td>${escapeHtml(alternative.dataStatus)}</td>
           </tr>`).join("");
@@ -1023,6 +1035,9 @@ function renderComparisonHtml(comparison: IraAlternativeComparison): string {
             <div><dt>Value</dt><dd>${formatMoney(alternative.currentValueUsd)}</dd></div>
             <div><dt>Return</dt><dd>${formatPercent(alternative.returnPct)}</dd></div>
             <div><dt>Cash</dt><dd>${alternative.cashUsd === null ? "n/a" : formatMoney(alternative.cashUsd)}</dd></div>
+            <div><dt>Holdings</dt><dd>${alternative.holdingsValueUsd === null ? "n/a" : formatMoney(alternative.holdingsValueUsd)}</dd></div>
+            <div><dt>Positions</dt><dd>${alternative.positionCount}</dd></div>
+            <div><dt>Orders</dt><dd>${alternative.orderCount}</dd></div>
             <div><dt>Trades</dt><dd>${alternative.tradeCount}</dd></div>
           </dl>
         </section>`).join("");
@@ -1044,7 +1059,7 @@ function renderComparisonHtml(comparison: IraAlternativeComparison): string {
       </section>
       <section class="table-wrap">
         <table>
-          <thead><tr><th>Alternative</th><th>Current value</th><th>Return</th><th>Vs share</th><th>Vs certificate</th><th>Trades</th><th>Status</th></tr></thead>
+          <thead><tr><th>Alternative</th><th>Current value</th><th>Return</th><th>Vs share</th><th>Vs certificate</th><th>Cash</th><th>Holdings</th><th>Positions</th><th>Orders</th><th>Trades</th><th>Status</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </section>
@@ -1101,7 +1116,7 @@ function pageShell(title: string, body: string): string {
       th { font-size: .78rem; text-transform: uppercase; color: var(--muted); background: #eef3f7; letter-spacing: .06em; }
       .alts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
       .alt { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 16px; margin: 0; }
-      .alt dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 14px 0 0; }
+      .alt dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 0; }
       dt { color: var(--muted); font-size: .78rem; }
       dd { margin: 2px 0 0; font-weight: 700; }
       ul { margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.55; }
@@ -1156,13 +1171,15 @@ async function strategyValuation(db: D1Database, portfolioId: string): Promise<S
     `SELECT
       p.cash_usd AS cashUsd,
       COALESCE((SELECT SUM(market_value_usd) FROM positions WHERE portfolio_id = p.id AND quantity > 0), 0) AS holdingsValueUsd,
+      COALESCE((SELECT COUNT(*) FROM orders WHERE portfolio_id = p.id), 0) AS orderCount,
       COALESCE((SELECT COUNT(*) FROM trades WHERE portfolio_id = p.id), 0) AS tradeCount,
+      COALESCE((SELECT COUNT(*) FROM positions WHERE portfolio_id = p.id AND quantity > 0), 0) AS positionCount,
       COALESCE((SELECT SUM(fees_usd) FROM trades WHERE portfolio_id = p.id), 0) AS feesUsd
      FROM portfolios p
      WHERE p.id = ?
      LIMIT 1`
   ).bind(portfolioId).first<StrategyValuationRow>();
-  return row ?? { cashUsd: 0, holdingsValueUsd: 0, tradeCount: 0, feesUsd: 0 };
+  return row ?? { cashUsd: 0, holdingsValueUsd: 0, orderCount: 0, tradeCount: 0, positionCount: 0, feesUsd: 0 };
 }
 
 function benchmarkValue(row: BenchmarkRow | undefined, startTimestamp: string, now: Date): number | null {

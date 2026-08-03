@@ -210,6 +210,31 @@ test("regular-hours batch processing can advance multiple IRA alternatives child
   assert.match(observationSource, /stoppedReason: "no_runnable_child"/);
 });
 
+test("active queued parent is reused before creating a duplicate current-window parent", () => {
+  assert.match(observationSource, /nextActiveParentWithQueuedChildren/);
+  assert.match(observationSource, /const reusableParent = await this\.nextActiveParentWithQueuedChildren\(\)/);
+  assert.match(observationSource, /return \{ parent: reusableParent, child: null, staleRecovered \}/);
+  assert.match(observationSource, /processQueuedChildren\(reusableParent\.id, now\)/);
+  assert.match(observationSource, /const existing = await this\.getParentByRunKey\(runKey\)/);
+  assert.match(observationSource, /INSERT OR IGNORE INTO paper_observation_runs/);
+  assert.match(observationSource, /AND EXISTS \([\s\S]*paper_observation_profile_runs child[\s\S]*child\.status = 'queued'/);
+});
+
+test("duplicate queued children are reconciled without duplicate strategy execution", () => {
+  assert.match(observationSource, /reconcileDuplicateQueuedChildren/);
+  assert.match(observationSource, /WHERE child\.status = 'queued'/);
+  assert.match(observationSource, /latestTerminalChild/);
+  assert.match(observationSource, /status IN \('completed', 'no_action'\)/);
+  assert.match(observationSource, /cadenceMinutesForProfile\(profile\)/);
+  assert.match(observationSource, /phase = 'duplicate_superseded'/);
+  assert.match(observationSource, /error_category = 'duplicate_superseded'/);
+  assert.match(observationSource, /action: "DO_NOTHING"/);
+  assert.match(observationSource, /WHERE id = \? AND status = 'queued'/);
+  assert.match(observationSource, /await this\.refreshParentCounters\(parentId\)/);
+  assert.match(observationSource, /await this\.finalizeParent\(parentId, now\)/);
+  assert.doesNotMatch(observationSource, /duplicate_superseded[\s\S]{0,400}runPaperStrategy/);
+});
+
 test("stale child isolation keeps later queued profiles runnable", () => {
   assert.match(observationSource, /WHERE status = 'running' AND COALESCE\(heartbeat_at, started_at\) < \?/);
   assert.match(observationSource, /WHERE id = \? AND status = 'running'/);

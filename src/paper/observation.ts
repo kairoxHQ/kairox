@@ -140,6 +140,17 @@ interface ChildRow {
   finishedAt: string | null;
 }
 
+interface QueuedChildCandidateRow extends ChildRow {
+  parentStartedAt: string | null;
+  parentCreatedAt: string | null;
+}
+
+interface TerminalChildRow {
+  id: string;
+  finishedAt: string | null;
+  startedAt: string | null;
+}
+
 export class PaperObservationService {
   private readonly env: Env;
   private readonly db: D1Database;
@@ -150,8 +161,18 @@ export class PaperObservationService {
   }
 
   async start(now = new Date(), processOneChild = true): Promise<PaperObservationStartResult> {
-    const staleRecovered = await this.reconcileStaleRuns(now);
+    const staleRecovered = await this.reconcileStaleRuns(now) + await this.reconcileDuplicateQueuedChildren(now);
     await this.finalizeTerminalActiveParents(now);
+    const reusableParent = await this.nextActiveParentWithQueuedChildren();
+    if (reusableParent) {
+      if (processOneChild) {
+        const batch = await this.processQueuedChildren(reusableParent.id, now);
+        const child = batch.children[0] ?? null;
+        const refreshed = await this.getParent(reusableParent.id);
+        return { parent: refreshed ?? reusableParent, child, children: batch.children, batch, staleRecovered };
+      }
+      return { parent: reusableParent, child: null, staleRecovered };
+    }
     const window = observationWindow(now);
     const runKey = `paper_observation:${window}`;
     const existing = await this.getParentByRunKey(runKey);
@@ -174,7 +195,7 @@ export class PaperObservationService {
     const startedAt = Date.now();
     const batchLimit = Math.max(1, Math.min(options.batchLimit ?? DEFAULT_CHILD_BATCH_LIMIT, DEFAULT_CHILD_BATCH_LIMIT));
     const safetyMs = Math.max(1_000, options.safetyMs ?? DEFAULT_INVOCATION_SAFETY_MS);
-    const staleRecovered = await this.reconcileStaleRuns(now);
+    const staleRecovered = await this.reconcileStaleRuns(now) + await this.reconcileDuplicateQueuedChildren(now);
     const children: PaperObservationChildRun[] = [];
     let latestParent = parentId ? await this.getParent(parentId) : await this.nextActiveParent();
 
@@ -197,6 +218,7 @@ export class PaperObservationService {
   async processNextChild(parentId?: string, now = new Date(), options: { skipReconcile?: boolean } = {}): Promise<PaperObservationChildRun | null> {
     if (!options.skipReconcile) {
       await this.reconcileStaleRuns(now);
+      await this.reconcileDuplicateQueuedChildren(now);
     }
     const parent = parentId ? await this.getParent(parentId) : await this.nextActiveParent();
     if (!parent || parent.status === "completed" || parent.status === "failed" || parent.status === "partial_failure") {
@@ -239,6 +261,92 @@ export class PaperObservationService {
       await this.finalizeParent(parentId, now);
     }
     return recoveredOrFailed;
+  }
+
+  private async reconcileDuplicateQueuedChildren(now: Date): Promise<number> {
+    const queuedRows = await listRows<QueuedChildCandidateRow>(
+      this.db.prepare(
+        `SELECT child.id, child.parent_run_id AS parentRunId, child.portfolio_id AS portfolioId,
+          child.profile_key AS profileKey, child.run_key AS runKey, child.status, child.summary_json AS summaryJson,
+          child.request_budget_json AS requestBudgetJson, child.error_category AS errorCategory,
+          child.error_message AS errorMessage, child.retry_count AS retryCount, child.idempotency_key AS idempotencyKey,
+          child.phase, child.phase_started_at AS phaseStartedAt, child.phase_finished_at AS phaseFinishedAt,
+          child.heartbeat_at AS heartbeatAt, child.phase_attempts AS phaseAttempts,
+          child.phase_error_category AS phaseErrorCategory, child.phase_error_message AS phaseErrorMessage,
+          child.started_at AS startedAt, child.finished_at AS finishedAt,
+          parent.started_at AS parentStartedAt, parent.created_at AS parentCreatedAt
+         FROM paper_observation_profile_runs child
+         JOIN paper_observation_runs parent ON parent.id = child.parent_run_id
+         WHERE child.status = 'queued'
+         ORDER BY parent.created_at ASC, child.created_at ASC`
+      )
+    );
+    if (queuedRows.length === 0) {
+      return 0;
+    }
+
+    const profiles = await listPortfolioProfiles(this.db, { includeReadOnly: false });
+    const profilesByKey = new Map(profiles.map((profile) => [`${profile.portfolioId}:${profile.profileKey}`, profile]));
+    let reconciled = 0;
+    const affectedParentIds = new Set<string>();
+    for (const queued of queuedRows) {
+      const profile = profilesByKey.get(`${queued.portfolioId}:${queued.profileKey}`);
+      if (!profile) {
+        continue;
+      }
+      const latestTerminal = await this.latestTerminalChild(queued);
+      const latestTerminalTime = latestTerminal?.finishedAt ?? latestTerminal?.startedAt ?? null;
+      const latestTerminalMs = latestTerminalTime ? Date.parse(latestTerminalTime) : NaN;
+      if (!latestTerminal || !Number.isFinite(latestTerminalMs)) {
+        continue;
+      }
+      const selectedTime = queued.parentStartedAt ?? queued.parentCreatedAt ?? queued.startedAt;
+      const selectedMs = selectedTime ? Date.parse(selectedTime) : NaN;
+      if (!Number.isFinite(selectedMs)) {
+        continue;
+      }
+      const nextEligibleMs = latestTerminalMs + cadenceMinutesForProfile(profile) * 60 * 1000;
+      if (selectedMs > nextEligibleMs) {
+        continue;
+      }
+      const message = `Queued child superseded by terminal child ${latestTerminal.id}; profile cadence had not elapsed for this exact portfolio/profile.`;
+      const summary: FounderReportProfileInput = {
+        status: "no_action",
+        errorCategory: "duplicate_superseded",
+        errorMessage: message,
+        profile: { portfolioId: queued.portfolioId, profileKey: queued.profileKey, displayName: queued.profileKey },
+        symbols: [{ symbol: "profile", action: "DO_NOTHING", executed: false, reason: message }]
+      };
+      const result = await this.db.prepare(
+        `UPDATE paper_observation_profile_runs
+         SET status = 'no_action', phase = 'duplicate_superseded', summary_json = ?,
+           request_budget_json = ?, error_category = 'duplicate_superseded', error_message = ?,
+           phase_error_category = 'duplicate_superseded', phase_error_message = ?,
+           phase_finished_at = ?, heartbeat_at = ?, started_at = COALESCE(started_at, ?),
+           finished_at = ?, updated_at = datetime('now')
+         WHERE id = ? AND status = 'queued'`
+      ).bind(
+        JSON.stringify(summary),
+        JSON.stringify(EMPTY_BUDGET),
+        message,
+        message,
+        now.toISOString(),
+        now.toISOString(),
+        now.toISOString(),
+        now.toISOString(),
+        queued.id
+      ).run();
+      const changes = Number(result.meta?.changes ?? 0);
+      if (changes > 0) {
+        reconciled += changes;
+        affectedParentIds.add(queued.parentRunId);
+      }
+    }
+    for (const parentId of affectedParentIds) {
+      await this.refreshParentCounters(parentId);
+      await this.finalizeParent(parentId, now);
+    }
+    return reconciled;
   }
 
   private async createParent(runKey: string, window: string, now: Date): Promise<PaperObservationRun> {
@@ -552,6 +660,20 @@ export class PaperObservationService {
     return row ? mapParent(row) : null;
   }
 
+  private async nextActiveParentWithQueuedChildren(): Promise<PaperObservationRun | null> {
+    const row = await this.db.prepare(
+      `${PARENT_SELECT}
+       WHERE status IN ('running', 'queued')
+         AND EXISTS (
+           SELECT 1 FROM paper_observation_profile_runs child
+           WHERE child.parent_run_id = paper_observation_runs.id AND child.status = 'queued'
+         )
+       ORDER BY created_at ASC
+       LIMIT 1`
+    ).first<ParentRow>();
+    return row ? mapParent(row) : null;
+  }
+
   private async nextQueuedChild(parentId: string): Promise<PaperObservationChildRun | null> {
     const row = await this.db.prepare(`${CHILD_SELECT} WHERE parent_run_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1`).bind(parentId).first<ChildRow>();
     return row ? mapChild(row) : null;
@@ -560,6 +682,16 @@ export class PaperObservationService {
   private async getChild(id: string): Promise<PaperObservationChildRun | null> {
     const row = await this.db.prepare(`${CHILD_SELECT} WHERE id = ?`).bind(id).first<ChildRow>();
     return row ? mapChild(row) : null;
+  }
+
+  private async latestTerminalChild(child: Pick<PaperObservationChildRun, "id" | "portfolioId" | "profileKey">): Promise<TerminalChildRow | null> {
+    return this.db.prepare(
+      `SELECT id, finished_at AS finishedAt, started_at AS startedAt
+       FROM paper_observation_profile_runs
+       WHERE portfolio_id = ? AND profile_key = ? AND id <> ? AND status IN ('completed', 'no_action')
+       ORDER BY COALESCE(finished_at, started_at) DESC
+       LIMIT 1`
+    ).bind(child.portfolioId, child.profileKey, child.id).first<TerminalChildRow>();
   }
 
   private async children(parentId: string): Promise<PaperObservationChildRun[]> {
