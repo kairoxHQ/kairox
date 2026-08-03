@@ -133,6 +133,20 @@ test("uninitialized page is explicit and the initialized page has required discl
   }
 });
 
+test("enabled IRA alternatives do not render as disabled paper strategies", async () => {
+  const db = iraDb();
+  await initializeIraAlternativesComparison(db, new Date("2026-07-30T18:00:00.000Z"));
+  for (const strategy of db.state.strategies) {
+    strategy.profileEnabled = 1;
+    strategy.status = "active";
+  }
+  const html = await renderIraAlternativesHtml(await getIraAlternativesComparison(db)).text();
+  assert.match(html, /Enabled paper strategy/);
+  assert.doesNotMatch(html, /Disabled paper strategy/);
+  assert.match(serviceSource, /COALESCE\(pp\.enabled, sp\.profile_enabled\) AS profileEnabled/);
+  assert.match(serviceSource, /strategy\.status === "initialized" \? "active" : strategy\.status/);
+});
+
 test("routes expose read-only comparison and protected initializer", () => {
   assert.match(indexSource, /"\/ira-alternatives"/);
   assert.match(indexSource, /"\/ira-alternatives\/initialize"/);
@@ -156,6 +170,7 @@ test("IRA alternatives source does not create trades, orders, or touch existing 
   assert.match(serviceSource, /WATCHLIST_PRIORITY[\s\S]*BND[\s\S]*SCHD[\s\S]*VTI[\s\S]*VOO[\s\S]*SPY/);
   assert.match(serviceSource, /SGOV[\s\S]*BIL[\s\S]*SHV[\s\S]*VGSH[\s\S]*SCHO/);
   assert.match(serviceSource, /UPDATE portfolio_profiles[\s\S]*SET enabled = 1/);
+  assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_strategy_portfolios[\s\S]*profile_enabled = 1/);
   assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_comparisons[\s\S]*start_timestamp/i);
   assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_baselines[\s\S]*start_timestamp/i);
 });

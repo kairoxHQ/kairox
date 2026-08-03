@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { buildFounderReport } from "../src/reports/founderReport.ts";
+import { decidePaperAction } from "../src/strategy/paperStrategy.ts";
+import type { MarketCandle, MarketDataset } from "../src/shared/types.ts";
 
 const migration = readFileSync("migrations/0036_paper_observation_runs.sql", "utf8");
 const phaseMigration = readFileSync("migrations/0037_paper_observation_phase_progress.sql", "utf8");
@@ -28,9 +30,15 @@ test("paper observation phase migration stores resumable child progress", () => 
   assert.match(phaseMigration, /idx_paper_observation_profile_runs_phase/);
 });
 
-test("paper run creates a parent observation and processes at most one profile child", () => {
-  assert.match(indexSource, /new PaperObservationService\(env\)\.start\(new Date\(\), true\)/);
+test("paper run creates a parent observation and processes a bounded profile-child batch", () => {
+  assert.match(indexSource, /const continued = await service\.processQueuedChildren\(undefined, now\)/);
+  assert.match(indexSource, /return json\(await service\.start\(now, true\)\)/);
   assert.doesNotMatch(indexSource, /runAllPaperProfiles\(env\)/);
+  assert.match(observationSource, /DEFAULT_CHILD_BATCH_LIMIT = 2/);
+  assert.match(observationSource, /DEFAULT_INVOCATION_SAFETY_MS = 110_000/);
+  assert.match(observationSource, /processQueuedChildren/);
+  assert.match(observationSource, /while \(children\.length < batchLimit\)/);
+  assert.match(observationSource, /createdParent \? \{ batchLimit: 1 \} : \{\}/);
   assert.match(observationSource, /processNextChild/);
   assert.match(observationSource, /nextQueuedChild/);
   assert.match(observationSource, /return this\.runChild\(parent, child, now\)/);
@@ -92,6 +100,7 @@ test("stale running observations are reconciled without deletion", () => {
   assert.match(observationSource, /COALESCE\(heartbeat_at, started_at\) < \?/);
   assert.match(observationSource, /error_category = 'stale_running'/);
   assert.match(observationSource, /recoverRunningChild/);
+  assert.match(observationSource, /await this\.refreshParentCounters\(child\.parentRunId\)/);
   assert.doesNotMatch(observationSource, /UPDATE paper_observation_runs[\s\S]*stale_running/);
   assert.doesNotMatch(observationSource, /DELETE FROM paper_observation/);
   assert.match(schedulerSource, /reconcileStaleScheduledRuns/);
@@ -171,10 +180,12 @@ test("cron workload isolation avoids sharing one failure budget", () => {
   assert.doesNotMatch(indexSource, /Promise\.all\(\[\s*runScheduledPaperStrategy/);
   assert.match(indexSource, /continuedPaperObservation/);
   assert.match(indexSource, /prioritizedPaperObservation/);
+  assert.match(indexSource, /processQueuedChildren\(undefined, scheduledDate\)/);
+  assert.match(indexSource, /const continued = await service\.processQueuedChildren\(undefined, now\)/);
   assert.match(indexSource, /slot === 0/);
   assert.match(indexSource, /slot === 5/);
   assert.match(schedulerSource, /runScheduledPaperObservation/);
-  assert.match(schedulerSource, /processNextChild/);
+  assert.match(schedulerSource, /processQueuedChildren/);
 });
 
 test("child claiming checks the row update before strategy work", () => {
@@ -190,6 +201,74 @@ test("one running child does not block queued child processing", () => {
   assert.doesNotMatch(observationSource, /if \(await this\.hasRunningChild\(parent\.id\)\)/);
   assert.match(observationSource, /const child = await this\.nextQueuedChild\(parent\.id\)/);
   assert.match(observationSource, /WHERE id = \? AND status = 'queued'/);
+});
+
+test("regular-hours batch processing can advance multiple IRA alternatives children", () => {
+  assert.match(schedulerSource, /processQueuedChildren\(started\.parent\.id, scheduledDate\)/);
+  assert.match(observationSource, /children\.push\(child\)/);
+  assert.match(observationSource, /stoppedReason: "batch_limit"/);
+  assert.match(observationSource, /stoppedReason: "no_runnable_child"/);
+});
+
+test("stale child isolation keeps later queued profiles runnable", () => {
+  assert.match(observationSource, /WHERE status = 'running' AND COALESCE\(heartbeat_at, started_at\) < \?/);
+  assert.match(observationSource, /WHERE id = \? AND status = 'running'/);
+  assert.match(observationSource, /return this\.runChild\(parent, child, now\)/);
+  assert.doesNotMatch(observationSource, /throw new Error\("Observation run exceeded/);
+});
+
+test("parent counters are refreshed from child states before finalization", () => {
+  assert.match(observationSource, /refreshParentCounters/);
+  assert.match(observationSource, /childCounters/);
+  assert.match(observationSource, /SUM\(CASE WHEN status = 'completed'/);
+  assert.match(observationSource, /SUM\(CASE WHEN status = 'no_action'/);
+  assert.match(observationSource, /SUM\(CASE WHEN status IN \('failed', 'abandoned'\)/);
+  assert.match(observationSource, /profiles_completed = \?, profiles_no_action = \?, profiles_failed = \?/);
+});
+
+test("all-cash strategy path can emit a normal BUY without a forced initialization shortcut", () => {
+  const closes = [
+    100, 102, 101, 103, 102,
+    104, 103, 105, 104, 106,
+    105, 107, 106, 108, 107,
+    109, 108, 110, 109, 111,
+    110, 112
+  ];
+  const candles: MarketCandle[] = closes.map((close, index) => ({
+    timestamp: new Date(Date.UTC(2026, 7, 3, 14, index)).toISOString(),
+    open: close - 0.2,
+    high: close + 0.5,
+    low: close - 0.5,
+    close,
+    volume: 1_000_000 + index
+  }));
+  const marketData: MarketDataset = {
+    symbol: "SPY",
+    assetClass: "etf",
+    priceUsd: 112,
+    asOf: "2026-08-03T15:01:06.000Z",
+    source: "test",
+    validated: true,
+    stale: false,
+    candles,
+    volume: 1_000_000,
+    status: "validated",
+    quality: "fresh"
+  };
+
+  const decision = decidePaperAction({ marketData, hasPosition: false });
+
+  assert.equal(decision.action, "BUY");
+  assert.match(decision.explanation, /Bullish moving-average/);
+});
+
+test("duplicate deterministic signals update evaluation audit metadata without duplicate orders", () => {
+  assert.match(paperSource, /ON CONFLICT\(portfolio_id, signal_key\) DO UPDATE SET/);
+  assert.match(paperSource, /scheduler_parent_run_id = excluded\.scheduler_parent_run_id/);
+  assert.match(paperSource, /scheduler_child_run_id = excluded\.scheduler_child_run_id/);
+  assert.match(paperSource, /created_at = datetime\('now'\)/);
+  assert.match(paperSource, /INSERT OR IGNORE INTO orders/);
+  assert.match(paperSource, /INSERT OR IGNORE INTO trades/);
 });
 
 test("final child or recovered child immediately finalizes parent and Founder Report", () => {

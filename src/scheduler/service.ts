@@ -21,13 +21,9 @@ export async function runScheduledPaperStrategy(
 export async function runScheduledPaperObservation(env: Env, scheduledAt = new Date().toISOString()): Promise<unknown> {
   const service = new PaperObservationService(env);
   const scheduledDate = new Date(scheduledAt);
-  const continued = await service.processNextChild(undefined, scheduledDate);
-  if (continued) {
-    return { continued: true, child: continued };
-  }
   const started = await service.start(scheduledDate, false);
-  const child = await service.processNextChild(started.parent.id, scheduledDate);
-  return { ...started, child };
+  const batch = await service.processQueuedChildren(started.parent.id, scheduledDate);
+  return { ...started, batch, child: batch.children[0] ?? null, children: batch.children };
 }
 
 export async function reconcileStaleScheduledRuns(

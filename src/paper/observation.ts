@@ -68,11 +68,22 @@ export interface PaperObservationChildRun {
 export interface PaperObservationStartResult {
   parent: PaperObservationRun;
   child?: PaperObservationChildRun | null;
+  children?: PaperObservationChildRun[];
+  batch?: PaperObservationBatchResult;
   founderReportId?: string | null;
   staleRecovered: number;
 }
 
+export interface PaperObservationBatchResult {
+  parent: PaperObservationRun | null;
+  children: PaperObservationChildRun[];
+  staleRecovered: number;
+  stoppedReason: "batch_limit" | "no_runnable_child" | "time_safety_limit";
+}
+
 const STALE_RUNNING_MS = 20 * 60 * 1000;
+const DEFAULT_CHILD_BATCH_LIMIT = 2;
+const DEFAULT_INVOCATION_SAFETY_MS = 110_000;
 
 const EMPTY_BUDGET: RequestBudgetCounters = {
   outboundProviderRequests: 0,
@@ -141,29 +152,52 @@ export class PaperObservationService {
   async start(now = new Date(), processOneChild = true): Promise<PaperObservationStartResult> {
     const staleRecovered = await this.reconcileStaleRuns(now);
     await this.finalizeTerminalActiveParents(now);
-    const activeParent = await this.nextActiveParent();
-    if (activeParent) {
-      if (processOneChild) {
-        const child = await this.processNextChild(activeParent.id, now);
-        const refreshed = await this.getParent(activeParent.id);
-        return { parent: refreshed ?? activeParent, child, staleRecovered };
-      }
-      return { parent: activeParent, child: null, staleRecovered };
-    }
     const window = observationWindow(now);
     const runKey = `paper_observation:${window}`;
     const existing = await this.getParentByRunKey(runKey);
+    const createdParent = !existing;
     const parent = existing ?? await this.createParent(runKey, window, now);
     if (processOneChild && parent.status !== "completed" && parent.status !== "failed" && parent.status !== "partial_failure") {
-      const child = await this.processNextChild(parent.id, now);
+      const batch = await this.processQueuedChildren(parent.id, now, createdParent ? { batchLimit: 1 } : {});
+      const child = batch.children[0] ?? null;
       const refreshed = await this.getParent(parent.id);
-      return { parent: refreshed ?? parent, child, staleRecovered };
+      return { parent: refreshed ?? parent, child, children: batch.children, batch, staleRecovered };
     }
     return { parent, child: null, staleRecovered };
   }
 
-  async processNextChild(parentId?: string, now = new Date()): Promise<PaperObservationChildRun | null> {
-    await this.reconcileStaleRuns(now);
+  async processQueuedChildren(
+    parentId?: string,
+    now = new Date(),
+    options: { batchLimit?: number; safetyMs?: number } = {}
+  ): Promise<PaperObservationBatchResult> {
+    const startedAt = Date.now();
+    const batchLimit = Math.max(1, Math.min(options.batchLimit ?? DEFAULT_CHILD_BATCH_LIMIT, DEFAULT_CHILD_BATCH_LIMIT));
+    const safetyMs = Math.max(1_000, options.safetyMs ?? DEFAULT_INVOCATION_SAFETY_MS);
+    const staleRecovered = await this.reconcileStaleRuns(now);
+    const children: PaperObservationChildRun[] = [];
+    let latestParent = parentId ? await this.getParent(parentId) : await this.nextActiveParent();
+
+    while (children.length < batchLimit) {
+      if (Date.now() - startedAt >= safetyMs) {
+        return { parent: latestParent, children, staleRecovered, stoppedReason: "time_safety_limit" };
+      }
+      const child = await this.processNextChild(parentId, now, { skipReconcile: true });
+      if (!child) {
+        latestParent = parentId ? await this.getParent(parentId) : await this.nextActiveParent();
+        return { parent: latestParent, children, staleRecovered, stoppedReason: "no_runnable_child" };
+      }
+      children.push(child);
+      latestParent = await this.getParent(child.parentRunId);
+    }
+
+    return { parent: latestParent, children, staleRecovered, stoppedReason: "batch_limit" };
+  }
+
+  async processNextChild(parentId?: string, now = new Date(), options: { skipReconcile?: boolean } = {}): Promise<PaperObservationChildRun | null> {
+    if (!options.skipReconcile) {
+      await this.reconcileStaleRuns(now);
+    }
     const parent = parentId ? await this.getParent(parentId) : await this.nextActiveParent();
     if (!parent || parent.status === "completed" || parent.status === "failed" || parent.status === "partial_failure") {
       return null;
@@ -199,6 +233,7 @@ export class PaperObservationService {
          WHERE id = ? AND status = 'running'`
       ).bind(now.toISOString(), now.toISOString(), message, message, now.toISOString(), child.id).run();
       recoveredOrFailed += Number(childResult.meta?.changes ?? 0);
+      await this.refreshParentCounters(child.parentRunId);
     }
     for (const parentId of affectedParentIds) {
       await this.finalizeParent(parentId, now);
@@ -326,6 +361,7 @@ export class PaperObservationService {
         child.id
       ).run();
     }
+    await this.refreshParentCounters(parent.id);
     await this.finalizeParent(parent.id, now);
     return (await this.getChild(child.id)) as PaperObservationChildRun;
   }
@@ -362,6 +398,7 @@ export class PaperObservationService {
       payload: { parentRunId: parent.id, childRunId: child.id, status, phase: "recovered_finalized", budget },
       occurredAt: now
     });
+    await this.refreshParentCounters(parent.id);
     await this.finalizeParent(parent.id, now);
     return true;
   }
@@ -377,7 +414,11 @@ export class PaperObservationService {
 
   private async finalizeParent(parentId: string, now: Date): Promise<void> {
     const children = await this.children(parentId);
+    const completed = children.filter((child) => child.status === "completed").length;
+    const noAction = children.filter((child) => child.status === "no_action").length;
+    const failed = children.filter((child) => child.status === "failed" || child.status === "abandoned").length;
     if (children.some((child) => child.status === "queued" || child.status === "running")) {
+      await this.refreshParentCounters(parentId, { completed, noAction, failed });
       return;
     }
     if (children.length === 0) {
@@ -389,9 +430,6 @@ export class PaperObservationService {
       ).bind(JSON.stringify(EMPTY_BUDGET), now.toISOString(), parentId).run();
       return;
     }
-    const completed = children.filter((child) => child.status === "completed").length;
-    const noAction = children.filter((child) => child.status === "no_action").length;
-    const failed = children.filter((child) => child.status === "failed" || child.status === "abandoned").length;
     const status: ObservationRunStatus = failed > 0 ? (completed + noAction > 0 ? "partial_failure" : "failed") : completed > 0 ? "completed" : "no_action";
     const budget = children.reduce<RequestBudgetCounters>((sum, child) => addBudget(sum, child.requestBudget), { ...EMPTY_BUDGET });
     await this.db.prepare(
@@ -433,6 +471,35 @@ export class PaperObservationService {
     for (const parent of parents) {
       await this.finalizeParent(parent.id, now);
     }
+  }
+
+  private async refreshParentCounters(
+    parentId: string,
+    counts?: { completed: number; noAction: number; failed: number }
+  ): Promise<void> {
+    const actualCounts = counts ?? await this.childCounters(parentId);
+    await this.db.prepare(
+      `UPDATE paper_observation_runs
+       SET profiles_completed = ?, profiles_no_action = ?, profiles_failed = ?,
+         updated_at = datetime('now')
+       WHERE id = ?`
+    ).bind(actualCounts.completed, actualCounts.noAction, actualCounts.failed, parentId).run();
+  }
+
+  private async childCounters(parentId: string): Promise<{ completed: number; noAction: number; failed: number }> {
+    const row = await this.db.prepare(
+      `SELECT
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN status = 'no_action' THEN 1 ELSE 0 END) AS noAction,
+        SUM(CASE WHEN status IN ('failed', 'abandoned') THEN 1 ELSE 0 END) AS failed
+       FROM paper_observation_profile_runs
+       WHERE parent_run_id = ?`
+    ).bind(parentId).first<{ completed: number | null; noAction: number | null; failed: number | null }>();
+    return {
+      completed: Number(row?.completed ?? 0),
+      noAction: Number(row?.noAction ?? 0),
+      failed: Number(row?.failed ?? 0)
+    };
   }
 
   private async uniqueSymbols(profiles: PortfolioProfile[]): Promise<string[]> {

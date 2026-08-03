@@ -753,7 +753,7 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
       holdingsValueUsd: valuation.holdingsValueUsd ?? 0,
       tradeCount: valuation.tradeCount,
       feesUsd: valuation.feesUsd ?? 0,
-      dataStatus: strategy.status === "initialized" && strategy.profileEnabled === 0 ? "initialized_disabled_no_trading" : strategy.status,
+      dataStatus: strategy.status === "initialized" && strategy.profileEnabled === 0 ? "initialized_disabled_no_trading" : strategy.status === "initialized" ? "active" : strategy.status,
       notes: [
         "Independent paper portfolio. Activation is separate and protected.",
         "Live execution, leverage, margin, options, and futures are disabled.",
@@ -1005,7 +1005,7 @@ export function renderIraAlternativesHtml(comparison: IraAlternativeComparison):
 function renderComparisonHtml(comparison: IraAlternativeComparison): string {
   const rows = comparison.alternatives.map((alternative) => `
           <tr>
-            <td><strong>${escapeHtml(alternative.name)}</strong><span>${escapeHtml(alternative.type === "bank_benchmark" ? "Modeled bank benchmark" : "Disabled paper strategy")}</span></td>
+            <td><strong>${escapeHtml(alternative.name)}</strong><span>${escapeHtml(alternative.type === "bank_benchmark" ? "Modeled bank benchmark" : alternative.dataStatus === "initialized_disabled_no_trading" ? "Disabled paper strategy" : "Enabled paper strategy")}</span></td>
             <td>${formatMoney(alternative.currentValueUsd)}</td>
             <td>${formatPercent(alternative.returnPct)}</td>
             <td>${alternative.diffVsShareUsd === null ? "n/a" : formatSignedMoney(alternative.diffVsShareUsd)}</td>
@@ -1040,7 +1040,7 @@ function renderComparisonHtml(comparison: IraAlternativeComparison): string {
       </section>
       <section>
         <h2>Plain-language readout</h2>
-        <p>The share account and certificate show what the original ${formatMoney(comparison.startingValueUsd)} would look like under fixed APY assumptions. The strategy portfolios begin as cash-only paper accounts; they can gain or lose money only after a future protected activation step.</p>
+        <p>The share account and certificate show what the original ${formatMoney(comparison.startingValueUsd)} would look like under fixed APY assumptions. Enabled strategy portfolios are cash-only paper accounts until their scheduled strategy evaluations create normal paper recommendations, orders, or trades.</p>
       </section>
       <section class="table-wrap">
         <table>

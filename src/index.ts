@@ -294,7 +294,13 @@ export default {
       }
 
       if (url.pathname === "/paper/run") {
-        return json(await new PaperObservationService(env).start(new Date(), true));
+        const service = new PaperObservationService(env);
+        const now = new Date();
+        const continued = await service.processQueuedChildren(undefined, now);
+        if (continued.children.length > 0) {
+          return json({ continued: true, parent: continued.parent, child: continued.children[0] ?? null, children: continued.children, batch: continued });
+        }
+        return json(await service.start(now, true));
       }
 
       if (url.pathname === "/settings/pause") {
@@ -1109,9 +1115,10 @@ export default {
 async function runOneScheduledWorkload(env: Env, cron: string, scheduledAt: string): Promise<unknown> {
   const scheduledDate = new Date(scheduledAt);
   await reconcileStaleScheduledRuns(env.DB, scheduledDate);
-  const continuedPaperObservation = await new PaperObservationService(env).processNextChild(undefined, scheduledDate);
-  if (continuedPaperObservation) {
-    return { prioritizedPaperObservation: true, child: continuedPaperObservation };
+  const observationService = new PaperObservationService(env);
+  const continuedPaperObservation = await observationService.processQueuedChildren(undefined, scheduledDate);
+  if (continuedPaperObservation.children.length > 0) {
+    return { prioritizedPaperObservation: true, batch: continuedPaperObservation, children: continuedPaperObservation.children };
   }
   const halfHourIndex = Math.floor(scheduledDate.getTime() / (30 * 60 * 1000));
   const slot = halfHourIndex % 6;

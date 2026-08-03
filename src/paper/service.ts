@@ -984,14 +984,37 @@ async function recordRecommendationAndJournal(
 
   await db
     .prepare(
-      `INSERT OR IGNORE INTO recommendations (
+      `INSERT INTO recommendations (
         id, portfolio_id, symbol, action, explanation, confidence_score, risk_score,
         market_data_source, price_usd, price_as_of, signal_key, indicators_json,
         transaction_cost_estimate_usd, asset_type, screen_eligible, screen_score,
         screen_rank, screen_reason, data_freshness, current_exposure_pct,
         scheduler_parent_run_id, scheduler_child_run_id, strategy_profile_key,
         quote_source, quote_timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(portfolio_id, signal_key) DO UPDATE SET
+        action = excluded.action,
+        explanation = excluded.explanation,
+        confidence_score = excluded.confidence_score,
+        risk_score = excluded.risk_score,
+        market_data_source = excluded.market_data_source,
+        price_usd = excluded.price_usd,
+        price_as_of = excluded.price_as_of,
+        indicators_json = excluded.indicators_json,
+        transaction_cost_estimate_usd = excluded.transaction_cost_estimate_usd,
+        asset_type = excluded.asset_type,
+        screen_eligible = excluded.screen_eligible,
+        screen_score = excluded.screen_score,
+        screen_rank = excluded.screen_rank,
+        screen_reason = excluded.screen_reason,
+        data_freshness = excluded.data_freshness,
+        current_exposure_pct = excluded.current_exposure_pct,
+        scheduler_parent_run_id = excluded.scheduler_parent_run_id,
+        scheduler_child_run_id = excluded.scheduler_child_run_id,
+        strategy_profile_key = excluded.strategy_profile_key,
+        quote_source = excluded.quote_source,
+        quote_timestamp = excluded.quote_timestamp,
+        created_at = datetime('now')`
     )
     .bind(
       recommendationId,
@@ -1024,12 +1047,25 @@ async function recordRecommendationAndJournal(
 
   await db
     .prepare(
-      `INSERT OR IGNORE INTO decision_journal (
+      `INSERT INTO decision_journal (
         id, portfolio_id, recommendation_id, decision, explanation,
         confidence_score, risk_score, price_data_json, signal_key,
         scheduler_parent_run_id, scheduler_child_run_id, strategy_profile_key,
         quote_source, quote_timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(portfolio_id, signal_key) DO UPDATE SET
+        recommendation_id = excluded.recommendation_id,
+        decision = excluded.decision,
+        explanation = excluded.explanation,
+        confidence_score = excluded.confidence_score,
+        risk_score = excluded.risk_score,
+        price_data_json = excluded.price_data_json,
+        scheduler_parent_run_id = excluded.scheduler_parent_run_id,
+        scheduler_child_run_id = excluded.scheduler_child_run_id,
+        strategy_profile_key = excluded.strategy_profile_key,
+        quote_source = excluded.quote_source,
+        quote_timestamp = excluded.quote_timestamp,
+        created_at = datetime('now')`
     )
     .bind(
       journalId,
