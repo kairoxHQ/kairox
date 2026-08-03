@@ -230,6 +230,7 @@ test("duplicate queued children are reconciled without duplicate strategy execut
   assert.match(observationSource, /error_category = 'duplicate_superseded'/);
   assert.match(observationSource, /action: "DO_NOTHING"/);
   assert.match(observationSource, /WHERE id = \? AND status = 'queued'/);
+  assert.match(observationSource, /staleRecovered \+= await this\.reconcileDuplicateQueuedChildren\(now\)/);
   assert.match(observationSource, /await this\.refreshParentCounters\(parentId\)/);
   assert.match(observationSource, /await this\.finalizeParent\(parentId, now\)/);
   assert.doesNotMatch(observationSource, /duplicate_superseded[\s\S]{0,400}runPaperStrategy/);

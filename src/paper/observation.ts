@@ -161,7 +161,7 @@ export class PaperObservationService {
   }
 
   async start(now = new Date(), processOneChild = true): Promise<PaperObservationStartResult> {
-    const staleRecovered = await this.reconcileStaleRuns(now) + await this.reconcileDuplicateQueuedChildren(now);
+    let staleRecovered = await this.reconcileStaleRuns(now) + await this.reconcileDuplicateQueuedChildren(now);
     await this.finalizeTerminalActiveParents(now);
     const reusableParent = await this.nextActiveParentWithQueuedChildren();
     if (reusableParent) {
@@ -195,7 +195,7 @@ export class PaperObservationService {
     const startedAt = Date.now();
     const batchLimit = Math.max(1, Math.min(options.batchLimit ?? DEFAULT_CHILD_BATCH_LIMIT, DEFAULT_CHILD_BATCH_LIMIT));
     const safetyMs = Math.max(1_000, options.safetyMs ?? DEFAULT_INVOCATION_SAFETY_MS);
-    const staleRecovered = await this.reconcileStaleRuns(now) + await this.reconcileDuplicateQueuedChildren(now);
+    let staleRecovered = await this.reconcileStaleRuns(now) + await this.reconcileDuplicateQueuedChildren(now);
     const children: PaperObservationChildRun[] = [];
     let latestParent = parentId ? await this.getParent(parentId) : await this.nextActiveParent();
 
@@ -209,6 +209,7 @@ export class PaperObservationService {
         return { parent: latestParent, children, staleRecovered, stoppedReason: "no_runnable_child" };
       }
       children.push(child);
+      staleRecovered += await this.reconcileDuplicateQueuedChildren(now);
       latestParent = await this.getParent(child.parentRunId);
     }
 
