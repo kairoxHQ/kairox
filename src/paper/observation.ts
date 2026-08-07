@@ -147,6 +147,8 @@ interface QueuedChildCandidateRow extends ChildRow {
 
 interface TerminalChildRow {
   id: string;
+  status: ObservationChildStatus;
+  summaryJson: string | null;
   finishedAt: string | null;
   startedAt: string | null;
 }
@@ -296,6 +298,9 @@ export class PaperObservationService {
         continue;
       }
       const latestTerminal = await this.latestTerminalChild(queued);
+      if (isRetryableMarketDataNoAction(latestTerminal)) {
+        continue;
+      }
       const latestTerminalTime = latestTerminal?.finishedAt ?? latestTerminal?.startedAt ?? null;
       const latestTerminalMs = latestTerminalTime ? Date.parse(latestTerminalTime) : NaN;
       if (!latestTerminal || !Number.isFinite(latestTerminalMs)) {
@@ -633,12 +638,15 @@ export class PaperObservationService {
   private async isProfileDue(profile: PortfolioProfile, now: Date): Promise<boolean> {
     const cadenceMinutes = cadenceMinutesForProfile(profile);
     const latest = await this.db.prepare(
-      `SELECT finished_at AS finishedAt, started_at AS startedAt
+      `SELECT status, summary_json AS summaryJson, finished_at AS finishedAt, started_at AS startedAt
        FROM paper_observation_profile_runs
        WHERE portfolio_id = ? AND status IN ('completed', 'no_action')
        ORDER BY COALESCE(finished_at, started_at) DESC
        LIMIT 1`
-    ).bind(profile.portfolioId).first<{ finishedAt: string | null; startedAt: string | null }>();
+    ).bind(profile.portfolioId).first<Pick<TerminalChildRow, "status" | "summaryJson" | "finishedAt" | "startedAt">>();
+    if (isRetryableMarketDataNoAction(latest)) {
+      return true;
+    }
     const latestTime = latest?.finishedAt ?? latest?.startedAt;
     if (!latestTime) return true;
     const latestMs = new Date(latestTime).getTime();
@@ -687,7 +695,7 @@ export class PaperObservationService {
 
   private async latestTerminalChild(child: Pick<PaperObservationChildRun, "id" | "portfolioId" | "profileKey">): Promise<TerminalChildRow | null> {
     return this.db.prepare(
-      `SELECT id, finished_at AS finishedAt, started_at AS startedAt
+      `SELECT id, status, summary_json AS summaryJson, finished_at AS finishedAt, started_at AS startedAt
        FROM paper_observation_profile_runs
        WHERE portfolio_id = ? AND profile_key = ? AND id <> ? AND status IN ('completed', 'no_action')
        ORDER BY COALESCE(finished_at, started_at) DESC
@@ -705,6 +713,26 @@ function childStatusFromSummary(summary: FounderReportProfileInput): Observation
   const symbols = summary.symbols ?? [];
   if (symbols.some((symbol) => symbol.executed)) return "completed";
   return "no_action";
+}
+
+export function isRetryableMarketDataNoAction(child: { status: ObservationChildStatus; summaryJson: string | null } | null | undefined): boolean {
+  if (!child || child.status !== "no_action" || !child.summaryJson) {
+    return false;
+  }
+  let summary: FounderReportProfileInput | null = null;
+  try {
+    summary = JSON.parse(child.summaryJson) as FounderReportProfileInput;
+  } catch {
+    return false;
+  }
+  const symbols = summary.symbols ?? [];
+  if (symbols.length === 0 || symbols.some((symbol) => symbol.executed)) {
+    return false;
+  }
+  return symbols.some((symbol) => {
+    const text = `${symbol.symbol} ${symbol.reason ?? ""}`;
+    return /BND|IRA_CASH/i.test(text) && /market hours are closed|market is closed|quote is stale or invalid|stale or invalid|quote freshness:\s*(stale|invalid|missing)/i.test(text);
+  });
 }
 
 export function cadenceMinutesForProfile(profile: Pick<PortfolioProfile, "parameters">): number {

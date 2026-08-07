@@ -135,7 +135,7 @@ export async function runPaperStrategy(env: Env, options: PaperRunOptions = {}):
 
   for (const asset of assets) {
     const symbol = asset.symbol;
-    const marketData = await getMarketData(env.DB, marketDataService, asset, now, options.marketDataSnapshot, options.budget);
+    const marketData = await getMarketData(env.DB, marketDataService, asset, now, options.marketDataSnapshot, options.budget, executionAllowedBySystem);
     incrementBudget(options.budget, "symbolsProcessed");
     await recordMarketSnapshot(env.DB, marketData);
     incrementBudget(options.budget, "d1Writes");
@@ -796,16 +796,21 @@ async function getMarketData(
   asset: AssetRegistryRecord,
   now: Date,
   sharedSnapshot?: MarketDataSnapshot,
-  budget?: PaperRunBudget
+  budget?: PaperRunBudget,
+  requireExecutionFreshData = false
 ): Promise<MarketDataset> {
   const symbol = asset.symbol;
   const snapshotQuote = sharedSnapshot?.quotes.get(asset.providerSymbol) ?? sharedSnapshot?.quotes.get(symbol);
   if (snapshotQuote) {
-    incrementBudget(budget, "cacheHits");
-    return { ...quoteToMarketDataset(snapshotQuote), symbol: asset.symbol, assetClass: asset.assetType };
+    const snapshotData = { ...quoteToMarketDataset(snapshotQuote), symbol: asset.symbol, assetClass: asset.assetType };
+    if (!requireExecutionFreshData || isPaperExecutionFreshMarketData(snapshotData)) {
+      incrementBudget(budget, "cacheHits");
+      return snapshotData;
+    }
   }
+  const quoteUseCase = requireExecutionFreshData ? "paper_execution" : "proposal";
   incrementBudget(budget, "d1Reads");
-  const cached = await getCachedMarketData(db, symbol, now);
+  const cached = requireExecutionFreshData ? null : await getCachedMarketData(db, symbol, now);
   if (cached) {
     incrementBudget(budget, "cacheHits");
     return cached;
@@ -813,13 +818,13 @@ async function getMarketData(
 
   incrementBudget(budget, "cacheMisses");
   incrementBudget(budget, "outboundProviderRequests");
-  const live = quoteToMarketDataset(await marketDataService.getQuote(asset.providerSymbol, "proposal", now));
+  const live = quoteToMarketDataset(await marketDataService.getQuote(asset.providerSymbol, quoteUseCase, now));
   const normalizedLive = { ...live, symbol: asset.symbol, assetClass: asset.assetType };
   if (normalizedLive.validated) {
     return normalizedLive;
   }
 
-  const lastKnownGood = await getLastKnownGoodMarketData(db, symbol, now);
+  const lastKnownGood = requireExecutionFreshData ? null : await getLastKnownGoodMarketData(db, symbol, now);
   if (lastKnownGood) {
     return {
       ...lastKnownGood,
@@ -834,6 +839,10 @@ async function getMarketData(
     userMessage: normalizedLive.userMessage ?? userMessageForMarketData(symbol, normalizedLive.error),
     error: normalizedLive.userMessage ?? userMessageForMarketData(symbol, normalizedLive.error)
   };
+}
+
+export function isPaperExecutionFreshMarketData(data: MarketDataset): boolean {
+  return data.validated && !data.stale && data.quality !== "stale" && data.quality !== "invalid" && data.priceUsd > 0;
 }
 
 function incrementBudget(budget: PaperRunBudget | undefined, key: keyof PaperRunBudget, amount = 1): void {

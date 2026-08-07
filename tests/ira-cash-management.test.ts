@@ -11,6 +11,9 @@ import {
 import type { AssetRegistryRecord } from "../src/market/assets.ts";
 import type { MarketDataset } from "../src/shared/types.ts";
 import { assessPaperTrade } from "../src/risk/checks.ts";
+import { quoteToMarketDataset, type NormalizedQuote } from "../src/market/service.ts";
+import { isPaperExecutionFreshMarketData } from "../src/paper/service.ts";
+import { isRetryableMarketDataNoAction } from "../src/paper/observation.ts";
 
 const policySource = readFileSync("src/policies/iraCashManagement.ts", "utf8");
 const paperSource = readFileSync("src/paper/service.ts", "utf8");
@@ -303,6 +306,69 @@ test("fresh BND quote permits a BUY while stale BND quote blocks with clear reas
   assert.equal(stale.action, "DO_NOTHING");
   assert.equal(stale.quoteFreshness, "stale");
   assert.match(stale.reason, /quote is stale or invalid/);
+});
+
+test("previous-close BND snapshots are not considered fresh enough for paper execution", () => {
+  const previousCloseQuote: NormalizedQuote = {
+    symbol: "BND",
+    securityName: "Vanguard Total Bond Market ETF",
+    assetType: "bond_fund",
+    exchange: "US",
+    currency: "USD",
+    bid: null,
+    ask: null,
+    lastPrice: 72.25,
+    previousClose: 72.46,
+    marketSession: "pre_market",
+    providerTimestamp: "2026-08-06T20:00:01.000Z",
+    receivedTimestamp: "2026-08-07T12:00:43.000Z",
+    providerName: "yahoo_finance_chart",
+    dataQualityStatus: "Previous Close",
+    source: "primary",
+    cached: false,
+    warnings: ["Using previous valid market close under market-aware freshness rules."],
+    validation: { valid: true, status: "Previous Close", reasons: [], warnings: [] },
+    candles: [],
+    volume: 6_000_000
+  };
+  const previousClose = quoteToMarketDataset(previousCloseQuote);
+  assert.equal(previousClose.validated, true);
+  assert.equal(previousClose.quality, "invalid");
+  assert.equal(isPaperExecutionFreshMarketData(previousClose), false);
+  assert.equal(isPaperExecutionFreshMarketData(validQuote), true);
+});
+
+test("defensive BND market-data no-actions remain retryable instead of consuming daily cadence", () => {
+  const staleFallback = {
+    status: "no_action" as const,
+    summaryJson: JSON.stringify({
+      profile: {
+        portfolioId: "portfolio_ira_alternatives_2400_v1_conservative",
+        profileKey: "ira_alternatives_2400_v1_conservative",
+        displayName: "Conservative IRA Strategy"
+      },
+      symbols: [
+        { symbol: "BND", action: "DO_NOTHING", executed: false, reason: "Defer cash deployment because quote is stale or invalid." }
+      ]
+    })
+  };
+  const thresholdNoAction = {
+    status: "no_action" as const,
+    summaryJson: JSON.stringify({
+      profile: {
+        portfolioId: "portfolio_ira_alternatives_2400_v1_guardian",
+        profileKey: "ira_alternatives_2400_v1_guardian",
+        displayName: "Guardian Strategy"
+      },
+      symbols: [
+        { symbol: "SCHD", action: "DO_NOTHING", executed: false, reason: "Guardian Strategy requires at least 78% confidence for BUY." }
+      ]
+    })
+  };
+
+  assert.equal(isRetryableMarketDataNoAction(staleFallback), true);
+  assert.equal(isRetryableMarketDataNoAction(thresholdNoAction), false);
+  assert.equal(isRetryableMarketDataNoAction({ ...staleFallback, status: "completed" }), false);
 });
 
 test("cash-management parameters are configurable and migrated only for the IRA", () => {
