@@ -23,7 +23,7 @@ import { getPortfolioValuation, recordValuationSnapshot } from "../portfolio/val
 import { evaluateAndAwardMilestones } from "../milestones/service.ts";
 import { recordValuationJourneyEvents } from "../journey/service.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
-import { evaluateIraCashManagement, resolveIraCashManagementParameters, type IraCashManagementDecision } from "../policies/iraCashManagement.ts";
+import { evaluateIraCashManagement, resolveDefensiveIraAlternativeCashManagementParameters, resolveIraCashManagementParameters, type IraCashManagementDecision } from "../policies/iraCashManagement.ts";
 import { assertPortfolioAllowsTradingActions } from "../portfolio/accountTypes.ts";
 
 const SPREAD_RATE = 0.0025;
@@ -349,11 +349,14 @@ async function evaluateIraIdleCashFallback(input: {
   auditContext?: PaperRunAuditContext;
   now: Date;
 }): Promise<{ summary: RunSymbolSummary; executed: boolean } | null> {
-  if (input.portfolioId !== "portfolio_ira" || input.profile.profileKey !== "ira") {
+  const profileCashManagementParameters = iraCashManagementParametersForProfile(input.portfolioId, input.profile);
+  if (!profileCashManagementParameters) {
     return null;
   }
 
-  const parameters = resolveIraCashManagementParameters(input.profile.parameters.iraCashManagement);
+  const parameters = resolveIraCashManagementParameters(
+    profileCashManagementParameters
+  );
   const targetAsset = firstSupportedIraCashAsset(parameters.conservativeAllowlist.map((asset) => asset.symbol), input.assets);
   const targetMarketData = targetAsset
     ? input.evaluated.find((item) => item.asset.symbol === targetAsset.symbol)?.marketData ?? null
@@ -435,6 +438,10 @@ async function evaluateIraIdleCashFallback(input: {
       screenScore: undefined
     }
   };
+}
+
+function iraCashManagementParametersForProfile(portfolioId: string, profile: PortfolioProfile) {
+  return resolveDefensiveIraAlternativeCashManagementParameters(portfolioId, profile.profileKey, profile.parameters.iraCashManagement);
 }
 
 export async function recoverPaperStrategyRunFromPersistedWork(

@@ -205,6 +205,30 @@ test("IRA alternatives all-cash Conservative renders exact cash holdings positio
   assert.match(html, /<dt>Trades<\/dt><dd>0<\/dd>/);
 });
 
+test("IRA alternatives page exposes latest strategy evaluation audit details", async () => {
+  const db = iraDb();
+  await initializeIraAlternativesComparison(db, new Date("2026-07-30T18:00:00.000Z"));
+  const comparison = await getIraAlternativesComparison(db, new Date("2026-08-03T18:00:00.000Z"));
+  const conservative = comparison.alternatives.find((alternative) => alternative.key === "conservative")!;
+  conservative.latestEvaluation = {
+    symbol: "BND",
+    action: "DO_NOTHING",
+    reason: "BND fallback deferred because market is closed.",
+    confidence: 0.9,
+    quoteSource: "yahoo_finance_chart",
+    quoteTimestamp: "2026-08-03T20:00:01.000Z",
+    schedulerParentRunId: "paper_observation_parent",
+    schedulerChildRunId: "paper_observation_child",
+    createdAt: "2026-08-03 20:01:00"
+  };
+
+  const html = await renderIraAlternativesHtml(comparison).text();
+  assert.match(html, /Latest evaluation/);
+  assert.match(html, /BND DO_NOTHING/);
+  assert.match(html, /BND fallback deferred because market is closed/);
+  assert.match(html, /paper_observation_parent \/ paper_observation_child/);
+});
+
 test("routes expose read-only comparison and protected initializer", () => {
   assert.match(indexSource, /"\/ira-alternatives"/);
   assert.match(indexSource, /"\/ira-alternatives\/initialize"/);
@@ -227,6 +251,9 @@ test("IRA alternatives source does not create trades, orders, or touch existing 
   assert.match(serviceSource, /STARTUP_MAX_TRADES_PER_DAY[\s\S]*conservative: 2[\s\S]*guardian: 1[\s\S]*growth: 4[\s\S]*aggressive: 8/);
   assert.match(serviceSource, /WATCHLIST_PRIORITY[\s\S]*BND[\s\S]*SCHD[\s\S]*VTI[\s\S]*VOO[\s\S]*SPY/);
   assert.match(serviceSource, /SGOV[\s\S]*BIL[\s\S]*SHV[\s\S]*VGSH[\s\S]*SCHO/);
+  assert.match(serviceSource, /dryRunDefensiveBondFallback/);
+  assert.match(serviceSource, /Proposed BND amount/);
+  assert.match(serviceSource, /BND fallback deferred because market is closed/);
   assert.match(serviceSource, /UPDATE portfolio_profiles[\s\S]*SET enabled = 1/);
   assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_strategy_portfolios[\s\S]*profile_enabled = 1/);
   assert.doesNotMatch(serviceSource, /UPDATE ira_alternative_comparisons[\s\S]*start_timestamp/i);

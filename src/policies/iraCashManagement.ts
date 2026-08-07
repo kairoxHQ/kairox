@@ -3,6 +3,7 @@ import type { MarketDataset } from "../shared/types.ts";
 
 export interface IraCashManagementParameters {
   enabled: boolean;
+  eligiblePortfolioIds: string[];
   minOperationalCashReserveUsd: number;
   minOperationalCashReservePct: number;
   targetOperationalCashReservePct: number;
@@ -13,6 +14,7 @@ export interface IraCashManagementParameters {
   dailyDeploymentLimitUsd: number | null;
   reviewCadence: "trading_day";
   conservativeAllowlist: IraConservativeAssetConfig[];
+  deploymentReason: string | null;
 }
 
 export interface IraConservativeAssetConfig {
@@ -71,6 +73,7 @@ export interface IraCashManagementDecision {
 
 export const DEFAULT_IRA_CASH_MANAGEMENT: IraCashManagementParameters = {
   enabled: true,
+  eligiblePortfolioIds: ["portfolio_ira"],
   minOperationalCashReserveUsd: 100,
   minOperationalCashReservePct: 0.05,
   targetOperationalCashReservePct: 0.075,
@@ -87,8 +90,64 @@ export const DEFAULT_IRA_CASH_MANAGEMENT: IraCashManagementParameters = {
       targetAllocationPct: 0.2,
       priority: 10
     }
-  ]
+  ],
+  deploymentReason: null
 };
+
+export function resolveDefensiveIraAlternativeCashManagementParameters(
+  portfolioId: string,
+  profileKey: string,
+  existing?: Partial<IraCashManagementParameters> | null
+): Partial<IraCashManagementParameters> | null {
+  if (portfolioId === "portfolio_ira" && profileKey === "ira") {
+    return existing ?? null;
+  }
+  if (profileKey === "ira_alternatives_2400_v1_conservative") {
+    return {
+      enabled: true,
+      eligiblePortfolioIds: [portfolioId],
+      minOperationalCashReserveUsd: 100,
+      minOperationalCashReservePct: 0.1,
+      targetOperationalCashReservePct: 0.15,
+      maxUnallocatedCashPct: 0.2,
+      minimumDeploymentUsd: 25,
+      minimumRebalanceUsd: 25,
+      dailyDeploymentLimitPctOfExcess: 1,
+      dailyDeploymentLimitUsd: null,
+      reviewCadence: "trading_day",
+      conservativeAllowlist: [{
+        symbol: "BND",
+        category: "broad_bond_market_etf",
+        targetAllocationPct: 0.5,
+        priority: 10
+      }],
+      deploymentReason: "Establish initial defensive allocation from all-cash portfolio using supported broad bond ETF."
+    };
+  }
+  if (profileKey === "ira_alternatives_2400_v1_guardian") {
+    return {
+      enabled: true,
+      eligiblePortfolioIds: [portfolioId],
+      minOperationalCashReserveUsd: 100,
+      minOperationalCashReservePct: 0.2,
+      targetOperationalCashReservePct: 0.25,
+      maxUnallocatedCashPct: 0.3,
+      minimumDeploymentUsd: 25,
+      minimumRebalanceUsd: 25,
+      dailyDeploymentLimitPctOfExcess: 1,
+      dailyDeploymentLimitUsd: null,
+      reviewCadence: "trading_day",
+      conservativeAllowlist: [{
+        symbol: "BND",
+        category: "broad_bond_market_etf",
+        targetAllocationPct: 0.6,
+        priority: 10
+      }],
+      deploymentReason: "Deploy conservative idle cash to supported broad bond allocation."
+    };
+  }
+  return null;
+}
 
 const PROHIBITED_SYMBOL_PATTERN = /(2X|3X|ULTRA|LEVERAGED|INVERSE|SHORT|BEAR|BULL|OPTION|FUTURE|MARGIN|CRYPTO|HIGH.?YIELD|JUNK)/i;
 
@@ -96,6 +155,7 @@ export function resolveIraCashManagementParameters(input?: Partial<IraCashManage
   return {
     ...DEFAULT_IRA_CASH_MANAGEMENT,
     ...(input ?? {}),
+    eligiblePortfolioIds: input?.eligiblePortfolioIds?.length ? input.eligiblePortfolioIds : DEFAULT_IRA_CASH_MANAGEMENT.eligiblePortfolioIds,
     conservativeAllowlist: sanitizeAllowlist(input?.conservativeAllowlist ?? DEFAULT_IRA_CASH_MANAGEMENT.conservativeAllowlist)
   };
 }
@@ -128,7 +188,7 @@ export function evaluateIraCashManagement(input: IraCashManagementInput): IraCas
     riskScore: 0.05
   } satisfies Omit<IraCashManagementDecision, "action" | "reason">;
 
-  if (!parameters.enabled || input.portfolioId !== "portfolio_ira") {
+  if (!parameters.enabled || !parameters.eligiblePortfolioIds.includes(input.portfolioId)) {
     return { ...base, action: "DO_NOTHING", reason: "IRA cash-management policy is not enabled for this portfolio." };
   }
 
@@ -185,9 +245,9 @@ export function evaluateIraCashManagement(input: IraCashManagementInput): IraCas
     ...base,
     ...targetFields,
     action: "BUY",
-    reason: assetConfig.category === "broad_bond_market_etf"
+    reason: parameters.deploymentReason ?? (assetConfig.category === "broad_bond_market_etf"
       ? "Deploy excess IRA cash to approved conservative bond ETF."
-      : "Deploy excess IRA cash to approved Treasury cash equivalent.",
+      : "Deploy excess IRA cash to approved Treasury cash equivalent."),
     maxNewTradeUsd: roundMoneyDown(rawNewTradeLimitUsd),
     proposedDeploymentUsd,
     feeUsd,

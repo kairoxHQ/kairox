@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { evaluateIraCashManagement, resolveIraCashManagementParameters, sizeTradeDownToCap, type IraCashManagementInput } from "../src/policies/iraCashManagement.ts";
+import {
+  evaluateIraCashManagement,
+  resolveDefensiveIraAlternativeCashManagementParameters,
+  resolveIraCashManagementParameters,
+  sizeTradeDownToCap,
+  type IraCashManagementInput
+} from "../src/policies/iraCashManagement.ts";
 import type { AssetRegistryRecord } from "../src/market/assets.ts";
 import type { MarketDataset } from "../src/shared/types.ts";
 import { assessPaperTrade } from "../src/risk/checks.ts";
@@ -68,6 +74,68 @@ test("IRA with excess idle cash evaluates the cash-management policy", () => {
   assert.equal(decision.action, "BUY");
   assert.equal(decision.targetSymbol, "BND");
   assert.match(decision.reason, /Deploy excess IRA cash/);
+});
+
+test("Conservative IRA alternatives can deploy initial all-cash capital to BND without lowering equity threshold", () => {
+  const parameters = resolveDefensiveIraAlternativeCashManagementParameters(
+    "portfolio_ira_alternatives_2400_v1_conservative",
+    "ira_alternatives_2400_v1_conservative"
+  );
+  const decision = evaluateIraCashManagement(input({
+    portfolioId: "portfolio_ira_alternatives_2400_v1_conservative",
+    cashUsd: 2400,
+    totalValueUsd: 2400,
+    maxNewTradePct: 0.08,
+    currentPositionLimitPct: 0.2,
+    parameters
+  }));
+
+  assert.equal(decision.action, "BUY");
+  assert.equal(decision.targetSymbol, "BND");
+  assert.equal(decision.proposedDeploymentUsd, 192);
+  assert.equal(decision.requiredReserveUsd, 240);
+  assert.equal(decision.targetReserveUsd, 360);
+  assert.match(decision.reason, /initial defensive allocation/);
+  assert.doesNotMatch(policySource, /buyThreshold\s*[:=]\s*0\.5/);
+});
+
+test("Guardian IRA alternatives deploy more slowly than Conservative", () => {
+  const conservativeParameters = resolveDefensiveIraAlternativeCashManagementParameters(
+    "portfolio_ira_alternatives_2400_v1_conservative",
+    "ira_alternatives_2400_v1_conservative"
+  );
+  const guardianParameters = resolveDefensiveIraAlternativeCashManagementParameters(
+    "portfolio_ira_alternatives_2400_v1_guardian",
+    "ira_alternatives_2400_v1_guardian"
+  );
+  const conservative = evaluateIraCashManagement(input({
+    portfolioId: "portfolio_ira_alternatives_2400_v1_conservative",
+    cashUsd: 2400,
+    totalValueUsd: 2400,
+    maxNewTradePct: 0.08,
+    currentPositionLimitPct: 0.2,
+    parameters: conservativeParameters
+  }));
+  const guardian = evaluateIraCashManagement(input({
+    portfolioId: "portfolio_ira_alternatives_2400_v1_guardian",
+    cashUsd: 2400,
+    totalValueUsd: 2400,
+    maxNewTradePct: 0.05,
+    currentPositionLimitPct: 0.18,
+    parameters: guardianParameters
+  }));
+
+  assert.equal(guardian.action, "BUY");
+  assert.equal(guardian.proposedDeploymentUsd, 120);
+  assert.equal(guardian.targetReserveUsd, 600);
+  assert.ok(guardian.proposedDeploymentUsd < conservative.proposedDeploymentUsd);
+  assert.ok(guardian.targetReserveUsd > conservative.targetReserveUsd);
+  assert.match(guardian.reason, /supported broad bond allocation/);
+});
+
+test("Growth and Aggressive IRA alternatives do not receive defensive BND fallback", () => {
+  assert.equal(resolveDefensiveIraAlternativeCashManagementParameters("portfolio_ira_alternatives_2400_v1_growth", "ira_alternatives_2400_v1_growth"), null);
+  assert.equal(resolveDefensiveIraAlternativeCashManagementParameters("portfolio_ira_alternatives_2400_v1_aggressive", "ira_alternatives_2400_v1_aggressive"), null);
 });
 
 test("required operational reserve is preserved", () => {
@@ -296,12 +364,15 @@ test("existing ETF holdings remain unchanged unless a valid strategy decision ch
 
 test("five-strategy experiment portfolios remain unchanged", () => {
   assert.doesNotMatch(migration, /strategy_experiment/);
-  assert.match(paperSource, /input\.portfolioId !== "portfolio_ira"/);
+  assert.match(paperSource, /resolveDefensiveIraAlternativeCashManagementParameters/);
+  assert.match(policySource, /eligiblePortfolioIds\.includes\(input\.portfolioId\)/);
 });
 
 test("Tim Real portfolios remain unchanged", () => {
   assert.doesNotMatch(migration, /Tim Real|read_only_watchlist|paper_portfolio_twin/);
-  assert.match(paperSource, /profile\.profileKey !== "ira"/);
+  assert.match(policySource, /profileKey === "ira_alternatives_2400_v1_conservative"/);
+  assert.match(policySource, /profileKey === "ira_alternatives_2400_v1_guardian"/);
+  assert.doesNotMatch(policySource, /portfolio_tim_real/);
 });
 
 test("live execution remains disabled", () => {

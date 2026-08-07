@@ -42,6 +42,7 @@ export interface ProfileParameters {
   geopoliticalWeight: number;
   iraCashManagement?: {
     enabled?: boolean;
+    eligiblePortfolioIds?: string[];
     minOperationalCashReserveUsd?: number;
     minOperationalCashReservePct?: number;
     targetOperationalCashReservePct?: number;
@@ -63,6 +64,7 @@ export interface ProfileParameters {
       targetAllocationPct: number;
       priority: number;
     }>;
+    deploymentReason?: string | null;
   };
 }
 

@@ -4,6 +4,7 @@ import { listRows, TIM_USER_ID } from "../shared/db.ts";
 import type { MarketCandle, MarketDataset } from "../shared/types.ts";
 import type { NormalizedQuote } from "../market/service.ts";
 import { getInvestmentPolicy } from "../policies/investmentPolicy.ts";
+import { evaluateIraCashManagement, resolveDefensiveIraAlternativeCashManagementParameters, resolveIraCashManagementParameters } from "../policies/iraCashManagement.ts";
 import { getPortfolioProfile, type PortfolioProfile } from "../portfolio/profiles.ts";
 import { assessPaperTrade } from "../risk/checks.ts";
 import { decidePaperAction, type StrategyDecision } from "../strategy/paperStrategy.ts";
@@ -298,6 +299,18 @@ interface StrategyValuationRow {
   feesUsd: number | null;
 }
 
+interface LatestStrategyEvaluationRow {
+  symbol: string;
+  action: string;
+  explanation: string;
+  confidenceScore: number;
+  quoteSource: string | null;
+  quoteTimestamp: string | null;
+  schedulerParentRunId: string | null;
+  schedulerChildRunId: string | null;
+  createdAt: string;
+}
+
 interface ReadOnlyMarketRow {
   symbol: string;
   assetClass: string;
@@ -474,6 +487,17 @@ export interface IraAlternativeSummary {
   positionCount: number;
   feesUsd: number | null;
   dataStatus: string;
+  latestEvaluation: {
+    symbol: string;
+    action: string;
+    reason: string;
+    confidence: number;
+    quoteSource: string | null;
+    quoteTimestamp: string | null;
+    schedulerParentRunId: string | null;
+    schedulerChildRunId: string | null;
+    createdAt: string;
+  } | null;
   notes: string[];
 }
 
@@ -735,6 +759,7 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
       positionCount: 0,
       feesUsd: null,
       dataStatus: "modeled",
+      latestEvaluation: null,
       notes: [
         benchmark.benchmarkType === "bank_certificate" ? "Locked 12-month certificate model; early-withdrawal penalty is unknown and unconfigured." : "Cash share account model; no trading occurs.",
         `APY ${(benchmark.apy * 100).toFixed(2)}% using daily effective APY accrual.`
@@ -744,6 +769,7 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
 
   const strategyAlternatives = await Promise.all(strategies.map(async (strategy) => {
     const valuation = await strategyValuation(db, strategy.portfolioId);
+    const latestEvaluation = await latestStrategyEvaluation(db, strategy.portfolioId);
     const currentValueUsd = Number(valuation.cashUsd ?? 0) + Number(valuation.holdingsValueUsd ?? 0);
     const assetUniverse = parseJson<{ futureTreasuryWatchlist?: string[]; futureTreasurySupportStatus?: string }>(strategy.assetUniverseJson, {});
     return alternativeSummary({
@@ -762,6 +788,7 @@ export async function getIraAlternativesComparison(db: D1Database, now = new Dat
       positionCount: valuation.positionCount,
       feesUsd: valuation.feesUsd ?? 0,
       dataStatus: strategy.status === "initialized" && strategy.profileEnabled === 0 ? "initialized_disabled_no_trading" : strategy.status === "initialized" ? "active" : strategy.status,
+      latestEvaluation,
       notes: [
         "Independent paper portfolio. Activation is separate and protected.",
         "Live execution, leverage, margin, options, and futures are disabled.",
@@ -1040,6 +1067,12 @@ function renderComparisonHtml(comparison: IraAlternativeComparison): string {
             <div><dt>Orders</dt><dd>${alternative.orderCount}</dd></div>
             <div><dt>Trades</dt><dd>${alternative.tradeCount}</dd></div>
           </dl>
+          ${alternative.latestEvaluation ? `
+          <div class="latest-evaluation">
+            <strong>Latest evaluation</strong>
+            <p>${escapeHtml(alternative.latestEvaluation.symbol)} ${escapeHtml(alternative.latestEvaluation.action)}: ${escapeHtml(alternative.latestEvaluation.reason)}</p>
+            <p class="muted">Confidence ${formatPercent(alternative.latestEvaluation.confidence)}. Quote ${escapeHtml(alternative.latestEvaluation.quoteSource ?? "unknown")} at ${escapeHtml(alternative.latestEvaluation.quoteTimestamp ?? "unknown")}. Scheduler ${escapeHtml(alternative.latestEvaluation.schedulerParentRunId ?? "none")} / ${escapeHtml(alternative.latestEvaluation.schedulerChildRunId ?? "none")}.</p>
+          </div>` : ""}
         </section>`).join("");
   return pageShell(comparison.displayName, `
       <header>
@@ -1180,6 +1213,31 @@ async function strategyValuation(db: D1Database, portfolioId: string): Promise<S
      LIMIT 1`
   ).bind(portfolioId).first<StrategyValuationRow>();
   return row ?? { cashUsd: 0, holdingsValueUsd: 0, orderCount: 0, tradeCount: 0, positionCount: 0, feesUsd: 0 };
+}
+
+async function latestStrategyEvaluation(db: D1Database, portfolioId: string): Promise<IraAlternativeSummary["latestEvaluation"]> {
+  const row = await db.prepare(
+    `SELECT symbol, action, explanation, confidence_score AS confidenceScore,
+      quote_source AS quoteSource, quote_timestamp AS quoteTimestamp,
+      scheduler_parent_run_id AS schedulerParentRunId,
+      scheduler_child_run_id AS schedulerChildRunId,
+      created_at AS createdAt
+     FROM recommendations
+     WHERE portfolio_id = ?
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).bind(portfolioId).first<LatestStrategyEvaluationRow>();
+  return row ? {
+    symbol: row.symbol,
+    action: row.action,
+    reason: row.explanation,
+    confidence: row.confidenceScore,
+    quoteSource: row.quoteSource,
+    quoteTimestamp: row.quoteTimestamp,
+    schedulerParentRunId: row.schedulerParentRunId,
+    schedulerChildRunId: row.schedulerChildRunId,
+    createdAt: row.createdAt
+  } : null;
 }
 
 function benchmarkValue(row: BenchmarkRow | undefined, startTimestamp: string, now: Date): number | null {
@@ -1327,7 +1385,7 @@ async function dryRunDecisionsForProfile(db: D1Database, profile: PortfolioProfi
       hasPosition: false
     });
   }
-  return rankOpportunities(rankedInput).map((item) => {
+  const ordinaryDecisions = rankOpportunities(rankedInput).map((item) => {
     const marketHours = canExecuteAt(item.asset.assetType, now, item.asset.marketHoursMode);
     const signalDuringMarketHours = item.marketData.validated
       ? applyDryRunProfileDecisionPolicy(decidePaperAction({ marketData: item.marketData, hasPosition: false }), profile)
@@ -1378,6 +1436,94 @@ async function dryRunDecisionsForProfile(db: D1Database, profile: PortfolioProfi
       screenScore: item.screen.score
     };
   });
+  const fallbackDecision = await dryRunDefensiveBondFallback(db, profile, assets, rankedInput, investmentPolicy, now);
+  return fallbackDecision ? [...ordinaryDecisions, fallbackDecision] : ordinaryDecisions;
+}
+
+async function dryRunDefensiveBondFallback(
+  db: D1Database,
+  profile: PortfolioProfile,
+  assets: AssetRegistryRecord[],
+  evaluated: RankedOpportunity[],
+  investmentPolicy: Awaited<ReturnType<typeof getInvestmentPolicy>>,
+  now: Date
+): Promise<IraAlternativeDryRunStrategy["decisions"][number] | null> {
+  const parameterInput = resolveDefensiveIraAlternativeCashManagementParameters(profile.portfolioId, profile.profileKey, profile.parameters.iraCashManagement);
+  if (!parameterInput || profile.profileKey === "ira") {
+    return null;
+  }
+  const parameters = resolveIraCashManagementParameters(parameterInput);
+  const targetAsset = parameters.conservativeAllowlist
+    .map((asset) => assets.find((candidate) => candidate.symbol === asset.symbol))
+    .find((asset): asset is AssetRegistryRecord => Boolean(asset)) ?? null;
+  const targetMarketData = targetAsset
+    ? evaluated.find((item) => item.asset.symbol === targetAsset.symbol)?.marketData ?? null
+    : null;
+  const state = await dryRunPortfolioState(db, profile.portfolioId);
+  const existingPositionValueUsd = targetAsset ? await dryRunPositionValue(db, profile.portfolioId, targetAsset.symbol) : 0;
+  const tradedTargetToday = targetAsset ? await dryRunTradedSymbolToday(db, profile.portfolioId, targetAsset.symbol, now) : false;
+  const policy = evaluateIraCashManagement({
+    portfolioId: profile.portfolioId,
+    cashUsd: state.cashUsd,
+    totalValueUsd: state.totalValueUsd,
+    existingPositionValueUsd,
+    asset: targetAsset,
+    marketData: targetMarketData,
+    hasOrdinaryExecution: false,
+    tradedTargetToday,
+    maxNewTradePct: profile.parameters.maxNewTradePct,
+    currentPositionLimitPct: profile.parameters.maxPositionPct,
+    feeRate: profile.parameters.feeRate,
+    slippageBps: profile.parameters.slippageBps,
+    now,
+    parameters
+  });
+  const marketHours = targetAsset ? canExecuteAt(targetAsset.assetType, now, targetAsset.marketHoursMode) : { allowed: false, reason: "No supported BND asset is available." };
+  const risk = assessPaperTrade({
+    action: policy.action,
+    marketData: targetMarketData ?? latestReadOnlyMarketUnavailable(targetAsset ?? fallbackBndAsset(), now),
+    portfolioValueUsd: state.totalValueUsd,
+    cashUsd: state.cashUsd,
+    currentPositionValueUsd: existingPositionValueUsd,
+    proposedTradeValueUsd: policy.proposedDeploymentUsd,
+    drawdownPct: 0,
+    duplicateSignal: false,
+    openedNewPositionThisRun: false,
+    hasPosition: existingPositionValueUsd > 0,
+    maxNewTradePct: profile.parameters.maxNewTradePct,
+    maxPositionPct: profile.parameters.maxPositionPct,
+    drawdownBlockPct: profile.parameters.drawdownBlockPct,
+    investmentPolicy,
+    orderIntent: "long_buy"
+  });
+  const riskChecks = [...risk.reasons];
+  if (policy.action === "BUY" && !marketHours.allowed && marketHours.reason) {
+    riskChecks.push(marketHours.reason);
+  }
+  const action = policy.action === "BUY" && marketHours.allowed && risk.allowed ? "BUY" : "DO_NOTHING";
+  const reason = action === "BUY"
+    ? policy.reason
+    : policy.action === "BUY" && !marketHours.allowed
+      ? `BND fallback deferred because market is closed. ${marketHours.reason ?? ""}`.trim()
+      : policy.reason;
+  return {
+    symbol: policy.targetSymbol ?? "BND",
+    action,
+    proposedActionDuringMarketHours: policy.action,
+    proposedTradeValueUsd: policy.proposedDeploymentUsd,
+    confidence: policy.confidenceScore,
+    reason: `${reason} Reserve target: $${policy.targetReserveUsd.toFixed(2)}. Deployable cash: $${policy.deployableExcessCashUsd.toFixed(2)}. Risk cap: $${policy.maxNewTradeUsd.toFixed(4)}. Proposed BND amount: $${policy.proposedDeploymentUsd.toFixed(4)}. Quote freshness: ${policy.quoteFreshness}.`,
+    riskAllowed: risk.allowed && marketHours.allowed && policy.action === "BUY",
+    riskChecks,
+    quoteTimestamp: policy.quoteTimestamp ?? "unavailable",
+    quoteSource: policy.quoteSource ?? "unavailable",
+    quoteFreshness: policy.quoteFreshness,
+    marketHoursAllowed: marketHours.allowed,
+    executableDuringValidMarketHours: risk.allowed && policy.action === "BUY",
+    intendedAllocationPct: state.totalValueUsd > 0 ? roundRatio(policy.proposedDeploymentUsd / state.totalValueUsd) : 0,
+    screenRank: null,
+    screenScore: 100
+  };
 }
 
 async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryRecord, now: Date): Promise<MarketDataset> {
@@ -1402,6 +1548,41 @@ async function latestReadOnlyMarketData(db: D1Database, asset: AssetRegistryReco
   return candidates.sort((a, b) => new Date(b.asOf).getTime() - new Date(a.asOf).getTime())[0] ?? latestReadOnlyMarketUnavailable(asset, now);
 }
 
+async function dryRunPortfolioState(db: D1Database, portfolioId: string): Promise<{ cashUsd: number; totalValueUsd: number }> {
+  const row = await db.prepare(
+    `SELECT
+      p.cash_usd AS cashUsd,
+      p.cash_usd + COALESCE((SELECT SUM(market_value_usd) FROM positions WHERE portfolio_id = p.id AND quantity > 0), 0) AS totalValueUsd
+     FROM portfolios p
+     WHERE p.id = ?
+     LIMIT 1`
+  ).bind(portfolioId).first<{ cashUsd: number; totalValueUsd: number }>();
+  return {
+    cashUsd: Number(row?.cashUsd ?? IRA_ALTERNATIVES_STARTING_VALUE_USD),
+    totalValueUsd: Number(row?.totalValueUsd ?? IRA_ALTERNATIVES_STARTING_VALUE_USD)
+  };
+}
+
+async function dryRunPositionValue(db: D1Database, portfolioId: string, symbol: string): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COALESCE(SUM(market_value_usd), 0) AS valueUsd
+     FROM positions
+     WHERE portfolio_id = ? AND symbol = ? AND quantity > 0`
+  ).bind(portfolioId, symbol).first<{ valueUsd: number }>();
+  return Number(row?.valueUsd ?? 0);
+}
+
+async function dryRunTradedSymbolToday(db: D1Database, portfolioId: string, symbol: string, now: Date): Promise<boolean> {
+  const day = now.toISOString().slice(0, 10);
+  const row = await db.prepare(
+    `SELECT id
+     FROM trades
+     WHERE portfolio_id = ? AND symbol = ? AND substr(executed_at, 1, 10) = ?
+     LIMIT 1`
+  ).bind(portfolioId, symbol, day).first<{ id: string }>();
+  return Boolean(row);
+}
+
 function marketDatasetFromSnapshot(row: ReadOnlyMarketRow, asset: AssetRegistryRecord, now: Date): MarketDataset {
   const ageSeconds = Math.max(0, Math.floor((now.getTime() - new Date(row.createdAt).getTime()) / 1000));
   const maxAgeSeconds = maxReadOnlyAgeSeconds(asset.assetType);
@@ -1420,6 +1601,27 @@ function marketDatasetFromSnapshot(row: ReadOnlyMarketRow, asset: AssetRegistryR
     quality: stale ? "stale" : "acceptable_cached",
     userMessage: stale ? "Trusted snapshot is too old for dry-run execution approval." : "Using trusted read-only market snapshot for dry-run evaluation.",
     error: stale ? "Trusted snapshot is too old for dry-run execution approval." : undefined
+  };
+}
+
+function fallbackBndAsset(): AssetRegistryRecord {
+  return {
+    id: "asset_bnd",
+    symbol: "BND",
+    displayName: "Vanguard Total Bond Market ETF",
+    assetType: "bond_fund",
+    market: "US",
+    currency: "USD",
+    providerSymbol: "BND",
+    enabled: true,
+    tradable: true,
+    fractionalSupported: true,
+    dividendCapable: true,
+    expenseRatio: null,
+    minimumInvestment: null,
+    marketHoursMode: "us_regular",
+    pricePrecision: 2,
+    quantityPrecision: 6
   };
 }
 
