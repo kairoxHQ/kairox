@@ -229,6 +229,13 @@ test("IRA alternatives page exposes latest strategy evaluation audit details", a
   assert.match(html, /paper_observation_parent \/ paper_observation_child/);
 });
 
+test("IRA alternatives dry-run is read-only after activation while activation keeps clean-start guard", () => {
+  const dryRunBody = serviceSource.match(/export async function getIraAlternativesDryRun[\s\S]*?export async function activateIraAlternativesProfiles/)?.[0] ?? "";
+  const activationBody = serviceSource.match(/export async function activateIraAlternativesProfiles[\s\S]*?const activationTimestamp/)?.[0] ?? "";
+  assert.doesNotMatch(dryRunBody, /assertCleanPreflight\(preflight\)/);
+  assert.match(activationBody, /assertCleanPreflight\(preflight, \{ requireDisabledProfiles: true \}\)/);
+});
+
 test("routes expose read-only comparison and protected initializer", () => {
   assert.match(indexSource, /"\/ira-alternatives"/);
   assert.match(indexSource, /"\/ira-alternatives\/initialize"/);

@@ -830,7 +830,6 @@ export async function getIraAlternativesDryRun(db: D1Database, now = new Date())
   ]);
   const activeSupport = assetSupportSummaries(activeAssets, [...ACTIVE_ASSET_SYMBOLS]);
   const treasurySupport = assetSupportSummaries(treasuryAssets, [...FUTURE_TREASURY_SYMBOLS]);
-  assertCleanPreflight(preflight);
   assertActiveAssetsSupported(activeSupport);
 
   const strategies = await Promise.all(IRA_ALTERNATIVE_STRATEGIES.map(async (strategy) => {
